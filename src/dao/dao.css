@@ -970,3 +970,23 @@
   border-radius: var(--radius-sm);
 }
 .cand-table td.num { font-variant-numeric: tabular-nums; }
+
+/* ── Acting on a proposal ────────────────────────────────────────────────── */
+
+/* The buttons on a row. Under the proposal rather than in a column of their
+   own: a worker proposal can offer four at once, and a column wide enough for
+   four would be wider than the title. */
+.wp-acts {
+  margin-top: var(--sp-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+td.wp-acts { margin: 0; justify-content: flex-end; }
+
+/* A vote already cast. Still shown — "you approved this" is worth saying — but
+   plainly spent rather than inviting a second press. */
+.btn--tiny.is-done {
+  color: var(--good);
+  border-color: var(--good);
+}

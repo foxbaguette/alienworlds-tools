@@ -18,6 +18,8 @@ import {
   wpTally,
   wpTime,
   wpVotingOpen,
+  workerAction,
+  workerButtons,
   type WorkerData,
   type WorkerProposal,
 } from '../chain/worker'
@@ -28,7 +30,15 @@ import { ensureProposals, ensureWorker, proposalsOf, useProposalCaches, workerOf
 import { fetchRedirect, type Redirect } from '../chain/inflation'
 import { TAP_MAX_X100, fetchTap, fmtRate, planetOf, tapSetAction, type Tap } from '../chain/tap'
 import { PROPOSAL_DAYS, proposeAction } from '../chain/propose'
-import { isCancel, readableError, type ChainAction } from '../chain/act'
+import {
+  approveAction,
+  canApprove,
+  canExecute,
+  execAction,
+  isCancel,
+  readableError,
+  type ChainAction,
+} from '../chain/act'
 import { todoFor } from '../useTodo'
 import { ProposalForm } from '../components/ProposalForm'
 import { WorkerProposalForm } from '../components/WorkerProposalForm'
@@ -529,10 +539,43 @@ function CouncilTab({ dao }: { dao: Dao }) {
 /* ---------- council proposals ---------- */
 
 function ProposalsTab({ dao }: { dao: Dao }) {
+  const { session, actor } = useSession()
   const [filter, setFilter] = useState<'active' | 'executed'>('active')
   /* null means closed; a proposal means "copy that one"; 'new' means blank. */
   const [writing, setWriting] = useState<MsigProposal | 'new' | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
   const version = useProposalCaches()
+
+  /**
+   * Signing on one proposal, from the council's own page.
+   *
+   * The overview can approve a dozen across every council in one transaction;
+   * this is the other half of that — you are looking at one council, and the
+   * thing you want to act on is in front of you.
+   */
+  const sign = async (p: MsigProposal, what: 'approve' | 'exec') => {
+    if (!session || busy) return
+    const label = what === 'approve' ? `Approving ${msigTitle(p)}` : `Executing ${msigTitle(p)}`
+    setBusy(`${p.proposal_name}:${what}`)
+    setNote({ text: `${label} — check your wallet…` })
+    try {
+      const action = what === 'approve' ? approveAction(session, dao, p) : execAction(session, dao, p)
+      await session.transact({ actions: [action] }, { broadcast: true })
+      /* A block has to land before a re-read shows the change. */
+      await new Promise((r) => setTimeout(r, 2500))
+      clearProposalCaches()
+      setNote({ text: `${label} done.` })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error(`${what} failed:`, err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
 
   /* Shared with the all-proposals overview: opening a council from that list
      should not re-read what the list already has. Keyed on the cache version
@@ -574,6 +617,8 @@ function ProposalsTab({ dao }: { dao: Dao }) {
           New proposal
         </button>
       </div>
+
+      {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
 
       {writing ? (
         <ProposalForm
@@ -620,9 +665,31 @@ function ProposalsTab({ dao }: { dao: Dao }) {
                     <span className="dao-dim">/{need}</span>
                   </td>
                   <td className="num">{Number.isFinite(exp) ? isoDay(exp) : '—'}</td>
-                  <td className="num">
+                  <td className="num wp-acts">
+                    {canApprove(p, dao, actor) ? (
+                      <button
+                        className="btn btn--tiny"
+                        type="button"
+                        disabled={!!busy}
+                        title={`Add your signature — ${got} of ${need} so far`}
+                        onClick={() => void sign(p, 'approve')}
+                      >
+                        {busy === `${p.proposal_name}:approve` ? 'Signing…' : 'Approve'}
+                      </button>
+                    ) : null}
+                    {canExecute(p, dao, got) ? (
+                      <button
+                        className="btn btn--tiny btn--go"
+                        type="button"
+                        disabled={!!busy}
+                        title="It has its signatures — anyone may run it"
+                        onClick={() => void sign(p, 'exec')}
+                      >
+                        {busy === `${p.proposal_name}:exec` ? 'Signing…' : 'Execute'}
+                      </button>
+                    ) : null}
                     <button
-                      className="btn"
+                      className="btn btn--tiny"
                       type="button"
                       title="Open a new proposal prefilled with this one's actions"
                       onClick={() => setWriting(writing === p ? null : p)}
@@ -716,7 +783,9 @@ function WorkerTab({ dao }: { dao: Dao }) {
           </thead>
           <tbody>
             {wp
-              ? shown.map((p) => <WorkerRow key={p.proposal_id} dao={dao} p={p} wp={wp} />)
+              ? shown.map((p) => (
+                  <WorkerRow key={p.proposal_id} dao={dao} p={p} wp={wp} onDone={clearProposalCaches} />
+                ))
               : null}
             {!shown.length ? (
               <tr>
@@ -738,11 +807,50 @@ function WorkerTab({ dao }: { dao: Dao }) {
   )
 }
 
-function WorkerRow({ dao, p, wp }: { dao: Dao; p: WorkerProposal; wp: WorkerData }) {
+function WorkerRow({
+  dao,
+  p,
+  wp,
+  onDone,
+}: {
+  dao: Dao
+  p: WorkerProposal
+  wp: WorkerData
+  onDone: () => void
+}) {
+  const { session, actor } = useSession()
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
   const tally = wpTally(dao, p, wp)
   const state = wpEffectiveState(p)
   const stale = state !== p.state
   const doc = wpDocUrl(p.content_hash)
+  const buttons = workerButtons(dao, p, wp, actor)
+
+  const act = async (which: Parameters<typeof workerAction>[3], label: string) => {
+    if (!session || busy) return
+    setBusy(which)
+    setNote({ text: `${label} — check your wallet…` })
+    try {
+      const level = {
+        actor: String(session.actor),
+        permission: session.permissionLevel.permission ? String(session.permissionLevel.permission) : 'active',
+      }
+      await session.transact({ actions: [workerAction(level, dao, p, which)] }, { broadcast: true })
+      /* A block has to land before the tables move. */
+      await new Promise((r) => setTimeout(r, 2500))
+      onDone()
+      setNote({ text: `${label} done.` })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error(`${which} failed:`, err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
 
   /* Which clock matters depends on the stage: an open vote is racing its
      expiry, a finished job is waiting out its hold, everything else is
@@ -795,6 +903,24 @@ function WorkerRow({ dao, p, wp }: { dao: Dao; p: WorkerProposal; wp: WorkerData
             </a>
           ) : null}
         </span>
+
+        {buttons.length ? (
+          <div className="wp-acts">
+            {buttons.map((b) => (
+              <button
+                key={b.act}
+                className={`btn btn--tiny${b.done ? ' is-done' : ''}`}
+                type="button"
+                disabled={!!b.blocked || !!busy}
+                title={b.blocked ?? undefined}
+                onClick={() => void act(b.act, b.label)}
+              >
+                {busy === b.act ? 'Signing…' : b.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
       </td>
       <td className="num wp-pay">
         <b>{fmtAmount(p.proposal_pay.quantity)}</b>
@@ -806,7 +932,9 @@ function WorkerRow({ dao, p, wp }: { dao: Dao; p: WorkerProposal; wp: WorkerData
       </td>
       <td className="num wp-when">
         {when}
-        <span className="dao-dim">{fmtDays(p.job_duration)} job</span>
+        <span className="dao-dim">
+          raised {isoDay(wpTime(p.created_at))} · {fmtDays(p.job_duration)} job
+        </span>
       </td>
     </tr>
   )

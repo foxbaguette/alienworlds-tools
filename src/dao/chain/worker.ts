@@ -466,3 +466,199 @@ export async function uploadToIpfs(file: File): Promise<{ cid: string; already: 
   if (!cid) throw new Error('the upload service returned no CID')
   return { cid, already: false }
 }
+
+/* ---------- acting on one ---------- */
+
+/** How this account has voted on a proposal, in whichever round it is in. */
+export const wpMyVote = (p: WorkerProposal, wp: WorkerData, actor: string | null): string | null =>
+  actor ? (wp.votes.find((v) => v.proposal_id === p.proposal_id && v.voter === actor)?.vote ?? null) : null
+
+export type WorkerAct =
+  | 'approve'
+  | 'deny'
+  | 'finapprove'
+  | 'findeny'
+  | 'arbagree'
+  | 'startwork'
+  | 'completework'
+  | 'finalize'
+
+/**
+ * The action behind each button.
+ *
+ * The two VOTE actions want a second authorization: the DAO's own account at
+ * its `one` permission, alongside the custodian's active. Every voteprop and
+ * votepropfin on chain carries both — `["1x1ci.wam@active","nar.unn.dac@one"]`
+ * — and without it the contract refuses for missing that permission.
+ *
+ * No extra signature is involved. `one` is threshold 1 with every seated
+ * custodian's @active at weight 1, so the custodian's own key satisfies it; it
+ * is the DAO saying "a custodian asked for this", not a second signer.
+ *
+ * Nothing in the published dacproposals source explains it — master's
+ * `_voteprop` does `require_auth(custodian)` and nothing more, so the deployed
+ * build is not that source. This follows the chain rather than the source.
+ *
+ * The other six take the actor's active alone, which history confirms for each.
+ */
+export function workerAction(
+  level: ChainAction['authorization'][number],
+  dao: Dao,
+  p: WorkerProposal,
+  act: WorkerAct,
+): ChainAction {
+  const dac_id = dao.id
+  const proposal_id = p.proposal_id
+  const plain = (name: string, data: Record<string, unknown>): ChainAction => ({
+    account: WP_CONTRACT,
+    name,
+    authorization: [level],
+    data,
+  })
+  const voting = (name: string, data: Record<string, unknown>): ChainAction => ({
+    account: WP_CONTRACT,
+    name,
+    authorization: dao.owner ? [level, { actor: dao.owner, permission: 'one' }] : [level],
+    data,
+  })
+
+  switch (act) {
+    case 'approve':
+      return voting('voteprop', { custodian: level.actor, proposal_id, vote: 'approve', dac_id })
+    case 'deny':
+      return voting('voteprop', { custodian: level.actor, proposal_id, vote: 'deny', dac_id })
+    case 'finapprove':
+      return voting('votepropfin', { custodian: level.actor, proposal_id, vote: 'approve', dac_id })
+    case 'findeny':
+      return voting('votepropfin', { custodian: level.actor, proposal_id, vote: 'deny', dac_id })
+    case 'arbagree':
+      return plain('arbagree', { arbiter: level.actor, proposal_id, dac_id })
+    case 'startwork':
+      return plain('startwork', { proposal_id, dac_id })
+    case 'completework':
+      return plain('completework', { proposal_id, dac_id })
+    default:
+      return plain('finalize', { proposal_id, dac_id })
+  }
+}
+
+export interface WorkerButton {
+  act: WorkerAct
+  label: string
+  /** Why it cannot be pressed, or null if it can. */
+  blocked: string | null
+  /** True when this is what the account already did — shown, but spent. */
+  done?: boolean
+}
+
+/**
+ * Everything this account can do to one proposal, and why not where it cannot.
+ *
+ * A disabled button with a reason beats a hidden one: "you have already
+ * approved this" and "this needs three approvals and has two" are both things
+ * somebody came to the page to find out.
+ */
+export function workerButtons(
+  dao: Dao,
+  p: WorkerProposal,
+  wp: WorkerData,
+  actor: string | null,
+): WorkerButton[] {
+  if (!actor) return []
+
+  const state = wpEffectiveState(p)
+  const tally = wpTally(dao, p, wp)
+  const mine = wpMyVote(p, wp, actor)
+  const seated = dao.custodians.includes(actor)
+  const isWorker = p.proposer === actor
+  const isArbiter = p.arbiter === actor
+  const out: WorkerButton[] = []
+
+  /* Every action in the contract asserts membership first, so this blocks all
+     of them rather than being repeated on each. */
+  const terms =
+    wp.member === false
+      ? `${actor} has not agreed to this DAO’s latest member terms (agreed version ${
+          wp.agreedTerms || 'none'
+        }, current is ${wp.latestTerms}), which every action here requires.`
+      : null
+
+  const approving = state === WP_PENDING || state === WP_APPROVED
+  const finalizing = state === WP_FINALIZING || state === WP_FINAPPR
+
+  if (seated && approving) {
+    out.push({
+      act: 'approve',
+      label: mine === WP_VOTE_YES ? 'Approved' : 'Approve',
+      done: mine === WP_VOTE_YES,
+      blocked: terms ?? (mine === WP_VOTE_YES ? 'You have already approved this one.' : null),
+    })
+    out.push({
+      act: 'deny',
+      label: mine === WP_VOTE_NO ? 'Denied' : 'Deny',
+      done: mine === WP_VOTE_NO,
+      blocked: terms ?? (mine === WP_VOTE_NO ? 'You have already voted against this one.' : null),
+    })
+  }
+
+  if (seated && finalizing) {
+    out.push({
+      act: 'finapprove',
+      label: mine === WP_VOTE_FIN_YES ? 'Work accepted' : 'Accept work',
+      done: mine === WP_VOTE_FIN_YES,
+      blocked: terms ?? (mine === WP_VOTE_FIN_YES ? 'You have already accepted this work.' : null),
+    })
+    out.push({
+      act: 'findeny',
+      label: mine === WP_VOTE_FIN_NO ? 'Work rejected' : 'Reject work',
+      done: mine === WP_VOTE_FIN_NO,
+      blocked: terms ?? (mine === WP_VOTE_FIN_NO ? 'You have already rejected this work.' : null),
+    })
+  }
+
+  /* startwork is refused without it, so the arbiter's agreement is a stage of
+     its own rather than a detail on the row. */
+  if (isArbiter && !p.arbiter_agreed && approving) {
+    out.push({ act: 'arbagree', label: 'Agree to arbitrate', blocked: terms })
+  }
+
+  if (isWorker && approving) {
+    out.push({
+      act: 'startwork',
+      label: 'Start work',
+      blocked:
+        terms ??
+        (tally.yes < tally.need ? `Needs ${tally.need} approvals and has ${tally.yes}.` : null) ??
+        (!p.arbiter_agreed
+          ? `${p.arbiter} has not agreed to arbitrate, which the contract requires before work starts.`
+          : null),
+    })
+  }
+
+  if (isWorker && state === WP_WORKING) {
+    out.push({ act: 'completework', label: 'Mark complete', blocked: terms })
+  }
+
+  /* finalize carries no require_auth — anyone may push a proposal that has
+     cleared both gates over the line, and the money goes to the worker either
+     way. That is why it is offered to everyone signed in, not the worker alone. */
+  if (finalizing) {
+    const payable = wpPayableAt(p, wp)
+    out.push({
+      act: 'finalize',
+      label: 'Finalize and pay',
+      blocked:
+        tally.yes < tally.need
+          ? `Needs ${tally.need} approvals to finalize and has ${tally.yes}.`
+          : Date.now() < payable
+            ? `The contract holds every proposal for ${Math.round(
+                wp.config.min_proposal_duration / 86400,
+              )} days from creation. This one can be finalized ${new Date(payable)
+                .toISOString()
+                .slice(0, 10)}.`
+            : null,
+    })
+  }
+
+  return out
+}
