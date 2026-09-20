@@ -1,4 +1,5 @@
 import { ABI, Action } from '@wharfkit/session'
+import { call } from './nodes'
 import { MSIG_CONTRACT, getAbi } from './proposals'
 import type { ChainAction } from './act'
 import type { Dao } from './daos'
@@ -35,8 +36,60 @@ export function newProposalName(): string {
 }
 
 /** `2026-09-27T18:54:59` — seconds, no zone, which is what the struct wants. */
-const expiresAt = (days: number) =>
+export const expiresAt = (days: number) =>
   new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 19)
+
+/**
+ * One action with its data serialised, ready to sit inside a proposal.
+ *
+ * Done through the contract's own ABI rather than by hand: the field order and
+ * the name encoding are the ABI's business, and getting either subtly wrong
+ * produces a proposal that looks right and does something else.
+ */
+export async function encodeInner(inner: Omit<ChainAction, 'authorization'> & {
+  authorization: ChainAction['authorization']
+}) {
+  const abi = ABI.from(await getAbi(inner.account))
+  const encoded = Action.from(inner, abi)
+  return {
+    account: inner.account,
+    name: inner.name,
+    authorization: inner.authorization,
+    data: String(encoded.data),
+  }
+}
+
+/**
+ * A reference to a recent irreversible block.
+ *
+ * `eosio.msig` proposals on chain carry real TAPOS, unlike `msig.worlds` where
+ * every live one has zeroes, so proposals bound for the system contract get the
+ * real thing.
+ */
+export async function tapos(): Promise<{ ref_block_num: number; ref_block_prefix: number }> {
+  const info = await call({}, 'get_info')
+  const num = Number(info.last_irreversible_block_num)
+  const block = await call({ block_num_or_id: num }, 'get_block')
+  /* ref_block_prefix is the second 32-bit word of the block id, little endian. */
+  const prefix = parseInt(String(block.id).slice(16, 24).match(/../g)!.reverse().join(''), 16)
+  return { ref_block_num: num & 0xffff, ref_block_prefix: prefix }
+}
+
+/** The transaction body a proposal wraps, around actions already encoded. */
+export const wrapTrx = (
+  actions: Awaited<ReturnType<typeof encodeInner>>[],
+  expiration: string,
+  ref: { ref_block_num: number; ref_block_prefix: number } = { ref_block_num: 0, ref_block_prefix: 0 },
+) => ({
+  expiration,
+  ...ref,
+  max_net_usage_words: 0,
+  max_cpu_usage_ms: 0,
+  delay_sec: 0,
+  context_free_actions: [],
+  actions,
+  transaction_extensions: [],
+})
 
 export interface ProposalDraft {
   title: string
@@ -63,12 +116,7 @@ export async function proposeAction(
   const actor = String(session.actor)
   const permission = session.permissionLevel.permission ? String(session.permissionLevel.permission) : 'active'
   const council = { actor: dao.owner, permission: 'active' }
-
-  /* Serialised through the contract's own ABI rather than by hand: the field
-     order and the name encoding are the ABI's business, and getting either
-     subtly wrong produces a proposal that looks right and does something else. */
-  const abi = ABI.from(await getAbi(inner.account))
-  const encoded = Action.from({ ...inner, authorization: [council] }, abi)
+  const encoded = await encodeInner({ ...inner, authorization: [council] })
 
   return {
     account: MSIG_CONTRACT,
@@ -83,24 +131,9 @@ export async function proposeAction(
         { key: 'title', value: draft.title },
         { key: 'description', value: draft.description },
       ],
-      trx: {
-        expiration: expiresAt(draft.days ?? PROPOSAL_DAYS),
-        ref_block_num: 0,
-        ref_block_prefix: 0,
-        max_net_usage_words: 0,
-        max_cpu_usage_ms: 0,
-        delay_sec: 0,
-        context_free_actions: [],
-        actions: [
-          {
-            account: inner.account,
-            name: inner.name,
-            authorization: [council],
-            data: String(encoded.data),
-          },
-        ],
-        transaction_extensions: [],
-      },
+      /* msig.worlds dispatches its inner actions itself, so no TAPOS —
+         matching every live proposal on that contract. */
+      trx: wrapTrx([encoded], expiresAt(draft.days ?? PROPOSAL_DAYS)),
     },
   }
 }

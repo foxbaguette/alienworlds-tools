@@ -7,10 +7,21 @@ import {
   points,
   shards,
   spendOf,
+  type Allocation,
   type PointsConfig,
 } from '../chain/allocators'
+import {
+  ALLOC_OPS,
+  PERIOD_MAX_DAYS,
+  PERIOD_MIN_DAYS,
+  budgetProposal,
+  councilSigners,
+  type AllocOp,
+} from '../chain/budgets'
+import { isCancel, readableError } from '../chain/act'
 import { EXPLORER, fmtAge, isoDay } from '../format'
 import { useAllocators, type Signers } from '../useAllocators'
+import { useDaos } from '../useDaos'
 import { useSession } from '../../wallet/session'
 
 /* ---------- the list ---------- */
@@ -188,6 +199,8 @@ export function MsigGroupDetails() {
         </section>
       ) : null}
 
+      <BudgetActions name={name} signers={sign ?? null} rows={rows} configs={configs} />
+
       <section className="section">
         <h2 className="dao-h2">Allocations</h2>
         <div className="dao-tablewrap">
@@ -265,5 +278,194 @@ export function MsigGroupDetails() {
         </div>
       </section>
     </div>
+  )
+}
+
+/**
+ * Moving a budget.
+ *
+ * None of this can be signed directly: the three actions all need the
+ * ALLOCATOR's authority, and an allocator is a multisig account. So the button
+ * raises a proposal on `eosio.msig` for its signers to approve — and, where a
+ * signer is itself a DAO, a council proposal carrying that DAO's approval, in
+ * the same transaction. See budgets.ts.
+ */
+function BudgetActions({
+  name,
+  signers,
+  rows,
+  configs,
+}: {
+  name: string
+  signers: Signers | null
+  rows: Allocation[]
+  configs: Map<string, PointsConfig | null>
+}) {
+  const { session, actor } = useSession()
+  const { daos } = useDaos()
+  const { refresh } = useAllocators()
+  const [op, setOp] = useState<AllocOp | null>(null)
+  const [to, setTo] = useState('')
+  const [amount, setAmount] = useState('')
+  const [days, setDays] = useState('30')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+
+  const councils = councilSigners(signers, daos, actor)
+  const current = rows.find((r) => r.account === to)
+  const period = durationDays(configs.get(to)?.period_duration) ?? 30
+
+  const open = (next: AllocOp) => {
+    setOp(next)
+    setNote(null)
+    /* An increase or a decrease is always ABOUT an existing allocation, so it
+       starts on one; a new one starts empty, because naming an account that
+       already has an allocation is the one thing setbudget refuses. */
+    setTo(next === 'new' ? '' : (rows[0]?.account ?? ''))
+    setAmount('')
+  }
+
+  const submit = async () => {
+    if (!session || !signers || busy || !op) return
+    const value = Number(String(amount).replace(/,/g, ''))
+    if (!Number.isFinite(value) || value <= 0) return setNote({ text: 'Enter an amount above zero.', bad: true })
+    if (!to.trim()) return setNote({ text: 'Name the recipient account.', bad: true })
+    const n = Math.round(Number(days))
+    if (op === 'new' && (!Number.isFinite(n) || n < PERIOD_MIN_DAYS || n > PERIOD_MAX_DAYS)) {
+      return setNote({ text: `The contract only accepts a period of ${PERIOD_MIN_DAYS} to ${PERIOD_MAX_DAYS} days.`, bad: true })
+    }
+
+    setBusy(true)
+    setNote({ text: 'Building the proposal — check your wallet…' })
+    try {
+      const level = {
+        actor: String(session.actor),
+        permission: session.permissionLevel.permission ? String(session.permissionLevel.permission) : 'active',
+      }
+      const actions = await budgetProposal(level, name, signers, { op, to: to.trim(), amount: value, days: n }, councils.mine)
+      await session.transact({ actions }, { broadcast: true })
+      setOp(null)
+      await refresh()
+      setNote({
+        text:
+          `Proposed. ${signers.threshold} of ${signers.members.length} signatures release it` +
+          (councils.mine.length
+            ? `, and ${councils.mine.length} council proposal${councils.mine.length === 1 ? '' : 's'} went out with it.`
+            : '.'),
+      })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error('budget proposal failed:', err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="section">
+      <h2 className="dao-h2">Move a budget</h2>
+
+      {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
+
+      <div className="page__actions">
+        {(Object.keys(ALLOC_OPS) as AllocOp[]).map((k) => (
+          <button
+            key={k}
+            className={`btn${op === k ? ' btn--go' : ''}`}
+            type="button"
+            disabled={!session || !signers || busy}
+            onClick={() => (op === k ? setOp(null) : open(k))}
+          >
+            {ALLOC_OPS[k].verb}
+          </button>
+        ))}
+        <span className="dao-dim">
+          {!session
+            ? 'Connect a wallet to raise a proposal.'
+            : !signers
+              ? 'Reading who has to sign…'
+              : `Every change is a proposal — ${signers.threshold} of ${signers.members.length} signatures release it.`}
+        </span>
+      </div>
+
+      {op && signers ? (
+        <div className="tap-form">
+          <p className="dao-dim">{ALLOC_OPS[op].blurb}</p>
+
+          <div className="ale-form">
+            <label className="ale-field">
+              <span className="ale-field__name">
+                Recipient<i>{op === 'new' ? 'an account with no allocation yet' : 'one this allocator already funds'}</i>
+              </span>
+              {op === 'new' ? (
+                <input type="text" value={to} placeholder="theminergame" onChange={(e) => setTo(e.target.value.trim())} />
+              ) : (
+                <select value={to} onChange={(e) => setTo(e.target.value)}>
+                  {rows.map((r) => (
+                    <option key={r.account} value={r.account}>
+                      {r.account}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+
+            <label className="ale-field">
+              <span className="ale-field__name">
+                Amount for the period<i>at face value, as shown on this page</i>
+              </span>
+              <input type="text" inputMode="decimal" value={amount} placeholder="0" onChange={(e) => setAmount(e.target.value)} />
+            </label>
+
+            {op === 'new' ? (
+              <label className="ale-field">
+                <span className="ale-field__name">
+                  Period length<i>{PERIOD_MIN_DAYS} to {PERIOD_MAX_DAYS} days</i>
+                </span>
+                <input type="number" min={PERIOD_MIN_DAYS} max={PERIOD_MAX_DAYS} value={days} onChange={(e) => setDays(e.target.value)} />
+              </label>
+            ) : null}
+          </div>
+
+          <p className="dao-dim">
+            Every figure in this contract is held at ten times face value, so what you type is multiplied by ten
+            before it is sent.
+            {op !== 'new' && current ? (
+              <>
+                {' '}
+                <code>{current.account}</code> currently gets{' '}
+                <b>{points(Number(current.allocated) * period)}</b> per {period}-day period.
+              </>
+            ) : null}
+          </p>
+
+          {councils.mine.length || councils.others.length ? (
+            <p className="dao-note">
+              {councils.mine.length + councils.others.length} of these signers are DAOs and cannot approve
+              directly — each needs a proposal on its own council, and <code>msig.worlds</code> only accepts one
+              from a seated custodian.{' '}
+              {councils.mine.length
+                ? `This raises ${councils.mine.length} of them, on ${councils.mine.map((d) => d.title).join(', ')} — ${councils.mine.length + 1} proposals in one transaction.`
+                : 'You sit on none of them.'}{' '}
+              {councils.others.length
+                ? `${councils.others.map((d) => d.title).join(', ')} you do not sit on, so a custodian there has to raise those.`
+                : ''}
+            </p>
+          ) : null}
+
+          <div className="page__actions">
+            <button className="btn btn--go" type="button" disabled={busy} onClick={submit}>
+              {busy ? 'Signing…' : 'Create proposal'}
+            </button>
+            <button className="btn" type="button" disabled={busy} onClick={() => setOp(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
   )
 }
