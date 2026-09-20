@@ -15,6 +15,7 @@ import {
 import { isCancel, readableError, type ChainAction } from '../chain/act'
 import { fmtAmount, fmtDays, isoMinute } from '../format'
 import { ensureStakeConfig } from '../usePosition'
+import { Overlay } from '../../components/Overlay'
 import { useSession } from '../../wallet/session'
 import type { Dao } from '../chain/daos'
 
@@ -33,7 +34,9 @@ const OPS: { key: Op; label: string; blurb: string }[] = [
  *
  * Five actions over one balance, which is why they are one panel rather than
  * five buttons on a card: they all read the same position, and after any of
- * them that position has to be re-read.
+ * them that position has to be re-read. It opens over the page rather than
+ * below the grid — it is about one council, and the grid it was opened from is
+ * not what you are reading any more.
  *
  * The delay is the odd one out — it governs a FUTURE unstake, so setting it
  * while something is already unstaking changes nothing about what is in
@@ -137,16 +140,11 @@ export function StakePanel({
   const chosen = OPS.find((o) => o.key === op) ?? null
 
   return (
-    <div className="stake-panel">
-      <div className="page__actions">
-        <h3 className="dao-h2">
-          {dao.title} <span className="dao-dim">{dao.symbol}</span>
-        </h3>
-        <button className="btn" type="button" onClick={onClose}>
-          Close
-        </button>
-      </div>
-
+    <Overlay
+      title={dao.title}
+      subtitle={`${dao.symbol} · ${dao.id}`}
+      onClose={busy ? () => undefined : onClose}
+    >
       {!session ? (
         <p className="dao-note">Connect a wallet to stake, unstake or convert here.</p>
       ) : !position ? (
@@ -285,6 +283,6 @@ export function StakePanel({
           </div>
         </div>
       ) : null}
-    </div>
+    </Overlay>
   )
 }

@@ -9,6 +9,7 @@ import {
 } from '../chain/resources'
 import { buyRamAction, costOfBytes, fetchRamMarket, perMegabyte, type RamMarket } from '../chain/ram'
 import { isCancel, readableError } from '../../dao/chain/act'
+import { Overlay } from '../../components/Overlay'
 import { useSession } from '../../wallet/session'
 
 /**
@@ -227,16 +228,17 @@ function BuyRam({
   }
 
   return (
-    <section className="section ram-buy">
-      <div className="page__actions">
-        <h2 className="dao-h2">
+    <Overlay
+      title={
+        <>
           Add RAM to <code>{account}</code>
-        </h2>
-        <button className="btn" type="button" onClick={onClose} disabled={busy}>
-          Close
-        </button>
-      </div>
-
+        </>
+      }
+      subtitle={`${ram.share.toFixed(0)}% of ${fmtBytes(ram.quota)} used · ${fmtBytes(
+        ram.quota - ram.used,
+      )} free`}
+      onClose={busy ? () => undefined : onClose}
+    >
       {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
 
       <div className="ale-form">
@@ -284,8 +286,11 @@ function BuyRam({
         <button className="btn btn--go" type="button" disabled={!session || busy || !(bytes > 0)} onClick={buy}>
           {busy ? 'Signing…' : `Buy ${fmtBytes(bytes)}`}
         </button>
+        <button className="btn" type="button" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
         {!session ? <span className="dao-dim">Connect a wallet to buy RAM.</span> : null}
       </div>
-    </section>
+    </Overlay>
   )
 }
