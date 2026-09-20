@@ -8,8 +8,12 @@ import { useSession } from './session'
  * must not also be how you stop being it. One misplaced click on a control
  * people press to READ something and the session is gone. It opens a small menu
  * instead, and leaving is a deliberate second choice inside it.
+ *
+ * `compact` is the phone top bar, where the control sits next to a page title
+ * rather than under a menu: no full-width button, and the account shortened to
+ * its first few characters, which is enough to tell two wallets apart.
  */
-export function WalletButton() {
+export function WalletButton({ compact }: { compact?: boolean } = {}) {
   const { session, actor, busy, error, login, logout } = useSession()
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -30,17 +34,22 @@ export function WalletButton() {
 
   if (!session) {
     return (
-      <div className="wallet">
-        <button className="btn btn--block" type="button" onClick={() => void login()} disabled={busy}>
-          {busy ? 'Connecting…' : 'Connect wallet'}
+      <div className={`wallet${compact ? ' wallet--compact' : ''}`}>
+        <button
+          className={`btn${compact ? '' : ' btn--block'}`}
+          type="button"
+          onClick={() => void login()}
+          disabled={busy}
+        >
+          {busy ? 'Connecting…' : compact ? 'Connect' : 'Connect wallet'}
         </button>
-        {error ? <p className="wallet__error">{error}</p> : null}
+        {error && !compact ? <p className="wallet__error">{error}</p> : null}
       </div>
     )
   }
 
   return (
-    <div className="wallet" ref={root}>
+    <div className={`wallet${compact ? ' wallet--compact' : ''}`} ref={root}>
       <button
         className="wallet__who"
         type="button"
@@ -49,7 +58,7 @@ export function WalletButton() {
         onClick={() => setOpen((v) => !v)}
       >
         <span className="wallet__dot" aria-hidden="true" />
-        <span className="wallet__name">{actor}</span>
+        <span className="wallet__name">{compact ? String(actor).slice(0, 6) : actor}</span>
       </button>
 
       {open ? (

@@ -1,9 +1,10 @@
+import { useEffect, useState } from 'react'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Overview from './routes/Overview'
 import PoolStats from './routes/PoolStats'
 import ProjectOverview from './routes/ProjectOverview'
 import Stats from './routes/Stats'
-import { ThemeSwitch } from './components/ThemeSwitch'
+import { ThemeButton, ThemeSwitch } from './components/ThemeSwitch'
 import { SectionSwitcher } from './components/SectionSwitcher'
 import { WalletButton } from './wallet/WalletButton'
 import { PROJECTS } from './projects/defs'
@@ -36,6 +37,12 @@ import './dao/dao.css'
  * Two products, one site. They do NOT share a menu — see sections.ts — because
  * a single list mixing reward pools with council elections read as a pile of
  * unrelated reports. The sidebar switches instead.
+ *
+ * On a phone that sidebar becomes a drawer behind a top bar, which is the
+ * shape every app of this kind has settled on. It was a scrolling strip of
+ * links across the top, and the strip could not show the two levels this menu
+ * has — a section, and the councils inside it — so it flattened them into one
+ * row of twenty things.
  */
 export function App() {
   return (
@@ -52,6 +59,28 @@ export function App() {
 function Shell() {
   const { pathname } = useLocation()
   const section = sectionFor(pathname)
+  const [navOpen, setNavOpen] = useState(false)
+
+  /* Going somewhere is the end of using the menu. Without this the drawer sits
+     over the page you just asked for. */
+  useEffect(() => setNavOpen(false), [pathname])
+
+  /* The page behind a drawer must not scroll under it. */
+  useEffect(() => {
+    if (!navOpen) return
+    const held = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = held
+    }
+  }, [navOpen])
+
+  useEffect(() => {
+    if (!navOpen) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setNavOpen(false)
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [navOpen])
   /* Called unconditionally and on every page: a hook cannot be reached for only
      when the route happens to be a DAO. It returns nothing off those routes. */
   /* The DAO menu is built from the directory rather than written out, so when
@@ -62,7 +91,39 @@ function Shell() {
   const groups = context.length ? context : section.groups
 
   return (
-    <div className="shell">
+    <div className={`shell${navOpen ? ' is-navopen' : ''}`}>
+      {/* Phones only — see app.css. The sidebar is off screen there, so this
+          carries the one thing you always need (where am I, and how do I get
+          out) plus the two controls that were eating a third of the screen. */}
+      <header className="topbar">
+        <button
+          className="icon-btn topbar__menu"
+          type="button"
+          aria-label="Menu"
+          aria-expanded={navOpen}
+          onClick={() => setNavOpen(true)}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+          </svg>
+        </button>
+        <span className="topbar__title">{section.label}</span>
+        <div className="topbar__tools">
+          <WalletButton compact />
+          <ThemeButton />
+        </div>
+      </header>
+
+      {/* Tapping away from an open drawer closes it, which is the gesture
+          everybody tries first. */}
+      <button
+        className="scrim"
+        type="button"
+        tabIndex={navOpen ? 0 : -1}
+        aria-label="Close menu"
+        onClick={() => setNavOpen(false)}
+      />
+
       <aside className="side">
         {/* The brand and the top-level switch are one control: it says which
             tool you are in, and opens the list of the others. */}

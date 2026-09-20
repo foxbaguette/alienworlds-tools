@@ -213,68 +213,6 @@
   padding: var(--sp-8) var(--sp-8) 0;
 }
 
-@media (max-width: 859px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .side {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    flex-direction: row;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: var(--sp-3) var(--sp-4);
-    height: auto;
-    padding: var(--sp-3) var(--sp-4);
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .switcher {
-    order: 1;
-    flex: 0 1 230px;
-  }
-  /* Anchored to the switcher, which is no longer full width here. */
-  .switcher__menu {
-    right: auto;
-    min-width: 260px;
-  }
-  .nav {
-    order: 3;
-    display: flex;
-    gap: var(--sp-4);
-    width: 100%;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .nav__group {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-1);
-    flex: none;
-  }
-  .nav__label {
-    padding: 0 var(--sp-1) 0 0;
-    white-space: nowrap;
-  }
-  .nav a {
-    white-space: nowrap;
-  }
-  .nav a {
-    font-size: var(--fs-sm);
-    padding: 6px var(--sp-2);
-  }
-  .side__foot {
-    margin: 0 0 0 auto;
-  }
-  .side__foot .side__source {
-    display: none;
-  }
-  .content {
-    padding: var(--sp-5) var(--sp-4) 0;
-  }
-}
 
 /* ── Wallet ──────────────────────────────────────────────────────────────── */
 
@@ -351,15 +289,6 @@
 
 .wallet__error { font-size: var(--fs-xs); color: var(--critical); }
 
-@media (max-width: 859px) {
-  /* In the top bar the foot sits beside the brand, so the wallet menu hangs
-     DOWN from it rather than up off the top of the screen. */
-  .wallet__menu {
-    top: calc(100% + var(--sp-1));
-    bottom: auto;
-    min-width: 200px;
-  }
-}
 
 /* A council listed under its group. Indented and a shade quieter than the
    parent, so the list reads as "inside Syndicates" rather than as six more
@@ -382,17 +311,6 @@
 .nav__children a:hover { color: var(--text); }
 .nav__children a.active { color: var(--accent); background: var(--accent-soft); }
 
-@media (max-width: 859px) {
-  /* The sidebar is a scrolling top bar here; an indented tree would make it
-     two rows tall for no gain, so the children sit inline with their parent. */
-  .nav__item { display: flex; align-items: center; gap: var(--sp-1); }
-  .nav__children {
-    display: flex;
-    gap: var(--sp-1);
-    margin: 0;
-    padding-left: var(--sp-1);
-  }
-}
 
 /* How many things are waiting on you here. Only ever present when there ARE
    some, so it never has to show a zero and the menu stays quiet otherwise. */
@@ -412,7 +330,155 @@
   border-radius: var(--radius-full);
 }
 
-@media (max-width: 859px) {
-  /* Inline in the top bar, where there is no column to push it to. */
-  .nav__badge { margin-left: var(--sp-1); }
+/* ── Phones ──────────────────────────────────────────────────────────────── */
+/*
+ * The sidebar becomes a drawer behind a top bar.
+ *
+ * It used to become a scrolling strip of links across the top, and that could
+ * not show the two levels this menu has — a section, and the councils inside
+ * it — so twenty entries flattened into one row you had to swipe through. The
+ * drawer keeps the desktop menu exactly as it is, which is the one place the
+ * hierarchy already reads.
+ *
+ * Everything in here is the phone layout. Nothing below 860px keeps a desktop
+ * behaviour by accident: the bar and the scrim are display:none above it.
+ */
+
+.topbar,
+.scrim {
+  display: none;
 }
+
+/* A round control that is only an icon. Sized for a finger, not a cursor. */
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  flex: none;
+}
+.icon-btn svg { width: 20px; height: 20px; }
+.icon-btn:hover { color: var(--text); background: var(--surface-sunk); }
+.icon-btn:active { background: var(--border); }
+
+@media (max-width: 859px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 54px;
+    padding: 0 var(--sp-2) 0 var(--sp-1);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar__title {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--fs-md);
+    font-weight: 650;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar__tools {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+  }
+
+  /* The wallet in the bar is one control, not a block with a message under it. */
+  .wallet--compact { display: block; }
+  .wallet--compact .btn { min-height: 34px; padding: 0 var(--sp-3); }
+  .wallet--compact .wallet__who { width: auto; padding: var(--sp-1) var(--sp-2); }
+  .wallet--compact .wallet__menu { right: 0; left: auto; top: calc(100% + var(--sp-2)); bottom: auto; }
+
+  /* The drawer. Off screen until asked for, and over the page rather than
+     pushing it — a phone has no width to give away. */
+  .side {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(86vw, 300px);
+    height: 100dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 0 rgb(0 0 0 / 0%);
+  }
+  .is-navopen .side {
+    transform: none;
+    box-shadow: 18px 0 40px rgb(15 20 30 / 18%);
+  }
+
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    display: block;
+    padding: 0;
+    background: rgb(15 20 30 / 38%);
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+  }
+  .is-navopen .scrim { opacity: 1; pointer-events: auto; }
+
+  /* The top bar already carries the wallet and the theme, so the drawer's
+     foot would be a second copy of both — and it is the part of the drawer
+     that falls below the fold, which is the worst place for a control anyone
+     actually uses. */
+  .side__foot { display: none; }
+
+  .content { padding: var(--sp-4) var(--sp-4) 0; }
+
+  /* A phone headline does not need to be a poster. */
+  .page__title { font-size: 1.6rem; }
+  .page__lead { font-size: var(--fs-sm); }
+  .page__head { gap: var(--sp-3); }
+
+  /* A row of filters that wraps to four lines pushes the content it filters
+     off the screen. One line that scrolls, like every app's chip row. */
+  .page__actions > .sections,
+  .act-pick > .sections {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .page__actions > .sections::-webkit-scrollbar,
+  .act-pick > .sections::-webkit-scrollbar { display: none; }
+
+  /* Tables are wide by nature; let them scroll inside their own box rather
+     than stretching the page sideways. */
+  .dao-tablewrap { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+
+  /* Room for a thumb on anything that is pressed. */
+  .btn { min-height: 38px; }
+  .sections button { min-height: 34px; }
+  .pause-chip { min-height: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side,
+  .scrim { transition: none; }
+}
+
+/* The page column must be allowed to shrink, or a wide child sizes it and the
+   centring above turns into a horizontal scrollbar on the whole document. */
+.content { grid-template-columns: minmax(0, 1fr); }

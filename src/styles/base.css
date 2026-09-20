@@ -72,13 +72,22 @@ a:hover {
 
 /* ---------- page head ---------- */
 
+/*
+ * A grid item is min-width:auto by default, which means it refuses to be
+ * narrower than its contents — so one wide table made the whole page wider
+ * than the screen and the text ran off the side of a phone instead of the
+ * table scrolling inside its own box. The zeroes below are what let a child
+ * shrink and handle its own overflow.
+ */
 .page {
   display: grid;
   gap: var(--sp-6);
   width: 100%;
+  min-width: 0;
   max-width: 1240px;
   padding-bottom: var(--sp-10);
 }
+.page > * { min-width: 0; }
 
 .page__head {
   display: flex;
