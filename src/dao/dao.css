@@ -738,3 +738,7 @@
   .feed__row { grid-template-columns: 56px minmax(0, 1fr); }
   .feed__what { grid-column: 1 / -1; }
 }
+
+/* Toggled but not yet saved. The chip already says paused/running by colour,
+   so pending gets an outline instead of a third colour. */
+.pause-chip.is-changed { outline: 2px solid var(--accent); outline-offset: 1px; }
