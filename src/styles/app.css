@@ -48,6 +48,47 @@
   color: var(--text-3);
 }
 
+/*
+   The top level: which of the site's tools you are in. Above the menu and
+   visually heavier than it, because everything below is scoped by it.
+
+   Wraps rather than scrolls, so a third and fourth section just take a second
+   line instead of hiding off the edge.
+*/
+.sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  padding: 3px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.sections button {
+  flex: 1 1 auto;
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sections button:hover { color: var(--text); }
+
+/* The selected one is a raised surface, not just a colour: with two items a
+   colour alone reads as "this one is a link" rather than "you are here". */
+.sections button[aria-selected='true'] {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
 .nav {
   display: grid;
   gap: var(--sp-5);
@@ -113,6 +154,10 @@
     padding: var(--sp-3) var(--sp-4);
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+  .sections {
+    order: 2;
+    flex: none;
   }
   .nav {
     order: 3;

@@ -146,3 +146,124 @@
   border-radius: var(--radius-sm);
 }
 .dao-note--bad { color: var(--critical); background: transparent; border: 1px solid var(--critical); }
+
+/* ── Details ─────────────────────────────────────────────────────────────── */
+
+/* The tab strip reuses the section switcher's shape: same control, same
+   meaning — "what am I looking at" — one level further in. */
+.dao-tabs { margin-bottom: var(--sp-2); }
+.dao-tabs button { flex: 0 1 auto; }
+.dao-tabs--sm button { min-height: 26px; font-size: var(--fs-xs); font-weight: 500; }
+
+.dao-back {
+  margin-bottom: var(--sp-2);
+  padding: 0;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.dao-back:hover { color: var(--accent); }
+
+.dao-h2 {
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.dao-dim {
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-3);
+}
+/* In a cell the caption sits under the figure rather than beside it. */
+.dao-table td .dao-dim { display: block; margin-top: 2px; }
+
+.dao-tablewrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dao-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.dao-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dao-table td {
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--grid);
+  vertical-align: top;
+}
+.dao-table tr:last-child td { border-bottom: 0; }
+.dao-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.dao-table a { color: var(--text); text-decoration: none; }
+.dao-table a:hover { color: var(--accent); }
+.dao-table a.is-watched { color: var(--series-2); font-weight: 600; }
+.dao-table .is-enough { color: var(--good); }
+
+.dao-rowtitle { display: block; font-size: var(--fs-md); font-weight: 600; line-height: 1.3; }
+.dao-rowmeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.dao-rowmeta .dao-dim { display: inline; margin: 0; }
+.dao-rowid { font-size: var(--fs-xs); color: var(--text-3); }
+.dao-who { font-size: var(--fs-sm); color: var(--text-2); }
+
+.tag--in { color: var(--good); border: 1px solid var(--good); }
+
+/* One word, in the tone of what the state asks of you. */
+.wp-chip {
+  display: inline-block;
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  cursor: help;
+}
+.wp-chip.is-wait { color: var(--text-2); background: var(--surface-sunk); }
+.wp-chip.is-go   { color: var(--accent); background: var(--accent-soft); }
+.wp-chip.is-work { color: var(--series-1); background: var(--accent-soft); }
+.wp-chip.is-done { color: var(--good); border: 1px solid var(--good); }
+.wp-chip.is-dead { color: var(--text-3); border: 1px solid var(--border-strong); }
+.wp-chip.is-bad  { color: var(--critical); border: 1px solid var(--critical); }
+
+/* The only prose on the page, so it gets a measure it can be read at. */
+.wp-summary {
+  max-width: 62ch;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.wp-pay b { font-size: var(--fs-md); }
+.wp-when { white-space: nowrap; color: var(--text-2); }
+
+.btn--tiny {
+  min-height: 24px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  text-decoration: none;
+}
