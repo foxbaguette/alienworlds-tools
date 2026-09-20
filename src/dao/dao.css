@@ -454,6 +454,30 @@
   border-radius: var(--radius-sm);
 }
 .redirect .dao-dim { display: inline; }
+.redirect p { margin: 0; }
+.redirect p + p { margin-top: var(--sp-3); }
+
+/* The outward leg. Bordered on the leading edge so the pair reads as
+   money in / money out rather than as two unrelated notes. */
+.redirect--out { border-left: 3px solid var(--accent); }
+
+.tap-form { margin-top: var(--sp-4); display: grid; gap: var(--sp-3); }
+.tap-form .ale-form { margin: 0; }
+
+/* What is waiting on the connected account, spelling out the sidebar badge. */
+.todo-note ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-4); display: grid; gap: 2px; }
+.todo-note li { line-height: 1.5; }
+
+/* How much of a candidate's vote power the chain still counts. Quiet, and a
+   suffix rather than a second column: the headline is the support they have. */
+.council__decay {
+  margin-left: var(--sp-1);
+  font-size: var(--fs-xs);
+  font-style: normal;
+  color: var(--text-3);
+}
+
+
 
 /* A council member this account voted for. Marked rather than coloured: the
    colours on this list already mean other things — watched, at risk — and a

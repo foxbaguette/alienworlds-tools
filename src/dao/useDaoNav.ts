@@ -47,9 +47,18 @@ export function useDaoNav(pathname: string): NavGroup[] {
   if (!pathname.startsWith('/daos')) return []
 
   const daos = peekDaos()
-  const child = (id: string, label: string) => ({ to: `/daos/${id}`, label, badge: todo.get(id) })
+  const child = (id: string, label: string) => ({
+    to: `/daos/${id}`,
+    label,
+    badge: todo.get(id)?.n,
+    badgeWhy: todo.get(id)?.why,
+  })
   /* One number for the whole group, since that page spans every council. */
-  const across = [...todo.values()].reduce((a, b) => a + b, 0)
+  const across = [...todo.values()].reduce((a, t) => a + t.n, 0)
+  const acrossWhy = [...todo.entries()].flatMap(([id, t]) => {
+    const name = daos.find((d) => d.id === id)?.title ?? id
+    return t.why.map((line) => `${name}: ${line}`)
+  })
 
   const groups: NavGroup[] = [
     {
@@ -69,7 +78,14 @@ export function useDaoNav(pathname: string): NavGroup[] {
     },
     {
       label: 'Across all councils',
-      tools: [{ to: '/daos/proposals', label: 'All proposals', badge: across || undefined }],
+      tools: [
+        {
+          to: '/daos/proposals',
+          label: 'All proposals',
+          badge: across || undefined,
+          badgeWhy: across ? acrossWhy : undefined,
+        },
+      ],
     },
   ]
 

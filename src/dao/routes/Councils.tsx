@@ -4,7 +4,7 @@ import { Countdown } from '../components/Countdown'
 import { WATCHED, heldByWatched, isMcControlled, type Dao, type DaoGroup } from '../chain/daos'
 import { castableSlate, groupVotes, voteAction, type Slate, type VoteRow } from '../chain/votes'
 import { isCancel, readableError, type ChainAction } from '../chain/act'
-import { EXPLORER, decayedPower, fmtAge, fmtAmount, fmtPower } from '../format'
+import { EXPLORER, decayedPower, fmtAge, fmtAmount, fmtPower, rawPower } from '../format'
 import { useDaos } from '../useDaos'
 import { useVotes } from '../useVotes'
 import { RefreshButton } from '../components/RefreshButton'
@@ -225,10 +225,15 @@ function DaoCard({
                seat if a period runs before the votes move. */
             const risk = dao.atRisk.has(name)
             const place = dao.rankOf.get(name)
-            /* The decayed figure, which is the one the chain seats people on —
-               see decayedPower. The raw total_vote_power never ages. */
+            /* The vote power behind them — the sum of their voters' balances.
+               The chain SEATS people on the decayed figure instead, which is a
+               much smaller number, so that is shown beside it rather than in
+               place of it: one says how much support there is, the other says
+               how much of it still counts today. */
             const cand = dao.candidates.find((c) => c.candidate_name === name)
-            const power = cand ? decayedPower(cand.rank, dao.precision) : 0
+            const power = cand ? rawPower(cand.total_vote_power, dao.precision) : 0
+            const counted = cand ? decayedPower(cand.rank, dao.precision) : 0
+            const decay = power > 0 ? Math.max(0, 100 - (counted / power) * 100) : 0
             return (
               <li key={name}>
                 <a
@@ -257,9 +262,14 @@ function DaoCard({
                 {power > 0 ? (
                   <span
                     className="council__power"
-                    title={`${fmtPower(power)} ${dao.symbol} of vote power, decayed — halving every 30 days of vote age`}
+                    title={
+                      `${fmtPower(power)} ${dao.symbol} voted onto them, from ${cand?.number_voters ?? 0} ` +
+                      `account${cand?.number_voters === 1 ? '' : 's'}. ` +
+                      `The chain counts ${fmtPower(counted)} of it today — votes halve every 30 days of age.`
+                    }
                   >
                     {fmtPower(power)}
+                    {decay >= 1 ? <i className="council__decay">&minus;{decay.toFixed(0)}%</i> : null}
                   </span>
                 ) : null}
               </li>

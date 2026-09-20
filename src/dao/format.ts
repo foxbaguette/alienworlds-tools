@@ -93,6 +93,17 @@ export function decayedPower(rank: string | number, precision: number, now = Dat
 }
 
 /** Short enough to sit in a card's list without pushing the name around. */
+/**
+ * The vote power a candidate actually holds: the sum of the balances behind
+ * every account that voted for them, in the DAO's own token.
+ *
+ * This is the number people mean by "vote power". decayedPower above is a
+ * different thing — it is what the CHAIN seats people on, and it can be an
+ * order of magnitude smaller, because it discounts votes by their age.
+ */
+export const rawPower = (total: string | number, precision: number): number =>
+  Number(total) / 10 ** precision
+
 export function fmtPower(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—'
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`

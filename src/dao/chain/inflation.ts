@@ -28,6 +28,12 @@ export interface Redirect {
   percent: number | null
   /** TLM a day, averaged over the claims seen. */
   perDay: number
+  /**
+   * TLM a day the same split sends to `m.federation` to pay for mining on
+   * this planet — the 80% leg. Not the union’s money, but it is the base the
+   * planet tap takes its percentage OF, so it is what turns "35%" into TLM.
+   */
+  miningPerDay: number | null
   /** How many daily claims that average is over. */
   days: number
 }
@@ -39,6 +45,7 @@ interface HistoryAction {
 }
 
 const CLAIM_MEMO = 'DAC claim'
+const MINING_MEMO = 'Mining allocation'
 
 /**
  * The redirect feeding one union, or null if it cannot be established.
@@ -72,6 +79,7 @@ export async function fetchRedirect(dao: Dao): Promise<Redirect | null> {
   /* The share, from the transaction the newest claim was part of. */
   let percent: number | null = null
   let planet: string | null = null
+  let miningPerDay: number | null = null
   const trx = await historyGet<{ actions?: HistoryAction[] }>('/v2/history/get_transaction', {
     id: claims[0].trx_id,
   }).catch(() => null)
@@ -79,6 +87,7 @@ export async function fetchRedirect(dao: Dao): Promise<Redirect | null> {
   if (trx?.actions) {
     let total = 0
     let share = 0
+    let mining = 0
     for (const a of trx.actions) {
       if (a.act.name === 'claim') {
         const p = (a.act.data as { planet_name?: string }).planet_name
@@ -89,9 +98,14 @@ export async function fetchRedirect(dao: Dao): Promise<Redirect | null> {
       const amt = Number(a.act.data.amount ?? 0)
       total += amt
       if (a.act.data.to === to) share = amt
+      if (a.act.data.memo === MINING_MEMO) mining = amt
     }
     if (total > 0 && share > 0) percent = (share / total) * 100
+    /* Scaled by the averaged daily claim rather than taken raw, so the mining
+       leg is averaged over the same week as the union’s own. The two are fixed
+       fractions of one number, so their ratio holds on any day. */
+    if (share > 0 && mining > 0) miningPerDay = (mining / share) * perDay
   }
 
-  return { to, planet, percent, perDay, days: window.length }
+  return { to, planet, percent, perDay, miningPerDay, days: window.length }
 }

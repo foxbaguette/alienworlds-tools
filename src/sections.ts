@@ -22,6 +22,12 @@ export interface NavItem {
    * as "zero" and the menu stays quiet when there is nothing to say.
    */
   badge?: number
+  /**
+   * What the badge is made of, one line each, shown on hover. A number nobody
+   * can account for is worse than no number: the council's own proposals can
+   * all be settled while three worker proposals wait on a vote.
+   */
+  badgeWhy?: string[]
 }
 
 export interface NavGroup {

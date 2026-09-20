@@ -21,11 +21,16 @@ import {
   type WorkerData,
   type WorkerProposal,
 } from '../chain/worker'
-import { EXPLORER, fmtAge, fmtAmount, fmtDays, isoDay } from '../format'
+import { EXPLORER, fmtAge, fmtAmount, fmtDays, fmtPower as fmtNumber, isoDay, rawPower } from '../format'
 import { daoById, useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
 import { ensureProposals, ensureWorker, proposalsOf, useProposalCaches, workerOf } from '../useProposals'
 import { fetchRedirect, type Redirect } from '../chain/inflation'
+import { TAP_MAX_X100, fetchTap, fmtRate, planetOf, tapSetAction, type Tap } from '../chain/tap'
+import { PROPOSAL_DAYS, proposeAction } from '../chain/propose'
+import { isCancel, readableError, type ChainAction } from '../chain/act'
+import { todoFor } from '../useTodo'
+import { useSession } from '../../wallet/session'
 
 type Tab = 'council' | 'proposals' | 'worker'
 
@@ -105,11 +110,48 @@ export default function DaoDetails() {
         ))}
       </div>
 
-      {hasWorkerProposals(dao) ? <RedirectPanel dao={dao} /> : null}
+      <TodoNote dao={dao} />
+
+      {hasWorkerProposals(dao) ? (
+        <>
+          <RedirectPanel dao={dao} />
+          <TapPanel dao={dao} />
+        </>
+      ) : null}
 
       {shown === 'council' ? <CouncilTab dao={dao} /> : null}
       {shown === 'proposals' ? <ProposalsTab dao={dao} /> : null}
       {shown === 'worker' ? <WorkerTab dao={dao} /> : null}
+    </div>
+  )
+}
+
+/**
+ * What is waiting on the connected account here, spelled out.
+ *
+ * The sidebar badge is a number, and a number on its own invites the question
+ * this answers. It is quiet when there is nothing, and it says WHAT rather than
+ * how many, because the tab a thing lives on is not obvious from the count —
+ * a council with every proposal executed can still owe three worker votes.
+ */
+function TodoNote({ dao }: { dao: Dao }) {
+  const { actor } = useSession()
+  /* Recomputed as the caches fill; the tabs below are what fills them. */
+  const version = useProposalCaches()
+  void version
+  const todo = todoFor(dao, actor)
+  if (!todo.n) return null
+
+  return (
+    <div className="dao-note todo-note">
+      <b>
+        {todo.n} thing{todo.n === 1 ? '' : 's'} waiting on {actor}
+      </b>
+      <ul>
+        {todo.why.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -158,6 +200,230 @@ function RedirectPanel({ dao }: { dao: Dao }) {
         what funds this union&rsquo;s proposals.
       </span>
     </p>
+  )
+}
+
+/**
+ * Where the union sends part of its planet's mining game.
+ *
+ * The mirror of the panel above: that one is the union's income, this is a
+ * standing order it controls that pays somebody else. m.federation skims a
+ * percentage off the planet's mining rewards into a bucket, and the destination
+ * empties the bucket whenever it likes — so "waiting to be collected" is a fact
+ * about the destination's housekeeping rather than about the union.
+ *
+ * Only the union can change it, and only through its council: every pltdtapset
+ * on chain is signed by the union's owner account. So what is offered here is a
+ * PROPOSAL, not a write.
+ */
+function TapPanel({ dao }: { dao: Dao }) {
+  const { session, actor } = useSession()
+  const [tap, setTap] = useState<Tap | null>(null)
+  const [mining, setMining] = useState<number | null>(null)
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+
+  const planet = planetOf(dao)
+
+  useEffect(() => {
+    if (!planet) return
+    let alive = true
+    setTap(null)
+    setMining(null)
+    setOpen(false)
+    void fetchTap(planet)
+      .then((t) => alive && setTap(t))
+      .catch((err) => console.error('tap:', err))
+    /* The mining leg of the daily inflation split is the number the tap takes
+       its percentage of. Read here rather than handed down from the income
+       panel: the two are independent, and one failing should not blank the
+       other. */
+    void fetchRedirect(dao)
+      .then((r) => alive && setMining(r?.miningPerDay ?? null))
+      .catch((err) => console.error('tap basis:', err))
+    return () => {
+      alive = false
+    }
+  }, [dao.id, planet])
+
+  if (!planet || !tap) return null
+
+  const perDay = mining != null ? (mining * tap.rateX100) / 10_000 : null
+  const seated = actor ? dao.custodians.includes(actor) : false
+
+  const propose = async (rateX100: number, destination: string, title: string, description: string) => {
+    if (!session || busy) return
+    setBusy(true)
+    setNote({ text: 'Building the proposal — check your wallet…' })
+    try {
+      const action: ChainAction = await proposeAction(session, dao, tapSetAction([], planet, rateX100, destination), {
+        title,
+        description,
+      })
+      await session.transact({ actions: [action] }, { broadcast: true })
+      setOpen(false)
+      setNote({
+        text: `Proposed. The council has ${PROPOSAL_DAYS} days to sign it, and ${dao.approvalThreshold} signatures execute it.`,
+      })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error('tap proposal failed:', err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="dao-note redirect redirect--out">
+      <p>
+        <b>{fmtRate(tap.rateX100)}</b> of <code>{planet}</code>&rsquo;s mining rewards are redirected to{' '}
+        <code>{tap.destination ?? 'nobody'}</code>
+        {perDay != null ? (
+          <>
+            {' '}
+            — about <b>{Math.trunc(perDay).toLocaleString('en-US')} TLM</b> a day.
+          </>
+        ) : null}
+        <span className="dao-dim">
+          {' '}
+          {tap.rateX100 >= TAP_MAX_X100
+            ? `That is the most the contract allows (${fmtRate(TAP_MAX_X100)}).`
+            : `The contract allows up to ${fmtRate(TAP_MAX_X100)}.`}{' '}
+          {tap.bucket > 0
+            ? `${Math.trunc(tap.bucket).toLocaleString('en-US')} TLM has been skimmed and not collected yet.`
+            : 'Nothing is sitting uncollected.'}
+        </span>
+      </p>
+
+      {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
+
+      {open ? (
+        <TapForm dao={dao} tap={tap} mining={mining} busy={busy} onCancel={() => setOpen(false)} onPropose={propose} />
+      ) : (
+        <p className="page__actions">
+          <button className="btn" type="button" disabled={!session} onClick={() => setOpen(true)}>
+            Propose a change
+          </button>
+          <span className="dao-dim">
+            {!session
+              ? 'Connect a wallet to propose a change.'
+              : seated
+                ? `Raises a council proposal — ${dao.approvalThreshold} signatures execute it.`
+                : `Anyone may raise it; ${dao.approvalThreshold} council signatures execute it.`}
+          </span>
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The form behind "propose a change".
+ *
+ * pltdtapset sets the rate and the destination together — there is no action
+ * for one without the other — so both fields start at what is on chain, and an
+ * untouched one re-states the current value rather than clearing it.
+ */
+function TapForm({
+  dao,
+  tap,
+  mining,
+  busy,
+  onCancel,
+  onPropose,
+}: {
+  dao: Dao
+  tap: Tap
+  mining: number | null
+  busy: boolean
+  onCancel: () => void
+  onPropose: (rateX100: number, destination: string, title: string, description: string) => void
+}) {
+  /* Percent in the form, hundredths on chain: nobody thinks in x100. */
+  const [percent, setPercent] = useState(String(tap.rateX100 / 100))
+  const [destination, setDestination] = useState(tap.destination ?? '')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+
+  const rateX100 = Math.round(Number(percent) * 100)
+  const badRate = !percent.trim() || !Number.isFinite(rateX100) || rateX100 < 0 || rateX100 > TAP_MAX_X100
+  const badName = !/^[a-z1-5.]{1,13}$/.test(destination)
+  const unchanged = rateX100 === tap.rateX100 && destination === tap.destination
+  const preview = mining != null && !badRate ? (mining * rateX100) / 10_000 : null
+
+  /* A default that says what the proposal does, so a council reading a list of
+     titles can tell one tap change from another without opening it. */
+  const fallbackTitle = `Redirect ${badRate ? '?' : fmtRate(rateX100)} of ${tap.planet} mining to ${destination || '…'}`
+
+  return (
+    <div className="tap-form">
+      <div className="ale-form">
+        <label className="ale-field">
+          <span className="ale-field__name">
+            Share<i>0 to {fmtRate(TAP_MAX_X100)}, the contract&rsquo;s ceiling</i>
+          </span>
+          <input
+            type="number"
+            min={0}
+            max={TAP_MAX_X100 / 100}
+            step={0.01}
+            value={percent}
+            onChange={(e) => setPercent(e.target.value)}
+          />
+        </label>
+        <label className="ale-field">
+          <span className="ale-field__name">
+            Destination<i>the account the skim is paid to</i>
+          </span>
+          <input type="text" value={destination} onChange={(e) => setDestination(e.target.value.trim())} />
+        </label>
+      </div>
+
+      <p className="dao-dim">
+        {badRate
+          ? `A share has to be between 0 and ${fmtRate(TAP_MAX_X100)}.`
+          : badName
+            ? 'That is not a valid WAX account name.'
+            : unchanged
+              ? 'That is what the tap is set to already.'
+              : preview != null
+                ? `Would send about ${Math.trunc(preview).toLocaleString('en-US')} TLM a day to ${destination}.`
+                : `Would set the tap to ${fmtRate(rateX100)}, paid to ${destination}.`}
+      </p>
+
+      <div className="ale-form">
+        <label className="ale-field">
+          <span className="ale-field__name">
+            Title<i>what the council sees in its list</i>
+          </span>
+          <input type="text" value={title} placeholder={fallbackTitle} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+      </div>
+      <label className="ale-field">
+        <span className="ale-field__name">
+          Why<i>the case for the change</i>
+        </span>
+        <textarea rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </label>
+
+      <div className="page__actions">
+        <button
+          className="btn btn--go"
+          type="button"
+          disabled={busy || badRate || badName || unchanged || !description.trim()}
+          onClick={() => onPropose(rateX100, destination, title.trim() || fallbackTitle, description.trim())}
+        >
+          {busy ? 'Signing…' : `Propose to ${dao.title}`}
+        </button>
+        <button className="btn" type="button" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -522,11 +788,4 @@ function Account({ name, plain }: { name: string; plain?: boolean }) {
 }
 
 /** Vote power is a running sum of balances, in this DAO's own token. */
-function fmtPower(raw: string, dao: Dao): string {
-  const n = Number(raw) / 10 ** dao.precision
-  if (!Number.isFinite(n)) return '—'
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`
-  return n.toFixed(0)
-}
+const fmtPower = (raw: string, dao: Dao): string => fmtNumber(rawPower(raw, dao.precision))
