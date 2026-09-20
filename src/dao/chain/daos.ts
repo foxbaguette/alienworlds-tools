@@ -51,19 +51,17 @@ export const WATCHED = new Set(['5thba.wam', '42lra.wam', 't1dbe.wam', 'fgaqa.c.
 export const CONTROL_THRESHOLD = 3
 
 /**
- * Whether an account is Mission Control's.
+ * Whether an account belongs to the Mission Control TEAM — which is the list
+ * above and nothing else.
  *
- * Known two different ways, and the difference matters.
- *
- * The `.mc` suffix is CONCLUSIVE. An Antelope name with a suffix can only be
- * created by the account owning that suffix, so `vote1.mc`, `rewards.mc` and
- * `shards.mc` are Mission Control's by construction rather than by assumption
- * — no list to maintain, and a new one is recognised the day it appears.
- *
- * The wallets in WATCHED are not. Nothing on chain relates them; that half is
- * hand-supplied and no more reliable than whoever supplied it.
+ * Deliberately not the `.mc` suffix. That suffix is conclusive about ownership
+ * — an Antelope name with one can only be created by the account owning it, so
+ * `vote1.mc` and `shards.mc` are Mission Control's beyond doubt — but they are
+ * the product's own accounts, not people on the team, and tagging them put the
+ * mark on three voting accounts where the question being asked was who is
+ * behind a candidate.
  */
-export const isMissionControl = (name: string) => WATCHED.has(name) || /\.mc$/.test(name)
+export const isMissionControl = (name: string) => WATCHED.has(name)
 
 export type DaoGroup = 'syndicate' | 'union'
 
