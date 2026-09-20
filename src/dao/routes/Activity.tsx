@@ -15,7 +15,12 @@ import {
   type Activity as Row,
   type Flip,
 } from '../chain/activity'
-import { fetchStandings, type Standing, type Standings as StandingsData } from '../chain/standings'
+import {
+  fetchStandings,
+  glanceAll,
+  type Standing,
+  type Standings as StandingsData,
+} from '../chain/standings'
 import { McTag } from '../components/Tags'
 import { EXPLORER } from '../format'
 import { daoById, useDaos } from '../useDaos'
@@ -59,7 +64,10 @@ export default function Activity() {
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(true)
   const [lastAt, setLastAt] = useState<number | null>(null)
-  const [symbol, setSymbol] = useState('all')
+  /* ONE control for the page: it chooses which council the standings are for
+     AND what the feed is filtered to. They were two, and switching twice to
+     look at one council is not a thing anybody wants to do. */
+    const [symbol, setSymbol] = useState('all')
   /* Payouts off by default: they are most of the volume and none of the point. */
   const [groups, setGroups] = useState<Set<Group>>(new Set(['exchanges', 'votes', 'delays']))
   const [bigOnly, setBigOnly] = useState(false)
@@ -153,7 +161,7 @@ export default function Activity() {
     return out
   }, [daos])
 
-  const symbols = useMemo(() => [...new Set(daos.map((d) => d.symbol).filter(Boolean))], [daos])
+  const picked = symbol === 'all' ? null : (daos.find((d) => d.symbol === symbol) ?? null)
 
   /** The DAC a row is about, which a transfer only says through its symbol. */
   const daoOf = (r: Row): Dao | undefined =>
@@ -223,20 +231,30 @@ export default function Activity() {
         </div>
       </header>
 
-      <Standings daos={daos} />
+      <div className="page__actions act-pick">
+        <div className="sections" role="tablist">
+          <button type="button" role="tab" aria-selected={symbol === 'all'} onClick={() => setSymbol('all')}>
+            Every council
+          </button>
+          {daos.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              role="tab"
+              aria-selected={symbol === d.symbol}
+              title={d.title}
+              onClick={() => setSymbol(d.symbol)}
+            >
+              {d.symbol}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <Standings daos={daos} dao={picked} onPick={setSymbol} />
 
       <section className="section">
         <div className="page__actions">
-          <div className="sections" role="tablist">
-            <button type="button" role="tab" aria-selected={symbol === 'all'} onClick={() => setSymbol('all')}>
-              Every token
-            </button>
-            {symbols.map((s) => (
-              <button key={s} type="button" role="tab" aria-selected={symbol === s} onClick={() => setSymbol(s)}>
-                {s}
-              </button>
-            ))}
-          </div>
           {(Object.keys(GROUPS) as Group[]).map((g) => (
             <label key={g} className={`pause-chip${groups.has(g) ? ' is-target' : ''}`}>
               <input type="checkbox" checked={groups.has(g)} onChange={() => toggle(g)} />
@@ -344,23 +362,18 @@ export default function Activity() {
 /**
  * Who would take the seats if a period ran now.
  *
- * Above the feed on purpose: the feed says what moved, this says what it moved
- * TOWARDS, and a vote is hard to read without the standing it changes.
- *
- * Its own council picker rather than following the token filter below. The two
- * answer different questions — "what is happening across all twelve" and "who
- * is winning this one" — and tying them would mean you could not ask both.
+ * Follows the page's council rather than holding a selector of its own. With
+ * one picked it costs a handful of reads — balances, stakes, delays — and shows
+ * them; with none picked it shows every council instead, which costs nothing at
+ * all, because the ranks arrive with the directory and the seating order is a
+ * sort of what is already in hand.
  */
-function Standings({ daos }: { daos: Dao[] }) {
-  const [id, setId] = useState<string | null>(null)
+function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick: (symbol: string) => void }) {
   const [data, setData] = useState<StandingsData | null>(null)
   const [reading, setReading] = useState(false)
 
-  /* Whichever council is first in the directory, until somebody picks. */
-  const dao = daoById(daos, id ?? '') ?? daos[0]
-
   useEffect(() => {
-    if (!dao) return
+    if (!dao) return setData(null)
     let alive = true
     setReading(true)
     setData(null)
@@ -379,28 +392,14 @@ function Standings({ daos }: { daos: Dao[] }) {
     }
   }, [dao?.id, dao?.candidates.length])
 
-  if (!dao) return null
+  if (!daos.length) return null
+  if (!dao) return <AllCouncils daos={daos} onPick={onPick} />
 
   return (
     <section className="section">
-      <div className="page__actions">
-        <h2 className="dao-h2">
-          Would be elected <span className="dao-dim">{dao.title}</span>
-        </h2>
-        <div className="sections" role="tablist">
-          {daos.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              role="tab"
-              aria-selected={d.id === dao.id}
-              onClick={() => setId(d.id)}
-            >
-              {d.symbol}
-            </button>
-          ))}
-        </div>
-      </div>
+      <h2 className="dao-h2">
+        Would be elected <span className="dao-dim">{dao.title}</span>
+      </h2>
 
       <div className="dao-tablewrap">
         <table className="dao-table stand-table">
@@ -446,6 +445,79 @@ function Standings({ daos }: { daos: Dao[] }) {
           ) : null}
         </p>
       ) : null}
+    </section>
+  )
+}
+
+/**
+ * Every council at once, when none is picked.
+ *
+ * The question it answers is which one to look INTO: a council whose last seat
+ * is held by a hair is where the next vote matters, and a council whose
+ * standing no longer matches its custodians is already mid-change. Both come
+ * out of the directory, so this costs no reads and a row opens the detail.
+ */
+function AllCouncils({ daos, onPick }: { daos: Dao[]; onPick: (symbol: string) => void }) {
+  const rows = useMemo(() => glanceAll(daos), [daos])
+
+  return (
+    <section className="section">
+      <h2 className="dao-h2">
+        Would be elected <span className="dao-dim">every council — pick one above for the detail</span>
+      </h2>
+
+      <div className="dao-tablewrap">
+        <table className="dao-table stand-table">
+          <thead>
+            <tr>
+              <th>Council</th>
+              <th className="num">Seats</th>
+              <th>Would be elected</th>
+              <th className="num">Last seat holds by</th>
+              <th>Changes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((g) => (
+              <tr key={g.dao.id} className="is-clickable" onClick={() => onPick(g.dao.symbol)}>
+                <td>
+                  <b className="dao-rowtitle">{g.dao.title}</b>
+                  <span className="dao-rowmeta">
+                    <span className="dao-rowid">{g.dao.symbol}</span>
+                  </span>
+                </td>
+                <td className="num">{g.seats}</td>
+                <td className="stand-names">
+                  {g.elected.map((n) => (
+                    <span key={n} className={g.incoming.includes(n) ? 'is-incoming' : undefined}>
+                      {n}
+                      <McTag name={n} />
+                    </span>
+                  ))}
+                </td>
+                <td className="num" title={g.next ? `${g.next} is next in line` : 'Nobody else is standing'}>
+                  {g.next ? fmtTokens(g.margin) : <span className="dao-dim">unopposed</span>}
+                  {g.next ? <span className="dao-dim">over {g.next}</span> : null}
+                </td>
+                <td>
+                  {g.incoming.length || g.leaving.length ? (
+                    <span className="tag tag--bad" title={`${g.leaving.join(', ')} out, ${g.incoming.join(', ')} in`}>
+                      {g.incoming.length} would change
+                    </span>
+                  ) : (
+                    <span className="dao-dim">settled</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="dao-dim">
+        Ordered as the directory lists them. <b>Last seat holds by</b> is the vote power between the final seat
+        and the first candidate who would miss it — the smaller it is, the less it takes to change the council.
+      </p>
     </section>
   )
 }

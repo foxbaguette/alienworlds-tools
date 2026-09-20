@@ -1096,3 +1096,11 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
    this table: elsewhere a dim span in a number cell is a suffix, and "2/2"
    must not become two lines. */
 .stand-table td.num .dao-dim { display: block; font-size: var(--fs-xs); }
+
+/* The one control for the page: which council the standings are for, and what
+   the feed is filtered to. */
+.act-pick { margin-bottom: var(--sp-4); }
+
+/* The five names a council would seat, in a cell. */
+.stand-names { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-3); font-size: var(--fs-sm); }
+.stand-names .is-incoming { color: var(--good); font-weight: 600; }
