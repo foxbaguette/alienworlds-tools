@@ -769,6 +769,30 @@
 
 .feed__what { color: var(--text-2); }
 
+/*
+ * An account name inside a row, wherever it is not the row's own subject: who
+ * a vote was cast for, and the council an election seated.
+ *
+ * Neutral, like the names in `.feed__who` already are, and for a reason the
+ * palette states about itself — `--accent` and `--watched` are two shades of
+ * the same blue, close enough that hue alone cannot tell them apart. A page
+ * whose links are accent-blue is therefore a page where seven hundred ordinary
+ * wallets look like the handful marked Mission Control, and the marking stops
+ * meaning anything.
+ *
+ * So on this feed blue means Mission Control and nothing else. A name is told
+ * apart from the sentence around it by being DARKER and heavier than it, which
+ * is a difference nobody has to be taught, and it still turns accent on hover
+ * where being clickable is the thing worth saying.
+ */
+.feed__what a,
+.xch-council a {
+  color: var(--text);
+  font-weight: 500;
+}
+.feed__what a:hover,
+.xch-council a:hover { color: var(--accent); }
+
 /* A cleared dungeon is the one event worth colouring; everything else is
    activity rather than an outcome. */
 .feed__row.is-go { border-left-color: var(--good); }
