@@ -366,6 +366,20 @@ export default function Overview() {
 }
 
 /** What the shop's WAX bought, largest first. */
+/**
+ * Where a shop item sits in the size order, or last if it has no size.
+ *
+ * Matched on a trailing word so "Gem Pack XL" is XL and something merely
+ * containing an "s" is not. XL is checked before L for the same reason.
+ */
+const SIZES = ['S', 'M', 'L', 'XL']
+
+function sizeRank(label: string): number {
+  const m = /\b(XL|L|M|S)\s*$/i.exec(label.trim())
+  if (!m) return SIZES.length
+  return SIZES.indexOf(m[1].toUpperCase())
+}
+
 function ShopItems({ purchases }: { purchases: ShopPurchase[] }) {
   const [names, setNames] = useState<Record<string, string>>({})
   useEffect(() => {
@@ -387,8 +401,19 @@ function ShopItems({ purchases }: { purchases: ShopPurchase[] }) {
       r.buyers.add(p.wallet)
       by.set(p.item, r)
     }
-    return [...by.values()].sort((a, b) => b.wax - a.wax)
-  }, [purchases])
+    /* By pack size, not by revenue.
+       These are one product in four sizes, so the order people expect is the
+       order they come in - and sorting by WAX put XL between M and S, which
+       reads as a mistake even though the numbers were right. Anything whose
+       name does not end in a known size keeps the revenue ordering, after the
+       sized ones. */
+    return [...by.values()].sort((x, y) => {
+      const rx = sizeRank(names[x.item] ?? x.item)
+      const ry = sizeRank(names[y.item] ?? y.item)
+      if (rx !== ry) return rx - ry
+      return y.wax - x.wax
+    })
+  }, [purchases, names])
   const total = rows.reduce((n, r) => n + r.wax, 0)
   if (!rows.length) return null
   return (

@@ -2,84 +2,21 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   durationDays,
-  fetchAllocations,
-  fetchAllocators,
   fetchPointsConfig,
   fundingShare,
   points,
   shards,
   spendOf,
-  type Allocation,
-  type Allocator,
   type PointsConfig,
 } from '../chain/allocators'
-import { start } from '../chain/nodes'
 import { EXPLORER, fmtAge, isoDay } from '../format'
-
-/**
- * Point allocators, loaded once and shared between the list and the details.
- *
- * Shares are apportioned across ALL allocators, so a details page cannot work
- * from its own allocator alone — it needs every allocator's allocations to know
- * what fraction of a recipient's funding this one provides.
- */
-interface Store {
-  allocators: Allocator[]
-  allocations: Map<string, Allocation[]>
-  loading: boolean
-  error: string | null
-}
-
-let store: Store = { allocators: [], allocations: new Map(), loading: false, error: null }
-let inFlight: Promise<void> | null = null
-const listeners = new Set<(s: Store) => void>()
-
-function publish(next: Partial<Store>) {
-  store = { ...store, ...next }
-  for (const fn of listeners) fn(store)
-}
-
-function load(): Promise<void> {
-  if (inFlight) return inFlight
-  if (store.allocators.length) return Promise.resolve()
-
-  publish({ loading: true, error: null })
-  inFlight = (async () => {
-    if (!(await start())) throw new Error('No WAX node answered.')
-    const allocators = await fetchAllocators()
-    publish({ allocators })
-    const pairs = await Promise.all(
-      allocators.map(async (a) => [a.allocator, await fetchAllocations(a.allocator).catch(() => [])] as const),
-    )
-    publish({ allocations: new Map(pairs), loading: false })
-  })()
-    .catch((err: unknown) => {
-      console.error('Could not read the allocators:', err)
-      publish({ loading: false, error: err instanceof Error ? err.message : String(err) })
-    })
-    .finally(() => {
-      inFlight = null
-    })
-
-  return inFlight
-}
-
-function useAllocators() {
-  const [state, setState] = useState(store)
-  useEffect(() => {
-    listeners.add(setState)
-    void load()
-    return () => {
-      listeners.delete(setState)
-    }
-  }, [])
-  return state
-}
+import { useAllocators, type Signers } from '../useAllocators'
+import { useSession } from '../../wallet/session'
 
 /* ---------- the list ---------- */
 
 export default function MsigGroups() {
-  const { allocators, loading, error } = useAllocators()
+  const { allocators, signers, loading, error, refresh } = useAllocators()
 
   return (
     <div className="page">
@@ -91,6 +28,9 @@ export default function MsigGroups() {
             handing daily allowances to recipients. Figures here cover a thirty-day period.
           </p>
         </div>
+        <button className="btn" type="button" onClick={() => void refresh()} disabled={loading}>
+          {loading ? 'Reading…' : 'Refresh'}
+        </button>
       </header>
 
       {error ? <p className="dao-note dao-note--bad">{error}</p> : null}
@@ -101,12 +41,18 @@ export default function MsigGroups() {
           const used = Number(a.allocated)
           const left = budget - used
           const pct = budget > 0 ? Math.min(100, (used / budget) * 100) : 0
+          const sign = signers.get(a.allocator)
           return (
             <article key={a.allocator} className="dao-card">
               <div className="dao-card__top">
                 <h2>
                   <Link to={`/msig/${a.allocator}`}>{a.allocator}</Link>
                 </h2>
+                {sign ? (
+                  <span className="chip" title={`${sign.threshold} of ${sign.members.length} must sign`}>
+                    {sign.threshold} of {sign.members.length}
+                  </span>
+                ) : null}
               </div>
               <p className="dao-card__meta">
                 <span className="dao-card__id">point allocator</span>
@@ -131,6 +77,8 @@ export default function MsigGroups() {
                 <span style={{ width: `${pct}%` }} className={used > budget ? 'is-over' : undefined} />
               </div>
 
+              {sign ? <SignerList signers={sign} compact /> : null}
+
               <div className="dao-card__foot">
                 <Link className="btn" to={`/msig/${a.allocator}`}>
                   Allocations
@@ -146,15 +94,48 @@ export default function MsigGroups() {
   )
 }
 
+/**
+ * Who signs for this group, and how many of them it takes.
+ *
+ * Weights are shown only when one is not 1: a threshold of 3 over weights of
+ * 2 and 1 is two signatures, not three, and printing ":1" against every member
+ * the rest of the time is noise for a case that does not arise.
+ */
+function SignerList({ signers, compact }: { signers: Signers; compact?: boolean }) {
+  const { actor } = useSession()
+  const weighted = signers.members.some((m) => m.weight !== 1)
+
+  return (
+    <div className={`signers${compact ? ' signers--compact' : ''}`}>
+      <span className="signers__head">
+        {signers.threshold} of {signers.members.length} must sign
+      </span>
+      <ul>
+        {signers.members.map((m) => (
+          <li key={`${m.actor}@${m.permission}`} className={m.actor === actor ? 'is-me' : undefined}>
+            <a href={`${EXPLORER}${encodeURIComponent(m.actor)}`} target="_blank" rel="noopener">
+              {m.actor}
+            </a>
+            {m.permission !== 'active' ? <span className="dao-dim">@{m.permission}</span> : null}
+            {weighted ? <span className="dao-dim">×{m.weight}</span> : null}
+            {m.actor === actor ? <span className="tag tag--vote">you</span> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 /* ---------- one allocator ---------- */
 
 export function MsigGroupDetails() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
-  const { allocators, allocations, loading, error } = useAllocators()
+  const { allocators, allocations, signers, loading, error } = useAllocators()
   const [configs, setConfigs] = useState<Map<string, PointsConfig | null>>(new Map())
 
   const rows = allocations.get(name) ?? []
+  const sign = signers.get(name)
 
   /* Each recipient's own pointsconfig. Only the ones this allocator funds, and
      only once — the map is keyed by recipient, not by allocator. */
@@ -196,7 +177,19 @@ export function MsigGroupDetails() {
         </div>
       </header>
 
+      {sign ? (
+        <section className="section">
+          <h2 className="dao-h2">Who signs</h2>
+          <SignerList signers={sign} />
+          <p className="dao-dim">
+            Changing a budget here needs <b>{sign.threshold}</b> of these {sign.members.length} signatures, collected
+            as a multisig proposal against <code>{name}</code>&rsquo;s active permission.
+          </p>
+        </section>
+      ) : null}
+
       <section className="section">
+        <h2 className="dao-h2">Allocations</h2>
         <div className="dao-tablewrap">
           <table className="dao-table is-roomy">
             <thead>

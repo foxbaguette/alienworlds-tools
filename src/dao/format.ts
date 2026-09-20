@@ -61,3 +61,42 @@ export function isoMinute(ms: number): string {
 }
 
 export const EXPLORER = 'https://waxblock.io/account/'
+
+/**
+ * Vote power with the contract's own decay applied.
+ *
+ * `total_vote_power` is a running sum that never ages — a candidate who was
+ * voted for two years ago and nobody has touched since still shows the same
+ * figure, which is why ranking off it disagrees with the order the chain seats
+ * people in.
+ *
+ * The decayed figure is already on the row, encoded in `rank`:
+ *
+ *     rank / 10000 = log2(power + 1) + avg_vote_time_stamp / SECONDS_TO_DOUBLE
+ *
+ * so the power as of NOW is 2 ^ (rank / 10000 - now / SECONDS_TO_DOUBLE). That
+ * is the same thing as the raw power halving every thirty days of vote age.
+ *
+ * SECONDS_TO_DOUBLE is 2592000, verified against five live rows: solving the
+ * identity above for it gave exactly that on every one.
+ *
+ * Computed in log space on purpose. 2 ^ (now / SECONDS_TO_DOUBLE) alone is
+ * about 2^690, which is Infinity in a double — the subtraction has to happen
+ * before the exponent, not after.
+ */
+const SECONDS_TO_DOUBLE = 2_592_000
+
+export function decayedPower(rank: string | number, precision: number, now = Date.now()): number {
+  const log2p = Number(rank) / 10_000 - now / 1000 / SECONDS_TO_DOUBLE
+  if (!Number.isFinite(log2p)) return 0
+  return Math.pow(2, log2p) / 10 ** precision
+}
+
+/** Short enough to sit in a card's list without pushing the name around. */
+export function fmtPower(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`
+  return n.toFixed(0)
+}

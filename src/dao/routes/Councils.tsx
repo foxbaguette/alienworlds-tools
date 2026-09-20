@@ -4,7 +4,7 @@ import { Countdown } from '../components/Countdown'
 import { WATCHED, heldByWatched, isMcControlled, type Dao, type DaoGroup } from '../chain/daos'
 import { castableSlate, groupVotes, voteAction, type Slate, type VoteRow } from '../chain/votes'
 import { isCancel, readableError, type ChainAction } from '../chain/act'
-import { EXPLORER, fmtAge, fmtAmount } from '../format'
+import { EXPLORER, decayedPower, fmtAge, fmtAmount, fmtPower } from '../format'
 import { useDaos } from '../useDaos'
 import { useVotes } from '../useVotes'
 import { RefreshButton } from '../components/RefreshButton'
@@ -225,6 +225,10 @@ function DaoCard({
                seat if a period runs before the votes move. */
             const risk = dao.atRisk.has(name)
             const place = dao.rankOf.get(name)
+            /* The decayed figure, which is the one the chain seats people on —
+               see decayedPower. The raw total_vote_power never ages. */
+            const cand = dao.candidates.find((c) => c.candidate_name === name)
+            const power = cand ? decayedPower(cand.rank, dao.precision) : 0
             return (
               <li key={name}>
                 <a
@@ -248,6 +252,14 @@ function DaoCard({
                     } seats — would lose this seat if a period ran now`}
                   >
                     at risk
+                  </span>
+                ) : null}
+                {power > 0 ? (
+                  <span
+                    className="council__power"
+                    title={`${fmtPower(power)} ${dao.symbol} of vote power, decayed — halving every 30 days of vote age`}
+                  >
+                    {fmtPower(power)}
                   </span>
                 ) : null}
               </li>

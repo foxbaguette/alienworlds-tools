@@ -393,3 +393,26 @@
     padding-left: var(--sp-1);
   }
 }
+
+/* How many things are waiting on you here. Only ever present when there ARE
+   some, so it never has to show a zero and the menu stays quiet otherwise. */
+.nav a { display: flex; align-items: center; gap: var(--sp-2); }
+
+.nav__badge {
+  min-width: 18px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  color: #fff;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+}
+
+@media (max-width: 859px) {
+  /* Inline in the top bar, where there is no column to push it to. */
+  .nav__badge { margin-left: var(--sp-1); }
+}

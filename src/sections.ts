@@ -16,6 +16,12 @@ export interface NavItem {
   label: string
   /** Indented beneath this one. Built from chain data, not written out here. */
   children?: NavItem[]
+  /**
+   * How many things are waiting on the connected account here. Absent means
+   * nothing is, NOT that nothing was checked — so a badge never has to be read
+   * as "zero" and the menu stays quiet when there is nothing to say.
+   */
+  badge?: number
 }
 
 export interface NavGroup {

@@ -67,12 +67,14 @@ function Shell() {
                 <div key={t.to} className="nav__item">
                   <NavLink to={t.to} end>
                     {t.label}
+                    {t.badge ? <span className="nav__badge">{t.badge}</span> : null}
                   </NavLink>
                   {t.children?.length ? (
                     <div className="nav__children">
                       {t.children.map((c) => (
                         <NavLink key={c.to} to={c.to}>
                           {c.label}
+                          {c.badge ? <span className="nav__badge">{c.badge}</span> : null}
                         </NavLink>
                       ))}
                     </div>

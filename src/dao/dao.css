@@ -468,3 +468,88 @@
    a withdrawn candidate on it, or when some DAO would not answer. It still
    acts; the tooltip says what it will leave behind. */
 .btn--warn { color: var(--critical); border-color: var(--critical); }
+
+/* ── Auditing a competition ──────────────────────────────────────────────── */
+
+/* The only thing on this section that waits on a person rather than a clock,
+   so it is the only one marked. */
+.section--audit .dao-h2 { color: var(--accent); }
+.comp-card.is-audit { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow); }
+
+.audit {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+.audit__head { display: grid; gap: var(--sp-1); }
+.audit__acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+
+.audit__reject {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.audit__reject .cp-field { flex: 1 1 320px; display: grid; gap: var(--sp-1); }
+.audit__reject .cp-field span { font-size: var(--fs-xs); color: var(--text-2); }
+.audit__reject input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+/* ── Who signs for a multisig group ──────────────────────────────────────── */
+
+.signers { display: grid; gap: var(--sp-2); margin-top: var(--sp-3); }
+
+.signers__head {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.signers ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.signers li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+.signers a { color: var(--text-2); text-decoration: none; }
+.signers a:hover { color: var(--accent); }
+.signers li.is-me a { color: var(--accent); font-weight: 600; }
+
+/* On a card the list is a footnote, not a section. */
+.signers--compact { gap: var(--sp-1); margin-top: var(--sp-3); }
+.signers--compact li { font-size: var(--fs-xs); }
+
+/* Decayed vote power, pushed to the right of the name so the column of figures
+   can be read straight down without the names getting in the way. */
+.council__power {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  cursor: help;
+}

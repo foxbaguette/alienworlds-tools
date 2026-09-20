@@ -9,27 +9,44 @@
  * All competitions live in ONE scope (`comp.worlds`); the players and sponsors
  * of each live in a scope named after its numeric id.
  */
-import { getRows } from '../../dao/chain/nodes'
+import { call, getRows } from '../../dao/chain/nodes'
 
 export const COMP_CONTRACT = 'comp.worlds'
 
 /**
- * The states, in the order the contract runs them.
+ * The states, in the order the contract runs them:
  *
- * Four of the five carry a numeric prefix — `1.playing`, `2.processing` — which
- * is the contract sorting them by name. `preparing` has none, so it sorts
- * first by accident rather than by design; the rank below is explicit so the UI
- * does not inherit that.
+ *   preparing -> playing -> processing -> auditing -> rewarding -> complete
+ *
+ * All but `preparing` carry a numeric prefix, which is the contract sorting
+ * them by name. `preparing` has none, so it sorts first by accident rather than
+ * by design — the order below is explicit so nothing inherits that.
+ *
+ * `rejected`, `expired` and `deleting` are ends rather than steps: a
+ * competition leaves the line rather than moving along it.
  */
-export const COMP_STATES = ['preparing', '1.playing', '2.processing', '4.rewarding', '5.complete'] as const
+export const COMP_STATES = [
+  'preparing',
+  '1.playing',
+  '2.processing',
+  '3.auditing',
+  '4.rewarding',
+  '5.complete',
+] as const
 export type CompState = (typeof COMP_STATES)[number] | string
+
+export const AUDITING = '3.auditing'
 
 export const COMP_LABEL: Record<string, string> = {
   preparing: 'preparing',
   '1.playing': 'playing',
   '2.processing': 'processing',
+  '3.auditing': 'auditing',
   '4.rewarding': 'rewarding',
   '5.complete': 'complete',
+  rejected: 'rejected',
+  expired: 'expired',
+  deleting: 'deleting',
 }
 
 /** By what the state asks of a reader, matching the DAO chips. */
@@ -37,8 +54,13 @@ export const COMP_TONE: Record<string, string> = {
   preparing: 'wait',
   '1.playing': 'work',
   '2.processing': 'wait',
+  /* The one state that asks something of a person rather than of the clock. */
+  '3.auditing': 'go',
   '4.rewarding': 'go',
   '5.complete': 'done',
+  rejected: 'bad',
+  expired: 'dead',
+  deleting: 'bad',
 }
 
 export interface CompRow {
@@ -96,8 +118,80 @@ export const compUrl = (c: CompRow) => {
 }
 
 export const isLive = (c: CompRow) => c.state === '1.playing'
-/** Still going somewhere, as against finished. */
-export const isOpen = (c: CompRow) => c.state !== '5.complete'
+export const needsAudit = (c: CompRow) => c.state === AUDITING
+
+/** Still going somewhere, as against finished one way or the other. */
+const ENDED = new Set(['5.complete', 'rejected', 'expired', 'deleting'])
+export const isOpen = (c: CompRow) => !ENDED.has(String(c.state))
+
+/**
+ * Whether a `preparing` competition is worth showing yet.
+ *
+ * They are created well ahead and then sit there for weeks, which buries
+ * everything actually happening. One becomes interesting three days before its
+ * planned start and stays so until an hour after it — past that without having
+ * moved to playing, something is wrong with it and it is worth seeing again.
+ */
+const THREE_DAYS = 3 * 24 * 60 * 60 * 1000
+const ONE_HOUR = 60 * 60 * 1000
+
+export function preparingIsNear(c: CompRow, now = Date.now()): boolean {
+  const start = compTime(c.start_time)
+  if (!Number.isFinite(start)) return true
+  return start - now <= THREE_DAYS && now - start <= ONE_HOUR
+}
+
+/**
+ * Whether the connected account can audit.
+ *
+ * `approve` and `reject` are authorised as `comp.worlds@auditor`, and that
+ * permission is satisfied by three PUBLIC KEYS rather than by any account — so
+ * being an auditor is not something an account name can be checked against. The
+ * only honest test is whether a key on the connected account is one of them.
+ *
+ * Both sides are read from chain rather than hardcoded: the auditor set can
+ * change without this app knowing, and a stale copy would either hide the
+ * buttons from a real auditor or offer them to someone who cannot sign.
+ */
+export async function isAuditor(actor: string): Promise<boolean> {
+  try {
+    const [contract, user] = await Promise.all([
+      call({ account_name: COMP_CONTRACT }, 'get_account'),
+      call({ account_name: actor }, 'get_account'),
+    ])
+
+    const auditorKeys = new Set<string>(
+      (contract.permissions ?? [])
+        .filter((p: { perm_name: string }) => p.perm_name === 'auditor')
+        .flatMap((p: { required_auth: { keys: { key: string }[] } }) => p.required_auth.keys.map((k) => k.key)),
+    )
+    if (!auditorKeys.size) return false
+
+    for (const p of user.permissions ?? []) {
+      for (const k of p.required_auth?.keys ?? []) {
+        if (auditorKeys.has(k.key)) return true
+      }
+    }
+    return false
+  } catch (err) {
+    console.error('Could not check the auditor keys:', err)
+    return false
+  }
+}
+
+/**
+ * Auditing a competition.
+ *
+ * Authorised as `comp.worlds@auditor`, not as the signer's own account: the
+ * permission belongs to the contract and is satisfied by the auditor's key. A
+ * wallet without one of those keys is refused by the chain.
+ */
+export const auditAction = (id: number, verdict: 'approve' | 'reject', notice = '') => ({
+  account: COMP_CONTRACT,
+  name: verdict,
+  authorization: [{ actor: COMP_CONTRACT, permission: 'auditor' }],
+  data: verdict === 'approve' ? { id } : { id, notice },
+})
 
 export async function fetchComps(): Promise<CompRow[]> {
   const rows = await getRows<CompRow>({
