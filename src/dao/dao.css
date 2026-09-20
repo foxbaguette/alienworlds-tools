@@ -649,3 +649,92 @@
   border-color: var(--critical);
   background: transparent;
 }
+
+/* ── Live activity ───────────────────────────────────────────────────────── */
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-3);
+}
+.live-dot.is-on { background: var(--good); animation: live-pulse 2s ease-in-out infinite; }
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.feed__row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 200px) minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--grid);
+  border-left: 2px solid transparent;
+}
+.feed__row:last-child { border-bottom: 0; }
+
+/* Only what arrived on this poll animates — see LiveFeed, which tracks which
+   keys are new rather than re-animating the whole list every fifteen seconds. */
+.feed__row.is-new { animation: feed-in 0.4s ease-out; }
+
+@keyframes feed-in {
+  from { opacity: 0; transform: translateY(-6px); background: var(--accent-soft); }
+  to { opacity: 1; transform: none; background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feed__row.is-new { animation: none; }
+  .live-dot.is-on { animation: none; }
+}
+
+.feed__time {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.feed__who { display: grid; min-width: 0; }
+.feed__who a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feed__who a:hover { color: var(--accent); }
+/* The wallet under the gamertag, since one is the name and the other is the
+   account somebody may need to look up. */
+.feed__who i {
+  font-style: normal;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.feed__what { color: var(--text-2); }
+
+/* A cleared dungeon is the one event worth colouring; everything else is
+   activity rather than an outcome. */
+.feed__row.is-go { border-left-color: var(--good); }
+.feed__row.is-go .feed__what { color: var(--good); font-weight: 500; }
+.feed__row.is-work { border-left-color: var(--accent); }
+.feed__row.is-done { border-left-color: var(--border-strong); }
+
+@media (max-width: 640px) {
+  .feed__row { grid-template-columns: 56px minmax(0, 1fr); }
+  .feed__what { grid-column: 1 / -1; }
+}

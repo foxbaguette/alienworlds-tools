@@ -99,7 +99,10 @@ export const SECTIONS: Section[] = [
     groups: [
       {
         label: 'Contracts',
-        tools: [{ to: '/ale', label: 'All configs' }],
+        tools: [
+          { to: '/ale', label: 'All configs' },
+          { to: '/ale/live', label: 'Live activity' },
+        ],
       },
     ],
   },
