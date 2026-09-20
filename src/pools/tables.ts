@@ -61,7 +61,7 @@ export function fetchPoolDescriptions(): Promise<PoolDescription[]> {
 
 /* ---------- what a pool holds right now (verbatim from the game) ---------- */
 
-function assetAmount(asset: string, places: number): number {
+export function assetAmount(asset: string, places: number): number {
   return Math.round(Number((asset ?? '0').split(' ')[0] ?? 0) * Math.pow(10, places))
 }
 

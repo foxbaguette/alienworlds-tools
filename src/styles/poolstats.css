@@ -564,3 +564,7 @@
     width: 100%;
   }
 }
+
+/* The source pool holds two piles: what it has released and what it is still
+   holding back. The card shows both on one line. */
+.pcard__reserve { color: var(--text-3); }

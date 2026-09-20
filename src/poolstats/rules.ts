@@ -158,6 +158,8 @@ export const BUILDING_POOL: Record<string, { tlm: string; shards: string }> = {
  * falls back to the description, then the id.
  */
 export const POOL_NAMES: Record<string, string> = {
+  /* The source everything else is released from — see PoolSummary.parent. */
+  tlm: 'All reward TLM · source',
   tlmdung: 'Dungeon Wins',
   shrddung: 'Dungeon Wins',
   tlmarena: 'Arena Wins',
@@ -315,6 +317,18 @@ export interface PoolSummary {
   biggest: number
   /** The live balance, where the pool has a row. */
   balance?: number
+  /**
+   * A pool that feeds other pools instead of paying players.
+   *
+   * `tlm` is the one: everything the game earns lands there and is released
+   * into the sub-pools, which are what actually pay out. It is on the page to
+   * be WATCHED — its balance is where a shortfall would show first — but it is
+   * kept out of every total, because what leaves it is already counted when
+   * the sub-pool it went to pays somebody.
+   */
+  parent?: boolean
+  /** Held back from the sub-pools, waiting to be released. Parents only. */
+  reserve?: number
 }
 
 const emptyKinds = (): Record<PayoutKind, number> => ({ mine: 0, landowner: 0, escrow: 0, claim: 0 })
@@ -327,7 +341,7 @@ const emptyKinds = (): Record<PayoutKind, number> => ({ mine: 0, landowner: 0, e
  */
 export function summarisePools(
   payouts: Payout[],
-  balances: { pool: string; type: string; balance: number }[] = [],
+  balances: { pool: string; type: string; balance: number; parent?: boolean; reserve?: number }[] = [],
 ): PoolSummary[] {
   const by = new Map<string, PoolSummary & { who: Set<string> }>()
   const entry = (pool: string, type: string) => {
@@ -364,11 +378,25 @@ export function summarisePools(
       e.who.add(p.player)
     }
   }
-  for (const b of balances) if (!HIDDEN_POOLS.has(b.pool)) entry(b.pool, b.type).balance = b.balance
+  for (const b of balances) {
+    if (HIDDEN_POOLS.has(b.pool)) continue
+    const e = entry(b.pool, b.type)
+    e.balance = b.balance
+    if (b.parent) e.parent = true
+    if (b.reserve !== undefined) e.reserve = b.reserve
+  }
 
   return [...by.values()]
     .map(({ who, ...rest }) => ({ ...rest, players: who.size }))
-    .sort((a, b) => b.out - a.out || b.intoEscrow - a.intoEscrow || a.pool.localeCompare(b.pool))
+    /* The source first: it is where the money arrives, and the pools under it
+       are ordered by what they paid. */
+    .sort(
+      (a, b) =>
+        Number(!!b.parent) - Number(!!a.parent) ||
+        b.out - a.out ||
+        b.intoEscrow - a.intoEscrow ||
+        a.pool.localeCompare(b.pool),
+    )
 }
 
 export interface PlayerShare {

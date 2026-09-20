@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { formatDecimals, formatNumber } from '@/format'
 import {
+  assetAmount,
   fetchPoolDescriptions,
   fetchShardPools,
   fetchTlmPools,
@@ -129,6 +130,10 @@ interface Balance {
   pool: string
   type: string
   balance: number
+  /** Feeds the other pools rather than paying players — see PoolSummary. */
+  parent?: boolean
+  /** What it is holding back from them. */
+  reserve?: number
 }
 
 /**
@@ -208,10 +213,20 @@ export default function PoolStats() {
       .then(([tlm, shards]) => {
         const now = Date.now()
         setBalances([
-          /* A parent pool feeds its subpools and pays nobody directly. */
-          ...tlm
-            .filter((p) => !(p.subpools ?? []).length)
-            .map((p) => ({ pool: p.pool, type: 'tlm', balance: liveTlmPool(p, now) / 10_000 })),
+          /*
+           * The parent pool is kept, flagged. It pays nobody directly — what
+           * leaves it goes into the sub-pools — so it must stay out of the
+           * totals or every payout would be counted twice. But its balance is
+           * the first place a shortfall would show, which is worth watching.
+           */
+          ...tlm.map((p) => ({
+            pool: p.pool,
+            type: 'tlm',
+            balance: liveTlmPool(p, now) / 10_000,
+            ...((p.subpools ?? []).length
+              ? { parent: true, reserve: assetAmount(p.tlm_reserve, 4) / 10_000 }
+              : {}),
+          })),
           ...shards.map((p) => ({ pool: p.pool, type: 'shards', balance: liveShardPool(p, now) / 10 })),
         ])
       })
@@ -451,9 +466,12 @@ function Overview({
 }) {
   /* Everything on this list is for the chosen currency only. */
   const shownPools = summaries.filter((s) => s.type === currency)
-  const out = shownPools.reduce((n, s) => n + s.out, 0)
-  const landowner = shownPools.reduce((n, s) => n + s.byKind.landowner, 0)
-  const payments = shownPools.reduce((n, s) => n + s.payouts, 0)
+  /* The source pool is on the page but never in a sum: what leaves it is
+     counted again the moment the sub-pool it fed pays somebody. */
+  const paying = shownPools.filter((s) => !s.parent)
+  const out = paying.reduce((n, s) => n + s.out, 0)
+  const landowner = paying.reduce((n, s) => n + s.byKind.landowner, 0)
+  const payments = paying.reduce((n, s) => n + s.payouts, 0)
   const players = new Set(
     payouts
       .filter((p) => p.type === currency && p.kind !== 'escrow' && !HIDDEN_POOLS.has(poolOf(p)))
@@ -535,7 +553,7 @@ function Overview({
       {groups.map((g) => {
         const list = summaries.filter((s) => s.type === g.type)
         if (!list.length) return null
-        const top = Math.max(1, ...list.map((s) => s.out))
+        const top = Math.max(1, ...list.filter((s) => !s.parent).map((s) => s.out))
         return (
           <section key={g.type} className="pstats__group">
             <h2 className="section__title">{g.title}</h2>
@@ -549,17 +567,30 @@ function Overview({
                       <span className="pcard__id mono">{s.pool}</span>
                     </div>
                   </div>
-                  <div className="pcard__paid">
-                    <span>
-                      <strong>{amount(s.out, s.type)}</strong> {SYMBOL[s.type]} paid out
-                    </span>
-                    <KindBar summary={s} of={top} />
-                  </div>
-                  <KindList summary={s} payers={payers.get(s.pool)} />
-                  <div className="pcard__meta">
-                    <span>{plural(s.payouts, 'payment')}</span>
-                    <span>{plural(s.players, 'player')}</span>
-                  </div>
+                  {s.parent ? (
+                    <>
+                      <div className="pcard__paid">
+                        <span>Feeds every pool below it</span>
+                      </div>
+                      <div className="pcard__meta">
+                        <span>Not counted in the totals</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="pcard__paid">
+                        <span>
+                          <strong>{amount(s.out, s.type)}</strong> {SYMBOL[s.type]} paid out
+                        </span>
+                        <KindBar summary={s} of={top} />
+                      </div>
+                      <KindList summary={s} payers={payers.get(s.pool)} />
+                      <div className="pcard__meta">
+                        <span>{plural(s.payouts, 'payment')}</span>
+                        <span>{plural(s.players, 'player')}</span>
+                      </div>
+                    </>
+                  )}
                   <div className="pcard__spark">
                     {hasBalance.has(s.pool) ? (
                       lines[s.pool]?.length ? (
@@ -582,6 +613,15 @@ function Overview({
                   {s.balance !== undefined && (
                     <div className="pcard__balance">
                       Holds now <strong>{amount(s.balance, s.type)}</strong> {SYMBOL[s.type]}
+                      {/* The source holds two piles: what is released and ready
+                          for the sub-pools, and what is still held back. The
+                          line above is the first; this is the second. */}
+                      {s.reserve !== undefined ? (
+                        <span className="pcard__reserve">
+                          {' '}
+                          · <strong>{amount(s.reserve, s.type)}</strong> in reserve
+                        </span>
+                      ) : null}
                     </div>
                   )}
                 </button>

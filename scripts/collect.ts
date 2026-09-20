@@ -105,10 +105,12 @@ async function pools(): Promise<void> {
   if (!dates.length) return console.log('pools: up to date')
   console.log(`pools: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
 
-  /* Every pool that has a balance, for the end-of-day closes. */
+  /* Every pool that has a balance, for the end-of-day closes. The parent is
+     included: the page shows its balance and leaves it out of the totals, and
+     a line it cannot draw over a month is not much of a line. */
   const [tlm, shards] = await Promise.all([fetchTlmPools(), fetchShardPools()])
   const balances = [
-    ...tlm.filter((p) => !(p.subpools ?? []).length).map((p) => ({ pool: p.pool, type: 'tlm' })),
+    ...tlm.map((p) => ({ pool: p.pool, type: 'tlm' })),
     ...shards.map((p) => ({ pool: p.pool, type: 'shards' })),
   ].filter((p) => !HIDDEN_POOLS.has(p.pool))
 
