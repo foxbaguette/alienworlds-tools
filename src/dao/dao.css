@@ -366,3 +366,79 @@
   background: var(--surface);
   box-shadow: var(--shadow);
 }
+
+/* ── Acting on several proposals at once ─────────────────────────────────── */
+
+.batch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* The one button here that signs something. */
+.btn--go {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.btn--go:hover:not(:disabled) { background: var(--accent); filter: brightness(0.94); }
+
+.batch__note { font-size: var(--fs-sm); color: var(--text-3); }
+.batch__msg { font-size: var(--fs-sm); color: var(--text-2); }
+.batch__msg.is-bad { color: var(--critical); }
+
+.dao-table th.tick, .dao-table td.tick { width: 1%; padding-right: 0; }
+/* Big enough to hit without aiming: these sit in rows about 70px tall. */
+.dao-table td.tick input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.dao-table tr.is-picked { background: var(--accent-soft); }
+
+/* Nothing here for this wallet to do — most often because it holds no seat on
+   that council. Dimmed rather than hidden: it is still part of the record, and
+   hiding it would make the list disagree with the counts above it. */
+.dao-table tr.is-dim { opacity: 0.45; }
+.dao-table tr.is-dim:hover { opacity: 1; }
+
+/* ── Competitions ────────────────────────────────────────────────────────── */
+
+.comp-card { overflow: hidden; }
+
+/* A game's own banner. Cropped to a band rather than shown whole: these are
+   wide marketing images and letting each set its own height would make the
+   grid ragged. */
+.comp-card__img {
+  width: calc(100% + var(--sp-4) * 2);
+  height: 96px;
+  margin: calc(var(--sp-4) * -1) calc(var(--sp-4) * -1) var(--sp-3);
+  object-fit: cover;
+  background: var(--surface-sunk);
+}
+
+.comp-figs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.comp-figs dd { font-size: var(--fs-md); }
+
+.comp-figs--wide {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.comp-figs--wide dd { font-size: var(--fs-xl); }
+.comp-figs--wide .dao-dim { display: block; margin-top: 2px; }
+
+/* A date or a countdown, not a quantity: it needs to wrap onto the line rather
+   than be sized like a figure. */
+.comp-when { font-size: var(--fs-sm) !important; font-weight: 500 !important; }

@@ -14,6 +14,8 @@ import { PROJECTS } from './projects/defs'
 export interface NavItem {
   to: string
   label: string
+  /** Indented beneath this one. Built from chain data, not written out here. */
+  children?: NavItem[]
 }
 
 export interface NavGroup {
@@ -74,6 +76,24 @@ export const SECTIONS: Section[] = [
       {
         label: 'Across all councils',
         tools: [{ to: '/daos/proposals', label: 'All proposals' }],
+      },
+    ],
+  },
+  {
+    /*
+     * Games running prize competitions on comp.worlds. Nothing here belongs to
+     * a DAO — the admin is whatever account runs the game — so it stands beside
+     * them rather than inside.
+     */
+    key: 'comps',
+    label: 'Competitions',
+    blurb: 'Prize pools, players and standings',
+    home: '/comps',
+    owns: ['/comps'],
+    groups: [
+      {
+        label: 'Competitions',
+        tools: [{ to: '/comps', label: 'All competitions' }],
       },
     ],
   },

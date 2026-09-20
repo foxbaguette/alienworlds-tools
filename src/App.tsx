@@ -5,6 +5,7 @@ import ProjectOverview from './routes/ProjectOverview'
 import Stats from './routes/Stats'
 import { ThemeSwitch } from './components/ThemeSwitch'
 import { SectionSwitcher } from './components/SectionSwitcher'
+import { WalletButton } from './wallet/WalletButton'
 import { PROJECTS } from './projects/defs'
 import { sectionFor } from './sections'
 import { useDaoNav } from './dao/useDaoNav'
@@ -12,6 +13,7 @@ import Councils from './dao/routes/Councils'
 import DaoDetails from './dao/routes/DaoDetails'
 import AllProposals from './dao/routes/AllProposals'
 import MsigGroups, { MsigGroupDetails } from './dao/routes/MsigGroups'
+import Competitions, { CompetitionDetails } from './comps/routes/Competitions'
 import './dao/dao.css'
 
 /**
@@ -43,8 +45,12 @@ function Shell() {
   const section = sectionFor(pathname)
   /* Called unconditionally and on every page: a hook cannot be reached for only
      when the route happens to be a DAO. It returns nothing off those routes. */
+  /* The DAO menu is built from the directory rather than written out, so when
+     it has something to say it REPLACES the section's static groups instead of
+     being appended beside a second copy of them. sections.ts still declares
+     those, because that is what decides which section owns a route. */
   const context = useDaoNav(pathname)
-  const groups = [...section.groups, ...context]
+  const groups = context.length ? context : section.groups
 
   return (
     <div className="shell">
@@ -58,15 +64,27 @@ function Shell() {
             <div key={g.label} className="nav__group">
               <span className="nav__label">{g.label}</span>
               {g.tools.map((t) => (
-                <NavLink key={t.to} to={t.to}>
-                  {t.label}
-                </NavLink>
+                <div key={t.to} className="nav__item">
+                  <NavLink to={t.to} end>
+                    {t.label}
+                  </NavLink>
+                  {t.children?.length ? (
+                    <div className="nav__children">
+                      {t.children.map((c) => (
+                        <NavLink key={c.to} to={c.to}>
+                          {c.label}
+                        </NavLink>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               ))}
             </div>
           ))}
         </nav>
 
         <div className="side__foot">
+          <WalletButton />
           <ThemeSwitch />
           <span className="side__source">Read live from the WAX chain. Times in UTC.</span>
         </div>
@@ -84,6 +102,8 @@ function Shell() {
           <Route path="/daos/:id/:tab" element={<DaoDetails />} />
           <Route path="/msig" element={<MsigGroups />} />
           <Route path="/msig/:name" element={<MsigGroupDetails />} />
+          <Route path="/comps" element={<Competitions />} />
+          <Route path="/comps/:id" element={<CompetitionDetails />} />
           {PROJECTS.map((p) => (
             <Route key={p.key} path={`/${p.key}`} element={<ProjectOverview key={p.key} projectKey={p.key} />} />
           ))}

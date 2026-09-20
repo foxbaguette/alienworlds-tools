@@ -275,3 +275,121 @@
     padding: var(--sp-5) var(--sp-4) 0;
   }
 }
+
+/* ── Wallet ──────────────────────────────────────────────────────────────── */
+
+.wallet { position: relative; display: grid; gap: var(--sp-1); }
+
+/* Connected, this is a readout first and a control second, so it is quiet:
+   a name and a dot, not a button competing with the menu above it. */
+.wallet__who {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.wallet__who:hover { background: var(--surface-sunk); }
+
+.wallet__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--good);
+  border-radius: var(--radius-full);
+}
+
+.wallet__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet__menu {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + var(--sp-1));
+  left: 0;
+  right: 0;
+  padding: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 14%), 0 2px 6px rgb(0 0 0 / 8%);
+}
+
+.wallet__kicker {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.wallet__actor {
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wallet__menu button {
+  width: 100%;
+  min-height: 30px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--critical);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.wallet__menu button:hover { background: var(--surface-sunk); }
+
+.wallet__error { font-size: var(--fs-xs); color: var(--critical); }
+
+@media (max-width: 859px) {
+  /* In the top bar the foot sits beside the brand, so the wallet menu hangs
+     DOWN from it rather than up off the top of the screen. */
+  .wallet__menu {
+    top: calc(100% + var(--sp-1));
+    bottom: auto;
+    min-width: 200px;
+  }
+}
+
+/* A council listed under its group. Indented and a shade quieter than the
+   parent, so the list reads as "inside Syndicates" rather than as six more
+   top-level places to go. */
+.nav__item { display: grid; }
+
+.nav__children {
+  display: grid;
+  gap: 1px;
+  margin: 1px 0 var(--sp-1) var(--sp-3);
+  padding-left: var(--sp-2);
+  border-left: 1px solid var(--border);
+}
+
+.nav__children a {
+  padding: 5px var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.nav__children a:hover { color: var(--text); }
+.nav__children a.active { color: var(--accent); background: var(--accent-soft); }
+
+@media (max-width: 859px) {
+  /* The sidebar is a scrolling top bar here; an indented tree would make it
+     two rows tall for no gain, so the children sit inline with their parent. */
+  .nav__item { display: flex; align-items: center; gap: var(--sp-1); }
+  .nav__children {
+    display: flex;
+    gap: var(--sp-1);
+    margin: 0;
+    padding-left: var(--sp-1);
+  }
+}
