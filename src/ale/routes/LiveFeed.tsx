@@ -1,35 +1,45 @@
 import { useEffect, useRef, useState } from 'react'
 import { describe, fetchFeed, toneOf, type FeedEvent } from '../chain/feed'
-import { fetchPlayerTags } from '../../players'
+import { ensureLands, landsReady } from '../chain/lands'
+import { fetchPlayerInfo, type PlayerInfo } from '../../players'
 import { EXPLORER } from '../../dao/format'
 
 /**
  * Everything happening in Alien Legends, as it happens.
  *
- * One hour of history, polled every fifteen seconds, with anything new sliding
- * in at the top. Events are keyed by transaction and ordinal, so a poll that
- * overlaps the last one adds nothing twice — and the ones already on screen
- * keep their identity, which is what lets only the new rows animate.
+ * Polled every four seconds, and each poll is tiny: after the first sweep it
+ * asks only for what is NEWER than the newest thing already on screen, less a
+ * minute of overlap. That overlap matters — the indexers do not present every
+ * action the instant it lands, and a strict "after the last one" cursor would
+ * skip anything indexed late. Duplicates cost nothing, since events are keyed
+ * by transaction and ordinal.
  *
- * Bookkeeping actions are filtered out in the chain layer rather than here; see
- * feed.ts for why that is an allowlist.
+ * Which is also what makes four seconds affordable. Re-reading the whole hour
+ * at that rate would be fifteen full sweeps a minute against servers that
+ * rate-limit; this is fifteen requests that usually return a handful of rows.
  */
 const WINDOW_MS = 60 * 60 * 1000
-const POLL_MS = 15_000
+const POLL_MS = 4_000
+/** How far back a follow-up poll looks, to catch late-indexed actions. */
+const OVERLAP_MS = 60_000
 
 export function LiveFeed() {
   const [events, setEvents] = useState<FeedEvent[]>([])
-  const [tags, setTags] = useState<Record<string, string>>({})
+  const [info, setInfo] = useState<Record<string, PlayerInfo>>({})
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(true)
   const [lastAt, setLastAt] = useState<number | null>(null)
-  /** Keys already on screen, so a poll only animates what it actually added. */
-  const seen = useRef(new Set<string>())
+  /** Bumped when a planet's land grid arrives, so travels can be re-described. */
+  const [, redraw] = useState(0)
+
+  /** Everything held, newest first, keyed so a repeat is free to ignore. */
+  const held = useRef(new Map<string, FeedEvent>())
   const fresh = useRef(new Set<string>())
+  const newest = useRef(0)
 
   useEffect(() => {
-    void fetchPlayerTags()
-      .then(setTags)
+    void fetchPlayerInfo()
+      .then(setInfo)
       .catch(() => {})
   }, [])
 
@@ -40,20 +50,27 @@ export function LiveFeed() {
 
     const tick = async () => {
       try {
-        const rows = await fetchFeed(Date.now() - WINDOW_MS)
+        /* First pass takes the hour; after that, only what is new. */
+        const since = newest.current ? newest.current - OVERLAP_MS : Date.now() - WINDOW_MS
+        const rows = await fetchFeed(since, newest.current ? 100 : 250)
         if (!alive) return
         setError(null)
         setLastAt(Date.now())
 
-        fresh.current = new Set(rows.filter((r) => !seen.current.has(r.key)).map((r) => r.key))
-        /* First load is not "new" — the whole hour would animate at once. */
-        if (!seen.current.size) fresh.current = new Set()
-        for (const r of rows) seen.current.add(r.key)
+        const first = !newest.current
+        fresh.current = new Set()
+        for (const r of rows) {
+          if (!held.current.has(r.key) && !first) fresh.current.add(r.key)
+          held.current.set(r.key, r)
+          newest.current = Math.max(newest.current, r.at)
+        }
 
-        /* Trimmed to the window here as well as in the query: a row that has
-           aged out should leave, not linger because nothing replaced it. */
+        /* Anything older than the window leaves, rather than lingering because
+           nothing replaced it. */
         const cutoff = Date.now() - WINDOW_MS
-        setEvents(rows.filter((r) => r.at >= cutoff))
+        for (const [k, e] of held.current) if (e.at < cutoff) held.current.delete(k)
+
+        setEvents([...held.current.values()].sort((x, y) => y.at - x.at))
       } catch (err) {
         if (!alive) return
         console.error('live feed:', err)
@@ -70,7 +87,22 @@ export function LiveFeed() {
     }
   }, [live])
 
-  const name = (wallet: string) => tags[wallet] || wallet
+  /*
+   * A travel gives a grid position and nothing else, so the planet comes from
+   * the player's own row and the land from that planet's grid. Each planet is
+   * fetched once, the first time somebody travels on it.
+   */
+  useEffect(() => {
+    const wanted = new Set<string>()
+    for (const e of events) {
+      if (e.kind !== 'travel') continue
+      const planet = e.planet ?? info[e.player]?.planet
+      if (planet && !landsReady(planet)) wanted.add(planet)
+    }
+    for (const planet of wanted) void ensureLands(planet).then(() => redraw((n) => n + 1))
+  }, [events, info])
+
+  const name = (wallet: string) => info[wallet]?.tag || wallet
 
   return (
     <section className="section">
@@ -83,11 +115,7 @@ export function LiveFeed() {
           {live ? 'Pause' : 'Resume'}
         </button>
         <span className="dao-dim">
-          {error
-            ? error
-            : lastAt
-              ? `updated ${new Date(lastAt).toISOString().slice(11, 19)} UTC`
-              : 'reading…'}
+          {error ? error : lastAt ? `updated ${new Date(lastAt).toISOString().slice(11, 19)} UTC` : 'reading…'}
         </span>
       </div>
 
@@ -99,9 +127,11 @@ export function LiveFeed() {
               <a href={`${EXPLORER}${encodeURIComponent(e.player)}`} target="_blank" rel="noopener">
                 {name(e.player)}
               </a>
-              {tags[e.player] ? <i>{e.player}</i> : null}
+              {info[e.player]?.tag ? <i>{e.player}</i> : null}
             </span>
-            <span className="feed__what">{describe(e)}</span>
+            <span className="feed__what">
+              {describe({ ...e, planet: e.planet ?? info[e.player]?.planet })}
+            </span>
           </li>
         ))}
         {!events.length ? (

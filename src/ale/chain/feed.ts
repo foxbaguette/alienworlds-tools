@@ -1,4 +1,5 @@
 import { historyGet, iso } from '../../chain/history'
+import { landAt, landDescribe } from './lands'
 
 /**
  * What is happening in Alien Legends, right now.
@@ -20,6 +21,13 @@ export interface FeedEvent {
   kind: string
   /** The player it happened to, which is not always the signer. */
   player: string
+  /**
+   * Which planet it happened on, where that is knowable.
+   *
+   * Some actions carry it; `travel` does not, so the feed fills it in from the
+   * player's current position — see LiveFeed.
+   */
+  planet?: string
   contract: string
   action: string
   data: Record<string, unknown>
@@ -132,6 +140,7 @@ export async function fetchFeed(since: number, limit = 250): Promise<FeedEvent[]
       at,
       kind: rule.kind,
       player,
+      planet: typeof a.act.data.planet === 'string' ? a.act.data.planet : undefined,
       contract: a.act.account,
       action: a.act.name,
       data: a.act.data,
@@ -159,8 +168,15 @@ export function describe(e: FeedEvent): string {
       const diff = d.dungeon_difficulty ? ` at difficulty ${d.dungeon_difficulty}` : ''
       return `fought a ${type}${diff}`
     }
-    case 'travel':
-      return `travelled to ${d.x ?? '?'}, ${d.y ?? '?'}`
+    case 'travel': {
+      /* The action carries only a grid position. The planet comes from the
+         player's own row and the land from that planet's grid — both already
+         loaded, so this is a lookup rather than a read. */
+      const land = e.planet ? landAt(e.planet, Number(d.x), Number(d.y)) : null
+      const where = land ? landDescribe(land) : ''
+      const at = `${d.x ?? '?'},${d.y ?? '?'}${e.planet ? ` on ${e.planet}` : ''}`
+      return where ? `travelled to ${where} at ${at}` : `travelled to ${at}`
+    }
     case 'hire': {
       const n = Array.isArray(d.asset_ids) ? d.asset_ids.length : 0
       return `hired ${n} fighter${n === 1 ? '' : 's'}`

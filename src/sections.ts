@@ -101,6 +101,7 @@ export const SECTIONS: Section[] = [
         label: 'Contracts',
         tools: [
           { to: '/ale', label: 'All configs' },
+          { to: '/ale/weather', label: 'Weather' },
           { to: '/ale/live', label: 'Live activity' },
         ],
       },

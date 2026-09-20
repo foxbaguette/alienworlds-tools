@@ -16,6 +16,7 @@ import MsigGroups, { MsigGroupDetails } from './dao/routes/MsigGroups'
 import Competitions, { CompetitionDetails } from './comps/routes/Competitions'
 import AleAdmin from './ale/routes/AleAdmin'
 import { LiveFeedPage } from './ale/routes/LiveFeed'
+import { WeatherAdmin } from './ale/routes/WeatherAdmin'
 import './dao/dao.css'
 
 /**
@@ -110,6 +111,7 @@ function Shell() {
           <Route path="/comps/:id" element={<CompetitionDetails />} />
           <Route path="/ale" element={<AleAdmin />} />
           <Route path="/ale/live" element={<LiveFeedPage />} />
+          <Route path="/ale/weather" element={<WeatherAdmin />} />
           <Route path="/ale/:contract" element={<AleAdmin />} />
           {PROJECTS.map((p) => (
             <Route key={p.key} path={`/${p.key}`} element={<ProjectOverview key={p.key} projectKey={p.key} />} />
