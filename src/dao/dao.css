@@ -732,7 +732,23 @@
   color: var(--text-3);
 }
 
-.feed__who { display: grid; min-width: 0; }
+/*
+ * A row, not a column.
+ *
+ * It was a grid, and a grid BLOCKIFIES its children — so the "candidate" and
+ * "Mission Control" tags each took a full-width line of their own under the
+ * name, three stacked bars per row. Flex keeps them beside it; the wallet line
+ * asks for the whole width explicitly, which is the one thing that did want
+ * its own row.
+ */
+.feed__who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-2);
+  min-width: 0;
+}
+.feed__who .tag { flex: none; }
 .feed__who a {
   color: var(--text);
   font-weight: 600;
@@ -745,6 +761,7 @@
 /* The wallet under the gamertag, since one is the name and the other is the
    account somebody may need to look up. */
 .feed__who i {
+  flex: 0 0 100%;
   font-style: normal;
   font-size: var(--fs-xs);
   color: var(--text-3);
@@ -1245,38 +1262,85 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   }
   .cardtable thead { display: none; }
 
-  .cardtable tr {
-    padding: var(--sp-3);
-    border-bottom: 1px solid var(--grid);
+  /* The wrapper was the card; now each ROW is one, so the wrapper gets out of
+     the way. A dozen label/value pairs separated by hairlines inside one long
+     box reads as a dump — spaced cards say where one thing ends. */
+  .cardwrap {
+    overflow: visible;
+    background: none;
+    border: 0;
+    border-radius: 0;
   }
-  .cardtable tr:last-child { border-bottom: 0; }
+  .cardtable tr {
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .cardtable tr + tr { margin-top: var(--sp-3); }
+
+  /* The one that would miss a seat is outlined rather than filled in, which
+     says "not one of these" without making it harder to read. */
+  .cardtable tr.is-missed {
+    background: var(--surface-sunk);
+    border-style: dashed;
+    box-shadow: none;
+  }
 
   /* .num carries text-align:right from the table rules, which a label/value
      pair does not want — hence the class on the selector rather than a bare
      element, so this actually wins. */
+  /* .num carries text-align:right from the table rules, which a label/value
+     pair does not want — hence the class on the selector rather than a bare
+     element, so this actually wins. The cell border goes too: inside a card
+     the labels already say where one figure ends, and a rule under every one
+     of them is what made this read as a dump. */
+  /*
+   * A block with a hanging label, NOT a grid.
+   *
+   * A grid blockifies its children, so the second figure on a row — "14
+   * voters", "100%", "180 days" — became a grid item of its own and dropped
+   * to the next line however it was styled. In normal flow it simply sits
+   * after the first.
+   *
+   * .num is in the selector because it carries text-align:right from the
+   * table rules, which a label/value pair does not want. The cell border goes
+   * too: inside a card the labels already say where one figure ends, and a
+   * rule under every one of them is what made this read as a dump.
+   */
   .cardtable td,
   .cardtable td.num {
-    display: grid;
-    grid-template-columns: minmax(0, 8.5em) minmax(0, 1fr);
-    gap: var(--sp-3);
-    align-items: baseline;
+    display: block;
     padding: 3px 0;
     text-align: left;
     white-space: normal;
+    border-bottom: 0;
   }
   .cardtable td::before {
     content: attr(data-label);
+    display: inline-block;
+    min-width: 8.5em;
+    padding-right: var(--sp-2);
     font-size: var(--fs-xs);
     color: var(--text-3);
   }
 
-  /* The name of the thing, which needs no label and no second column. */
+  /* The name of the thing: its own line, no label, and a rule under it so the
+     figures below read as belonging to it. */
   .cardtable .cardtable__head {
-    display: block;
-    margin-bottom: var(--sp-2);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-2);
+    margin: 0 0 var(--sp-2);
+    padding: 0 0 var(--sp-2);
     font-size: var(--fs-md);
+    font-weight: 600;
+    border-bottom: 1px solid var(--grid);
   }
   .cardtable .cardtable__head::before { content: none; }
+  .cardtable .cardtable__head .dao-rowmeta { margin: 0; }
 
   /* A cell holding a LIST puts its label on its own line: the names are the
      content, and squeezing five of them into the value column of a two-column
@@ -1292,9 +1356,15 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
      into one word. */
   .cardtable td.stand-names::before { flex: 0 0 100%; }
 
-  /* The second figure under a number — voters, a percentage, a delay — goes
-     back inline here: there is a label beside it now doing that job. */
-  .stand-table td.num .dao-dim { display: inline; margin-left: var(--sp-2); }
+  /* The second figure — voters, a percentage, a delay — sits beside the first
+     rather than under it: the label to its left is already doing the work the
+     line break was doing. Needs the element in the selector to outweigh
+     `.dao-table td .dao-dim`, which blocks it. */
+  .cardtable td.num span.dao-dim {
+    display: inline;
+    margin: 0 0 0 var(--sp-2);
+    font-size: var(--fs-xs);
+  }
 
   /* The row that would miss a seat is marked by its tag, so it does not also
      need to be the faded one — on a phone that just makes it hard to read. */

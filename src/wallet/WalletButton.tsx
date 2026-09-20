@@ -10,8 +10,11 @@ import { useSession } from './session'
  * instead, and leaving is a deliberate second choice inside it.
  *
  * `compact` is the phone top bar, where the control sits next to a page title
- * rather than under a menu: no full-width button, and the account shortened to
- * its first few characters, which is enough to tell two wallets apart.
+ * rather than under a menu, so it drops the full-width button. It does NOT
+ * shorten the account: it did, to six characters, and "reserv" is not an
+ * answer to "which wallet am I using". A WAX name is at most twelve characters
+ * and fits; the section title beside it gives way instead, and the drawer says
+ * that anyway.
  */
 export function WalletButton({ compact }: { compact?: boolean } = {}) {
   const { session, actor, busy, error, login, logout } = useSession()
@@ -58,7 +61,7 @@ export function WalletButton({ compact }: { compact?: boolean } = {}) {
         onClick={() => setOpen((v) => !v)}
       >
         <span className="wallet__dot" aria-hidden="true" />
-        <span className="wallet__name">{compact ? String(actor).slice(0, 6) : actor}</span>
+        <span className="wallet__name">{actor}</span>
       </button>
 
       {open ? (

@@ -421,7 +421,7 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
         Would be elected <span className="dao-dim">{dao.title}</span>
       </h2>
 
-      <div className="dao-tablewrap">
+      <div className="dao-tablewrap cardwrap">
         <table className="dao-table stand-table cardtable">
           <thead>
             <tr>
@@ -485,7 +485,7 @@ function AllCouncils({ daos, onPick }: { daos: Dao[]; onPick: (symbol: string) =
         Would be elected <span className="dao-dim">every council — pick one above for the detail</span>
       </h2>
 
-      <div className="dao-tablewrap">
+      <div className="dao-tablewrap cardwrap">
         <table className="dao-table stand-table cardtable">
           <thead>
             <tr>
