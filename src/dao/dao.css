@@ -1104,3 +1104,74 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
 /* The five names a council would seat, in a cell. */
 .stand-names { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-3); font-size: var(--fs-sm); }
 .stand-names .is-incoming { color: var(--good); font-weight: 600; }
+
+/* ── Phones: the pages ───────────────────────────────────────────────────── */
+/*
+ * The shell is handled in app.css. These are the things inside a page that a
+ * 375-pixel screen changes: rows of choices, three-across figures, and the
+ * places a desktop layout assumed room it does not have.
+ */
+@media (max-width: 640px) {
+  /*
+   * A row of choices scrolls rather than wrapping.
+   *
+   * Wrapping is what a desktop does with a spare half-line; on a phone a
+   * twelve-item row becomes four stacked lines and pushes the thing being
+   * chosen off the screen. One line that scrolls sideways is what every app
+   * of this kind does with chips, and it keeps the page's shape steady as the
+   * options change.
+   */
+  .sections {
+    display: flex;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sections::-webkit-scrollbar { display: none; }
+  /* A flex child shrinks by default, and a shrinking button wraps its own
+     label — "7 days" over two lines — which is the row refusing to scroll
+     rather than the row fitting. */
+  .sections button { flex: none; }
+
+  /* Three figures across a phone is three numbers nobody can read. */
+  .alloc-figs,
+  .comp-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* A form field at 280px minimum would overflow a 343px content column once
+     its padding is counted. */
+  .ale-form { grid-template-columns: minmax(0, 1fr); padding: var(--sp-3); gap: var(--sp-3); }
+
+  /* The head's actions belong under the title, not squeezed beside it. */
+  .page__head { flex-direction: column; align-items: stretch; }
+  .page__actions { gap: var(--sp-2); }
+
+  /* Cards and notes lose the padding a mouse pointer never needed. */
+  .dao-card { padding: var(--sp-3); }
+  .section { padding: var(--sp-3); }
+  .dao-note { padding: var(--sp-3); }
+
+  /* Tables stay readable rather than trying to fit: they scroll, so the text
+     inside them should not be squeezed to make that unnecessary. */
+  .dao-table th,
+  .dao-table td { white-space: nowrap; }
+  .dao-table .dao-rowtitle,
+  .dao-table .wp-summary,
+  .stand-names,
+  .cand-where { white-space: normal; }
+
+  /* An overlay on a phone is the screen, so it uses it. */
+  .ov__panel {
+    width: 100%;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  .ov { place-items: end stretch; }
+  .ov__head { border-radius: var(--radius) var(--radius) 0 0; }
+
+  /* The search box was sized for a sidebar's worth of room. */
+  .wx-search { width: 100%; }
+}

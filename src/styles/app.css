@@ -451,18 +451,8 @@
   .page__lead { font-size: var(--fs-sm); }
   .page__head { gap: var(--sp-3); }
 
-  /* A row of filters that wraps to four lines pushes the content it filters
-     off the screen. One line that scrolls, like every app's chip row. */
-  .page__actions > .sections,
-  .act-pick > .sections {
-    flex-wrap: nowrap;
-    max-width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-  .page__actions > .sections::-webkit-scrollbar,
-  .act-pick > .sections::-webkit-scrollbar { display: none; }
+  /* Chip rows scroll rather than wrap — see dao.css, which does it for every
+     .sections rather than only the two that sit in a page head. */
 
   /* Tables are wide by nature; let them scroll inside their own box rather
      than stretching the page sideways. */

@@ -160,12 +160,11 @@ export function LiveFeed() {
   return (
     <section className="section">
       <div className="page__actions">
+        {/* The page above already says "Live activity"; saying it twice costs a
+            line, which on a phone is a line of the feed. */}
         <h2 className="dao-h2">
-          Live activity{' '}
-          <span className="dao-dim">
-            {events.length} in the last hour
-            {queued ? ` · ${queued} arriving` : ''}
-          </span>
+          {events.length} in the last hour
+          {queued ? <span className="dao-dim"> · {queued} arriving</span> : null}
         </h2>
         <span className={`live-dot${live ? ' is-on' : ''}`} aria-hidden="true" />
         <button className="btn" type="button" onClick={() => setLive((v) => !v)}>
