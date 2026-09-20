@@ -454,3 +454,17 @@
   border-radius: var(--radius-sm);
 }
 .redirect .dao-dim { display: inline; }
+
+/* A council member this account voted for. Marked rather than coloured: the
+   colours on this list already mean other things — watched, at risk — and a
+   third would leave nothing plain to read against. */
+.tag--vote {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+/* A control that will work but not cleanly: the vote refresh when a slate has
+   a withdrawn candidate on it, or when some DAO would not answer. It still
+   acts; the tooltip says what it will leave behind. */
+.btn--warn { color: var(--critical); border-color: var(--critical); }
