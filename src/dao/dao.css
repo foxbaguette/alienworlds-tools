@@ -324,3 +324,45 @@
   gap: var(--sp-3);
   flex-wrap: wrap;
 }
+
+/* ── In-page tab strips ──────────────────────────────────────────────────── */
+/*
+   These ARE what a segmented control is for: two or three short options,
+   choosing which slice of one page you are looking at. The class kept its name
+   when the TOP-level switch stopped being one and became the product switcher —
+   and these rules moved here with it, which is where they should have arrived
+   in the same commit rather than leaving the strips unstyled.
+*/
+.sections {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  padding: 3px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.sections button {
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sections button:hover { color: var(--text); }
+
+/* The chosen one is a raised surface, not only a colour: a colour alone reads
+   as "this one is a link" rather than "you are here". */
+.sections button[aria-selected='true'] {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}

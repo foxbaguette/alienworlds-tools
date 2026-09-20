@@ -39,16 +39,17 @@
   --critical: #c53030;
 
   /*
-   * Mission Control. Its colours are blue and gold, and blue is already the
-   * site's accent — so the watched accounts take the gold, and nothing else on
-   * the page uses it. A marked name anywhere means one of that list.
+   * Mission Control. Azure, on the same instruction that rejected the gold:
+   * taken down from #007FFF far enough to pass as 12px text on this surface,
+   * which the pure hue does not.
    *
-   * NOT --series-4 (#eda100) directly: that is a chart fill, picked to sit on a
-   * surface as an area, and it fails as small text on one. Same hue, taken down
-   * to where it passes as 12px type.
+   * It is close to --accent, and deliberately so — but that means hue alone
+   * cannot carry the difference. A watched name is bold where an accent link is
+   * not, and the MC chip has a tinted panel behind it, so the two are told apart
+   * by weight and shape rather than by asking anyone to compare two blues.
    */
-  --watched: #8a6100;
-  --watched-soft: #fdf2d9;
+  --watched: #0077c8;
+  --watched-soft: #e2f1fb;
 
   --grid: #e9e8e4;
   --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 1px 3px rgb(0 0 0 / 4%);
@@ -96,10 +97,10 @@
     --good: #3cb43c;
     --critical: #e66767;
 
-    /* On a dark surface the gold goes back to full strength: it was
-       the light background it failed against, not the hue. */
-    --watched: #e8b53c;
-    --watched-soft: #2e2612;
+    /* On a dark surface it goes brighter, not darker: the contrast
+       problem is with the background, not the hue. */
+    --watched: #4bb4ef;
+    --watched-soft: #10293a;
     --grid: #262624;
     --shadow: none;
   }
@@ -125,10 +126,10 @@
   --good: #3cb43c;
   --critical: #e66767;
 
-  /* On a dark surface the gold goes back to full strength: it was
-       the light background it failed against, not the hue. */
-  --watched: #e8b53c;
-  --watched-soft: #2e2612;
+  /* On a dark surface it goes brighter, not darker: the contrast
+       problem is with the background, not the hue. */
+  --watched: #4bb4ef;
+  --watched-soft: #10293a;
   --grid: #262624;
   --shadow: none;
 }

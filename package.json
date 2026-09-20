@@ -13,6 +13,10 @@
     "collect": "vite build --ssr scripts/collect.ts --outDir .ssr --logLevel error && node .ssr/collect.js"
   },
   "dependencies": {
+    "@wharfkit/session": "^1.6.1",
+    "@wharfkit/wallet-plugin-anchor": "^1.7.3",
+    "@wharfkit/wallet-plugin-cloudwallet": "^1.6.5",
+    "@wharfkit/web-renderer": "^1.4.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.0"
