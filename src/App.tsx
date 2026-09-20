@@ -8,6 +8,7 @@ import { PROJECTS } from './projects/defs'
 import { SECTIONS, sectionFor } from './sections'
 import Councils from './dao/routes/Councils'
 import DaoDetails from './dao/routes/DaoDetails'
+import MsigGroups, { MsigGroupDetails } from './dao/routes/MsigGroups'
 import './dao/dao.css'
 
 /**
@@ -98,6 +99,8 @@ function Shell() {
           <Route path="/daos/syndicates" element={<Councils group="syndicate" />} />
           <Route path="/daos/unions" element={<Councils group="union" />} />
           <Route path="/daos/:id" element={<DaoDetails />} />
+          <Route path="/msig" element={<MsigGroups />} />
+          <Route path="/msig/:name" element={<MsigGroupDetails />} />
           {PROJECTS.map((p) => (
             <Route key={p.key} path={`/${p.key}`} element={<ProjectOverview key={p.key} projectKey={p.key} />} />
           ))}

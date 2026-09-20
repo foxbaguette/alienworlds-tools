@@ -73,6 +73,25 @@ export const SECTIONS: Section[] = [
       },
     ],
   },
+  {
+    /*
+     * Not a DAO tool. Point allocators are multisig accounts on ptpxy.worlds
+     * handing out daily allowances — no elections, no councils, no proposals.
+     * They sat under the DAO tabs because that is where they were first built,
+     * not because they belong there.
+     */
+    key: 'msig',
+    label: 'MSIG Groups',
+    blurb: 'Point allocators and their budgets',
+    home: '/msig',
+    owns: ['/msig'],
+    groups: [
+      {
+        label: 'Allocators',
+        tools: [{ to: '/msig', label: 'All groups' }],
+      },
+    ],
+  },
 ]
 
 const matches = (path: string, base: string) => path === base || path.startsWith(`${base}/`)

@@ -267,3 +267,51 @@
   font-size: var(--fs-xs);
   text-decoration: none;
 }
+
+/* ── Allocators ──────────────────────────────────────────────────────────── */
+
+.alloc-figs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.alloc-figs dt {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.alloc-figs dd {
+  margin-top: 2px;
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* How much of a budget is spoken for, drawn rather than only written: a
+   proportion is what the column is scanned for. */
+.bar {
+  height: 6px;
+  margin-top: var(--sp-3);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.bar--sm { height: 4px; margin: var(--sp-1) 0 0 auto; max-width: 90px; }
+
+/* Over budget is the one state worth colouring, because it should not happen. */
+.bar span.is-over, .alloc-figs dd.is-over { background: var(--critical); }
+.alloc-figs dd.is-over { background: none; color: var(--critical); }
+
+/* A period that ended in the past needs saying so where the date is read. */
+.dao-table td.is-lapsed { color: var(--critical); }
+.dao-table td.is-lapsed .dao-dim { color: var(--critical); opacity: 0.75; }
+
+.is-roomy td { padding: var(--sp-4) var(--sp-3); font-size: var(--fs-md); }
