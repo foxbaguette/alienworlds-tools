@@ -553,3 +553,99 @@
   color: var(--text-3);
   cursor: help;
 }
+
+/* ── ALE Admin ───────────────────────────────────────────────────────────── */
+
+/* Seventeen contracts is too many for one row, so the strip wraps rather than
+   scrolling off the edge. */
+.ale-picker { flex-wrap: wrap; }
+
+.ale-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ale-field { display: grid; gap: var(--sp-1); align-content: start; }
+
+.ale-field__name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+/* The ABI type, so there is no guessing what a field will accept. */
+.ale-field__name i {
+  font-style: normal;
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.ale-field input,
+.ale-field select,
+.ale-field textarea {
+  width: 100%;
+  min-height: 34px;
+  padding: var(--sp-2);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.ale-field textarea { font-family: ui-monospace, Menlo, Consolas, monospace; resize: vertical; }
+
+/* Touched but not yet saved, with what it was underneath — so a mistyped field
+   can be put back without re-reading the whole form. */
+.ale-field.is-changed input,
+.ale-field.is-changed select,
+.ale-field.is-changed textarea {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.ale-field__was { font-size: var(--fs-xs); color: var(--text-3); }
+.ale-field__was code { color: var(--text-2); }
+
+/* ── Game state ──────────────────────────────────────────────────────────── */
+
+.game-state {
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+/* Anything paused is not a detail, so the whole panel says so. */
+.game-state.is-paused { border-color: var(--critical); }
+.game-state.is-paused .dao-h2 { color: var(--critical); }
+
+.pause-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.pause-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.pause-chip input { accent-color: var(--critical); cursor: pointer; }
+.pause-chip.is-on {
+  color: var(--critical);
+  font-weight: 600;
+  border-color: var(--critical);
+  background: transparent;
+}

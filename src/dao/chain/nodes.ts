@@ -90,6 +90,18 @@ async function rawPost(body: unknown, url: string, timeout: number, path = 'get_
  * which is subtly wrong rather than visibly broken.
  */
 async function acquire(count = 1): Promise<Node> {
+  /*
+   * Brings the pool up if nobody has yet.
+   *
+   * Without this, a read issued before any route called start() waits on an
+   * empty pool forever — the loop below has nothing to hand out and nothing to
+   * wait for, so it polls until the page is closed. Every caller remembering to
+   * start the pool first is exactly the kind of thing callers stop remembering:
+   * the ALE Admin page did not, and sat on "Reading…" with no error to show for
+   * it. start() is idempotent and shared, so asking here costs nothing.
+   */
+  if (!pool.length) await start()
+
   for (;;) {
     const now = Date.now()
     let best: Node | null = null
@@ -222,6 +234,9 @@ function firstAnswer<T>(promises: Promise<T | null>[]): Promise<T | null> {
   })
 }
 
+/* Read by `start` below and, indirectly, by `acquire` above. Nothing calls
+   either during module evaluation, so the order is a readability choice rather
+   than a hazard. */
 let starting: Promise<boolean> | null = null
 
 /**

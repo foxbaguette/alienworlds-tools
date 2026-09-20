@@ -87,6 +87,24 @@ export const SECTIONS: Section[] = [
   },
   {
     /*
+     * The Alien Legends contracts' own settings. Not a DAO and not a game
+     * either — this is the dials behind one, kept apart because everything on
+     * it writes rather than reads.
+     */
+    key: 'ale',
+    label: 'ALE Admin',
+    blurb: 'Contract settings for Alien Legends',
+    home: '/ale',
+    owns: ['/ale'],
+    groups: [
+      {
+        label: 'Contracts',
+        tools: [{ to: '/ale', label: 'All configs' }],
+      },
+    ],
+  },
+  {
+    /*
      * Games running prize competitions on comp.worlds. Nothing here belongs to
      * a DAO — the admin is whatever account runs the game — so it stands beside
      * them rather than inside.
