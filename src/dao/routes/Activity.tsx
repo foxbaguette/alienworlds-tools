@@ -231,8 +231,16 @@ export default function Activity() {
         </div>
       </header>
 
+      {/*
+        * Thirteen councils. On a wide screen that is a strip you can see all
+        * of; on a phone it was a sideways scroller with nothing to say it
+        * scrolled, so ten of the thirteen were simply invisible. The same
+        * choice is a dropdown there — which is what a phone does well, and
+        * what every app of this kind uses for a list this long. CSS picks
+        * one; they drive the same state.
+        */}
       <div className="page__actions act-pick">
-        <div className="sections" role="tablist">
+        <div className="sections act-pick__strip" role="tablist">
           <button type="button" role="tab" aria-selected={symbol === 'all'} onClick={() => setSymbol('all')}>
             Every council
           </button>
@@ -249,6 +257,18 @@ export default function Activity() {
             </button>
           ))}
         </div>
+
+        <label className="act-pick__select">
+          <span className="sr-only">Council</span>
+          <select value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+            <option value="all">Every council</option>
+            {daos.map((d) => (
+              <option key={d.id} value={d.symbol}>
+                {d.title} · {d.symbol}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <Standings daos={daos} dao={picked} onPick={setSymbol} />
@@ -402,10 +422,9 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
       </h2>
 
       <div className="dao-tablewrap">
-        <table className="dao-table stand-table">
+        <table className="dao-table stand-table cardtable">
           <thead>
             <tr>
-              <th className="num">#</th>
               <th>Candidate</th>
               <th className="num">Vote power</th>
               <th className="num">Behind them</th>
@@ -423,7 +442,7 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
             ) : null}
             {!data ? (
               <tr>
-                <td colSpan={7} className="dao-dim">
+                <td colSpan={6} className="dao-dim">
                   {reading ? 'Reading…' : 'Could not read this council.'}
                 </td>
               </tr>
@@ -467,7 +486,7 @@ function AllCouncils({ daos, onPick }: { daos: Dao[]; onPick: (symbol: string) =
       </h2>
 
       <div className="dao-tablewrap">
-        <table className="dao-table stand-table">
+        <table className="dao-table stand-table cardtable">
           <thead>
             <tr>
               <th>Council</th>
@@ -480,14 +499,16 @@ function AllCouncils({ daos, onPick }: { daos: Dao[]; onPick: (symbol: string) =
           <tbody>
             {rows.map((g) => (
               <tr key={g.dao.id} className="is-clickable" onClick={() => onPick(g.dao.symbol)}>
-                <td>
+                <td className="cardtable__head">
                   <b className="dao-rowtitle">{g.dao.title}</b>
                   <span className="dao-rowmeta">
                     <span className="dao-rowid">{g.dao.symbol}</span>
                   </span>
                 </td>
-                <td className="num">{g.seats}</td>
-                <td className="stand-names">
+                <td className="num" data-label="Seats">
+                  {g.seats}
+                </td>
+                <td className="stand-names" data-label="Would be elected">
                   {g.elected.map((n) => (
                     <span key={n} className={g.incoming.includes(n) ? 'is-incoming' : undefined}>
                       {n}
@@ -495,11 +516,15 @@ function AllCouncils({ daos, onPick }: { daos: Dao[]; onPick: (symbol: string) =
                     </span>
                   ))}
                 </td>
-                <td className="num" title={g.next ? `${g.next} is next in line` : 'Nobody else is standing'}>
+                <td
+                  className="num"
+                  data-label="Last seat holds by"
+                  title={g.next ? `${g.next} is next in line` : 'Nobody else is standing'}
+                >
                   {g.next ? fmtTokens(g.margin) : <span className="dao-dim">unopposed</span>}
                   {g.next ? <span className="dao-dim">over {g.next}</span> : null}
                 </td>
-                <td>
+                <td data-label="Changes">
                   {g.incoming.length || g.leaving.length ? (
                     <span className="tag tag--bad" title={`${g.leaving.join(', ')} out, ${g.incoming.join(', ')} in`}>
                       {g.incoming.length} would change
@@ -537,8 +562,11 @@ function StandingRow({
 }) {
   return (
     <tr className={missed ? 'is-missed' : undefined}>
-      <td className="num">{place}</td>
-      <td>
+      {/* The place rides with the name rather than holding a column of its own:
+          one number in a column is a column a phone cannot spare, and "1." in
+          front of a name says the same thing on any screen. */}
+      <td className="cardtable__head">
+        <span className="stand-place">{place}</span>
         <a href={`${EXPLORER}${encodeURIComponent(c.name)}`} target="_blank" rel="noopener">
           {c.name}
         </a>
@@ -554,21 +582,23 @@ function StandingRow({
           </span>
         ) : null}
       </td>
-      <td className="num">
+      <td className="num" data-label="Vote power">
         <b>{fmtTokens(c.power)}</b>
       </td>
-      <td className="num" title={`${c.voters} account${c.voters === 1 ? '' : 's'} voting`}>
+      <td className="num" data-label="Behind them" title={`${c.voters} account${c.voters === 1 ? '' : 's'} voting`}>
         {fmtTokens(c.raw)}
         <span className="dao-dim">
           {c.voters} voter{c.voters === 1 ? '' : 's'}
         </span>
       </td>
-      <td className="num">{fmtTokens(c.held)}</td>
-      <td className={`num${c.staked ? '' : ' dao-dim'}`}>
+      <td className="num" data-label="Holds">
+        {fmtTokens(c.held)}
+      </td>
+      <td className={`num${c.staked ? '' : ' dao-dim'}`} data-label="Staked">
         {c.staked ? fmtTokens(c.staked) : 'none'}
         {c.held > 0 ? <span className="dao-dim">{Math.round((c.staked / c.held) * 100)}%</span> : null}
       </td>
-      <td className="num" title={`${fmtDelay(c.delay)} unstake delay on ${dao.symbol}`}>
+      <td className="num" data-label="Multiplier" title={`${fmtDelay(c.delay)} unstake delay on ${dao.symbol}`}>
         {c.multiplier.toFixed(2)}&times;
         <span className="dao-dim">{fmtDelay(c.delay)}</span>
       </td>

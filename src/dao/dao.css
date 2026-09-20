@@ -1175,3 +1175,129 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   /* The search box was sized for a sidebar's worth of room. */
   .wx-search { width: 100%; }
 }
+
+/* ── A table that becomes cards ──────────────────────────────────────────── */
+/*
+ * A seven-column table on a 375px screen shows three columns and hides the
+ * rest behind a sideways scroll nobody discovers — and on the standings that
+ * meant the margin and who was changing, which are the two columns worth
+ * having.
+ *
+ * So below 640px the rows stop being rows: each becomes a small card, and each
+ * cell carries its own heading from `data-label`. One markup, one set of data,
+ * and nothing off screen. The cell that names the row wears
+ * `cardtable__head` and keeps the top line to itself.
+ */
+.stand-place {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  margin-right: var(--sp-2);
+  padding: 0 5px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-full);
+}
+
+/* Visible to a screen reader, not to the layout. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The dropdown form of the council picker. Hidden where the strip fits. */
+.act-pick__select { display: none; }
+.act-pick__select select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 640px) {
+  .act-pick__strip { display: none; }
+  .act-pick__select { display: block; width: 100%; }
+  .act-pick { display: block; }
+
+  .cardtable,
+  .cardtable tbody,
+  .cardtable tr,
+  .cardtable td {
+    display: block;
+    width: auto;
+  }
+  .cardtable thead { display: none; }
+
+  .cardtable tr {
+    padding: var(--sp-3);
+    border-bottom: 1px solid var(--grid);
+  }
+  .cardtable tr:last-child { border-bottom: 0; }
+
+  /* .num carries text-align:right from the table rules, which a label/value
+     pair does not want — hence the class on the selector rather than a bare
+     element, so this actually wins. */
+  .cardtable td,
+  .cardtable td.num {
+    display: grid;
+    grid-template-columns: minmax(0, 8.5em) minmax(0, 1fr);
+    gap: var(--sp-3);
+    align-items: baseline;
+    padding: 3px 0;
+    text-align: left;
+    white-space: normal;
+  }
+  .cardtable td::before {
+    content: attr(data-label);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+  }
+
+  /* The name of the thing, which needs no label and no second column. */
+  .cardtable .cardtable__head {
+    display: block;
+    margin-bottom: var(--sp-2);
+    font-size: var(--fs-md);
+  }
+  .cardtable .cardtable__head::before { content: none; }
+
+  /* A cell holding a LIST puts its label on its own line: the names are the
+     content, and squeezing five of them into the value column of a two-column
+     pair wraps them into the label column instead. */
+  .cardtable td.stand-names {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-3);
+    padding-bottom: var(--sp-1);
+  }
+  /* Still a flex child, so it keeps the gaps between the names — it just
+     takes a whole line to itself. Made it a block and the names ran together
+     into one word. */
+  .cardtable td.stand-names::before { flex: 0 0 100%; }
+
+  /* The second figure under a number — voters, a percentage, a delay — goes
+     back inline here: there is a label beside it now doing that job. */
+  .stand-table td.num .dao-dim { display: inline; margin-left: var(--sp-2); }
+
+  /* The row that would miss a seat is marked by its tag, so it does not also
+     need to be the faded one — on a phone that just makes it hard to read. */
+  .dao-table tr.is-missed td { opacity: 1; }
+  .dao-table tr.is-missed { border-top: 1px dashed var(--border-strong); }
+}
