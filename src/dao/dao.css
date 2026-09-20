@@ -826,3 +826,67 @@
 .wx-effect input { width: 100px; }
 .wx-effect label { display: grid; gap: 2px; }
 .wx-effect label span { font-size: var(--fs-xs); color: var(--text-3); }
+
+/* ── ALE Admin: resources, income, buildings, abilities ──────────────────── */
+
+/* A reading and how full it is. Three tones, and RAM is judged harder than
+   CPU: RAM runs out permanently, CPU refills by itself. */
+.res-pct { font-variant-numeric: tabular-nums; }
+.res-pct.is-ok { color: var(--text-2); }
+.res-pct.is-warn { color: #b26a00; }
+.res-pct.is-bad { color: var(--critical); }
+
+.res-barcell { min-width: 180px; }
+.res-bar {
+  display: block;
+  height: 6px;
+  background: var(--surface-sunk);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.res-bar--tall { height: 12px; margin: var(--sp-2) 0 var(--sp-3); border-radius: 6px; }
+.res-bar__fill { display: block; height: 100%; background: var(--accent); }
+.res-bar__fill.is-warn { background: #d08700; }
+.res-bar__fill.is-bad { background: var(--critical); }
+/* A reserve that has reached its threshold. Full, and good news. */
+.res-bar__fill.is-ready { background: var(--good); }
+.res-barcell .dao-dim { font-size: var(--fs-xs); }
+
+/* The reserve everyone is waiting on, said once and large. */
+.collect-lead .collect-big {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xl, 1.75rem);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.collect-lead p:last-child { margin-bottom: 0; }
+
+/* Defending teams, opened from the row above them. */
+.dao-table tr.is-clickable { cursor: pointer; }
+.bld-team td { background: var(--surface-sunk); }
+.bld-team__list { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.bld-fighter {
+  display: grid;
+  gap: 1px;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.bld-fighter i { font-style: normal; color: var(--text-2); }
+.bld-fighter .dao-dim { font-size: var(--fs-xs); }
+
+/* Ability pools. The tick and the name do different things — one chooses
+   where a write lands, the other opens a pool — so the name is a button. */
+.abil-class { margin-bottom: var(--sp-3); }
+.abil-class .pause-grid { margin-top: var(--sp-1); }
+.abil-scope {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.abil-scope.is-open { font-weight: 650; color: var(--accent); }

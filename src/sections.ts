@@ -108,7 +108,21 @@ export const SECTIONS: Section[] = [
         tools: [
           { to: '/ale', label: 'All configs' },
           { to: '/ale/weather', label: 'Weather' },
+          { to: '/ale/abilities', label: 'Abilities' },
+        ],
+      },
+      {
+        label: 'The game right now',
+        tools: [
           { to: '/ale/live', label: 'Live activity' },
+          { to: '/ale/buildings', label: 'Buildings' },
+        ],
+      },
+      {
+        label: 'Money and machines',
+        tools: [
+          { to: '/ale/collect', label: 'Income & payouts' },
+          { to: '/ale/resources', label: 'Resources' },
         ],
       },
     ],
