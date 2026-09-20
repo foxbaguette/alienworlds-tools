@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { fetchHoldings, type Holdings } from '../chain/holdings'
 import { WATCHED, type Dao } from '../chain/daos'
 import { EXPLORER, decayedPower, fmtPower, rawPower } from '../format'
+import { McTag } from '../components/Tags'
 import { useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
 
@@ -192,6 +193,7 @@ export default function Candidates() {
                       >
                         {e.name}
                       </a>
+                      <McTag name={e.name} />
                       {e.seats.length ? (
                         <span className="tag tag--in" title={`Seated on ${e.seats.join(', ')}`}>
                           {e.seats.length === 1 ? 'custodian' : `custodian ×${e.seats.length}`}

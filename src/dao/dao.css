@@ -129,6 +129,7 @@
   cursor: help;
 }
 .tag--bad { color: var(--critical); border: 1px solid var(--critical); }
+.tag--mc { color: var(--watched); background: var(--watched-soft); }
 
 .dao-card__foot {
   display: flex;

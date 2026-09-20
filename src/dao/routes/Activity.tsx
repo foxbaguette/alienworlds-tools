@@ -16,6 +16,7 @@ import {
   type Flip,
 } from '../chain/activity'
 import { fetchStandings, type Standing, type Standings as StandingsData } from '../chain/standings'
+import { McTag } from '../components/Tags'
 import { EXPLORER } from '../format'
 import { daoById, useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
@@ -197,6 +198,7 @@ export default function Activity() {
           candidate
         </span>
       ) : null}
+      <McTag name={name} />
     </>
   )
 
@@ -468,6 +470,7 @@ function StandingRow({
         <a href={`${EXPLORER}${encodeURIComponent(c.name)}`} target="_blank" rel="noopener">
           {c.name}
         </a>
+        <McTag name={c.name} />
         {!missed && !c.seated ? (
           <span className="tag tag--in" title="Not on the council today — would take a seat">
             incoming

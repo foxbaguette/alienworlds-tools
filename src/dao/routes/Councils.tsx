@@ -8,6 +8,7 @@ import { EXPLORER, decayedPower, fmtAge, fmtAmount, fmtPower, rawPower } from '.
 import { useDaos } from '../useDaos'
 import { useVotes } from '../useVotes'
 import { RefreshButton } from '../components/RefreshButton'
+import { McTag } from '../components/Tags'
 import { StakePanel } from '../components/StakePanel'
 import { usePositions } from '../usePosition'
 import { useSession } from '../../wallet/session'
@@ -268,6 +269,7 @@ function DaoCard({
                 >
                   {name}
                 </a>
+                <McTag name={name} />
                 {votedFor.has(name) ? (
                   <span className="tag tag--vote" title="You voted for this custodian">
                     ★ your vote

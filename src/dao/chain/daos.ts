@@ -50,6 +50,21 @@ const HIDDEN = new Set(['testa', 'testb'])
 export const WATCHED = new Set(['5thba.wam', '42lra.wam', 't1dbe.wam', 'fgaqa.c.wam', 'im24u.c.wam'])
 export const CONTROL_THRESHOLD = 3
 
+/**
+ * Whether an account is Mission Control's.
+ *
+ * Known two different ways, and the difference matters.
+ *
+ * The `.mc` suffix is CONCLUSIVE. An Antelope name with a suffix can only be
+ * created by the account owning that suffix, so `vote1.mc`, `rewards.mc` and
+ * `shards.mc` are Mission Control's by construction rather than by assumption
+ * — no list to maintain, and a new one is recognised the day it appears.
+ *
+ * The wallets in WATCHED are not. Nothing on chain relates them; that half is
+ * hand-supplied and no more reliable than whoever supplied it.
+ */
+export const isMissionControl = (name: string) => WATCHED.has(name) || /\.mc$/.test(name)
+
 export type DaoGroup = 'syndicate' | 'union'
 
 export interface CouncilSeat {
