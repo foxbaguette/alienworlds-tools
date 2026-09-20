@@ -40,6 +40,27 @@ function load(force = false): Promise<void> {
   return inFlight
 }
 
+/**
+ * Subscribe WITHOUT triggering a load.
+ *
+ * The sidebar needs a DAO's title to label its group, and the sidebar renders
+ * on every page — including the stats ones, where starting a dozen chain reads
+ * to fill in a menu label would be absurd. Whoever actually needs the data asks
+ * for it; this only listens.
+ */
+export function subscribeDaos(fn: () => void): () => void {
+  const wrapped = () => fn()
+  listeners.add(wrapped)
+  return () => {
+    listeners.delete(wrapped)
+  }
+}
+
+export const peekDaos = () => cache.daos
+
+/** Drops the directory and reads it again, wherever the caller happens to be. */
+export const refreshDaos = () => load(true)
+
 export function useDaos() {
   const [state, setState] = useState(cache)
 

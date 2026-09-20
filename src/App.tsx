@@ -1,13 +1,16 @@
-import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { HashRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Overview from './routes/Overview'
 import PoolStats from './routes/PoolStats'
 import ProjectOverview from './routes/ProjectOverview'
 import Stats from './routes/Stats'
 import { ThemeSwitch } from './components/ThemeSwitch'
+import { SectionSwitcher } from './components/SectionSwitcher'
 import { PROJECTS } from './projects/defs'
-import { SECTIONS, sectionFor } from './sections'
+import { sectionFor } from './sections'
+import { useDaoNav } from './dao/useDaoNav'
 import Councils from './dao/routes/Councils'
 import DaoDetails from './dao/routes/DaoDetails'
+import AllProposals from './dao/routes/AllProposals'
 import MsigGroups, { MsigGroupDetails } from './dao/routes/MsigGroups'
 import './dao/dao.css'
 
@@ -37,43 +40,21 @@ export function App() {
  */
 function Shell() {
   const { pathname } = useLocation()
-  const navigate = useNavigate()
   const section = sectionFor(pathname)
+  /* Called unconditionally and on every page: a hook cannot be reached for only
+     when the route happens to be a DAO. It returns nothing off those routes. */
+  const context = useDaoNav(pathname)
+  const groups = [...section.groups, ...context]
 
   return (
     <div className="shell">
       <aside className="side">
-        <div className="brand">
-          <span className="brand__mark" aria-hidden="true">
-            AW
-          </span>
-          <span className="brand__name">
-            Alien Worlds
-            <small>{section.blurb}</small>
-          </span>
-        </div>
-
-        {/*
-          The top level. A radio group rather than links, because these are not
-          destinations in their own right — picking one takes you to its first
-          page, and the menu below changes to match.
-        */}
-        <div className="sections" role="tablist" aria-label="Tools">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              role="tab"
-              aria-selected={s.key === section.key}
-              onClick={() => navigate(s.home)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
+        {/* The brand and the top-level switch are one control: it says which
+            tool you are in, and opens the list of the others. */}
+        <SectionSwitcher section={section} />
 
         <nav className="nav" aria-label={section.label}>
-          {section.groups.map((g) => (
+          {groups.map((g) => (
             <div key={g.label} className="nav__group">
               <span className="nav__label">{g.label}</span>
               {g.tools.map((t) => (
@@ -98,7 +79,9 @@ function Shell() {
           <Route path="/pools" element={<PoolStats />} />
           <Route path="/daos/syndicates" element={<Councils group="syndicate" />} />
           <Route path="/daos/unions" element={<Councils group="union" />} />
+          <Route path="/daos/proposals" element={<AllProposals />} />
           <Route path="/daos/:id" element={<DaoDetails />} />
+          <Route path="/daos/:id/:tab" element={<DaoDetails />} />
           <Route path="/msig" element={<MsigGroups />} />
           <Route path="/msig/:name" element={<MsigGroupDetails />} />
           {PROJECTS.map((p) => (

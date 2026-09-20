@@ -71,6 +71,10 @@ export const SECTIONS: Section[] = [
           { to: '/daos/unions', label: 'Unions' },
         ],
       },
+      {
+        label: 'Across all councils',
+        tools: [{ to: '/daos/proposals', label: 'All proposals' }],
+      },
     ],
   },
   {

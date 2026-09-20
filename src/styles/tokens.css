@@ -38,6 +38,18 @@
   --good: #0a7f0a;
   --critical: #c53030;
 
+  /*
+   * Mission Control. Its colours are blue and gold, and blue is already the
+   * site's accent — so the watched accounts take the gold, and nothing else on
+   * the page uses it. A marked name anywhere means one of that list.
+   *
+   * NOT --series-4 (#eda100) directly: that is a chart fill, picked to sit on a
+   * surface as an area, and it fails as small text on one. Same hue, taken down
+   * to where it passes as 12px type.
+   */
+  --watched: #8a6100;
+  --watched-soft: #fdf2d9;
+
   --grid: #e9e8e4;
   --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 1px 3px rgb(0 0 0 / 4%);
 
@@ -83,6 +95,11 @@
     --series-4: #c98500;
     --good: #3cb43c;
     --critical: #e66767;
+
+    /* On a dark surface the gold goes back to full strength: it was
+       the light background it failed against, not the hue. */
+    --watched: #e8b53c;
+    --watched-soft: #2e2612;
     --grid: #262624;
     --shadow: none;
   }
@@ -107,6 +124,11 @@
   --series-4: #c98500;
   --good: #3cb43c;
   --critical: #e66767;
+
+  /* On a dark surface the gold goes back to full strength: it was
+       the light background it failed against, not the hue. */
+  --watched: #e8b53c;
+  --watched-soft: #2e2612;
   --grid: #262624;
   --shadow: none;
 }

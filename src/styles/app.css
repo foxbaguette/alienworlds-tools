@@ -49,44 +49,119 @@
 }
 
 /*
-   The top level: which of the site's tools you are in. Above the menu and
-   visually heavier than it, because everything below is scoped by it.
+   The section switcher, which is also the brand: one control saying which tool
+   you are in and opening the list of the others.
 
-   Wraps rather than scrolls, so a third and fourth section just take a second
-   line instead of hiding off the edge.
+   NOT a segmented control. Segments suit two or three short equal options that
+   filter what you are looking at; these are different lengths, they wrapped to
+   a second line at three, and picking one moves you elsewhere in the site.
+
+   The .sections class survives for the tab strips inside a page, which ARE that
+   kind of choice — see dao.css.
 */
-.sections {
+.switcher { position: relative; }
+
+.switcher__button {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-  padding: 3px;
-  background: var(--surface-sunk);
-  border: 1px solid var(--border);
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  font-family: inherit;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.switcher__button:hover { background: var(--surface-sunk); }
+.switcher__button[aria-expanded='true'] {
+  background: var(--surface-sunk);
+  border-color: var(--border);
 }
 
-.sections button {
-  flex: 1 1 auto;
-  min-height: 30px;
-  padding: 0 var(--sp-3);
+.switcher__mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 7px;
+}
+
+/* The pair of lines used in the button and again in each menu row, so the
+   thing you picked reads identically to where you picked it from. */
+.switcher__text {
+  display: grid;
+  min-width: 0;
+  line-height: 1.25;
+}
+.switcher__text b {
+  font-size: var(--fs-md);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.switcher__text small {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-3);
+  /* A blurb is a hint, not a paragraph: one line, clipped. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher__chev {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  color: var(--text-3);
+}
+
+.switcher__menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--sp-1));
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-1);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 14%), 0 2px 6px rgb(0 0 0 / 8%);
+}
+
+.switcher__menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
   font-family: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--text-2);
+  text-align: left;
+  color: var(--text);
   background: transparent;
   border: 0;
   border-radius: calc(var(--radius-sm) - 2px);
   cursor: pointer;
-  white-space: nowrap;
 }
-.sections button:hover { color: var(--text); }
+.switcher__menu button:hover { background: var(--surface-sunk); }
+.switcher__menu button[aria-checked='true'] b { color: var(--accent); }
 
-/* The selected one is a raised surface, not just a colour: with two items a
-   colour alone reads as "this one is a link" rather than "you are here". */
-.sections button[aria-selected='true'] {
-  color: var(--text);
-  background: var(--surface);
-  box-shadow: var(--shadow);
+.switcher__tick {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  color: var(--accent);
 }
 
 .nav {
@@ -155,9 +230,14 @@
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
-  .sections {
-    order: 2;
-    flex: none;
+  .switcher {
+    order: 1;
+    flex: 0 1 230px;
+  }
+  /* Anchored to the switcher, which is no longer full width here. */
+  .switcher__menu {
+    right: auto;
+    min-width: 260px;
   }
   .nav {
     order: 3;

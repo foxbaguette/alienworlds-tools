@@ -3,6 +3,7 @@ import { Countdown } from '../components/Countdown'
 import { WATCHED, heldByWatched, isMcControlled, type Dao, type DaoGroup } from '../chain/daos'
 import { EXPLORER, fmtAmount } from '../format'
 import { useDaos } from '../useDaos'
+import { RefreshButton } from '../components/RefreshButton'
 
 /**
  * Every DAO of one kind, and who sits on each council.
@@ -12,7 +13,7 @@ import { useDaos } from '../useDaos'
  * two that drift apart.
  */
 export default function Councils({ group }: { group: DaoGroup }) {
-  const { daos, loading, error, refresh } = useDaos()
+  const { daos, loading, error } = useDaos()
   const shown = daos.filter((d) => d.group === group)
   const label = group === 'syndicate' ? 'Syndicates' : 'Unions'
 
@@ -32,9 +33,7 @@ export default function Councils({ group }: { group: DaoGroup }) {
               : 'Unions run the worker proposals and hold the proposal funds.'}
           </p>
         </div>
-        <button className="btn" type="button" onClick={refresh} disabled={loading}>
-          {loading ? 'Reading…' : 'Refresh'}
-        </button>
+        <RefreshButton />
       </header>
 
       {error ? <p className="dao-note dao-note--bad">{error}</p> : null}

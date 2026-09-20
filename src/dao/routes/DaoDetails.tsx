@@ -2,16 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Countdown } from '../components/Countdown'
 import { WATCHED, heldByWatched, isMcControlled, type Dao } from '../chain/daos'
-import {
-  MSIG_OPEN,
-  approvalCount,
-  approvalsOf,
-  fetchProposals,
-  isExpired,
-  msigExpiry,
-  msigTitle,
-  type MsigProposal,
-} from '../chain/proposals'
+import { MSIG_OPEN, approvalCount, approvalsOf, isExpired, msigExpiry, msigTitle, type MsigProposal } from '../chain/proposals'
 import {
   WP_APPROVED,
   WP_FINAPPR,
@@ -19,7 +10,6 @@ import {
   WP_LABEL,
   WP_PENDING,
   WP_TONE,
-  fetchWorker,
   hasWorkerProposals,
   wpDocUrl,
   wpEffectiveState,
@@ -33,6 +23,8 @@ import {
 } from '../chain/worker'
 import { EXPLORER, fmtAge, fmtAmount, fmtDays, isoDay } from '../format'
 import { daoById, useDaos } from '../useDaos'
+import { RefreshButton } from '../components/RefreshButton'
+import { ensureProposals, ensureWorker, proposalsOf, useProposalCaches, workerOf } from '../useProposals'
 
 type Tab = 'council' | 'proposals' | 'worker'
 
@@ -44,11 +36,10 @@ type Tab = 'council' | 'proposals' | 'worker'
  * it — so one is on screen at a time rather than all three as a wall.
  */
 export default function DaoDetails() {
-  const { id = '' } = useParams()
+  const { id = '', tab } = useParams()
   const navigate = useNavigate()
   const { daos, loading } = useDaos()
   const dao = daoById(daos, id)
-  const [tab, setTab] = useState<Tab>('proposals')
 
   if (!dao) {
     return (
@@ -63,12 +54,18 @@ export default function DaoDetails() {
     )
   }
 
+  /*
+   * The tab is a route, not component state, so each one is linkable, survives
+   * a reload, and can appear in the sidebar as a page of its own. A syndicate
+   * has no worker tab, so asking for one falls back rather than opening a tab
+   * with nothing behind it.
+   */
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'council', label: `Council & candidates` },
     { key: 'proposals', label: 'Proposals' },
     ...(hasWorkerProposals(dao) ? [{ key: 'worker' as Tab, label: 'Worker proposals' }] : []),
+    { key: 'council', label: 'Council & candidates' },
   ]
-  const shown = tabs.some((t) => t.key === tab) ? tab : 'proposals'
+  const shown = (tabs.find((t) => t.key === tab)?.key ?? 'proposals') as Tab
 
   return (
     <div className="page">
@@ -87,12 +84,21 @@ export default function DaoDetails() {
               : ''}
           </p>
         </div>
-        <Countdown due={dao.nextElection} periodLength={dao.periodLength} />
+        <div className="page__actions">
+          <Countdown due={dao.nextElection} periodLength={dao.periodLength} />
+          <RefreshButton />
+        </div>
       </header>
 
       <div className="sections dao-tabs" role="tablist">
         {tabs.map((t) => (
-          <button key={t.key} type="button" role="tab" aria-selected={t.key === shown} onClick={() => setTab(t.key)}>
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={t.key === shown}
+            onClick={() => navigate(`/daos/${id}/${t.key}`, { replace: true })}
+          >
             {t.label}
           </button>
         ))}
@@ -204,24 +210,19 @@ function CouncilTab({ dao }: { dao: Dao }) {
 /* ---------- council proposals ---------- */
 
 function ProposalsTab({ dao }: { dao: Dao }) {
-  const [props, setProps] = useState<MsigProposal[] | null>(null)
-  const [failed, setFailed] = useState(false)
   const [filter, setFilter] = useState<'active' | 'executed'>('active')
+  const version = useProposalCaches()
 
+  /* Shared with the all-proposals overview: opening a council from that list
+     should not re-read what the list already has. Keyed on the cache version
+     as well as the DAO, so clearing the caches is what makes this ask again. */
   useEffect(() => {
-    let alive = true
-    setProps(null)
-    setFailed(false)
-    fetchProposals(dao.id)
-      .then((rows) => alive && setProps(rows))
-      .catch((err) => {
-        console.error('proposals:', err)
-        if (alive) setFailed(true)
-      })
-    return () => {
-      alive = false
-    }
-  }, [dao.id])
+    void ensureProposals(dao.id)
+  }, [dao.id, version])
+
+  const cached = proposalsOf(dao.id)
+  const props = cached ?? null
+  const failed = cached === null
 
   const need = dao.approvalThreshold
   /* Active means still open AND still inside its transaction expiry: an expired
@@ -316,24 +317,16 @@ function StateChip({ state: p }: { state: MsigProposal }) {
 /* ---------- worker proposals ---------- */
 
 function WorkerTab({ dao }: { dao: Dao }) {
-  const [wp, setWp] = useState<WorkerData | null>(null)
-  const [failed, setFailed] = useState(false)
   const [live, setLive] = useState(true)
+  const version = useProposalCaches()
 
   useEffect(() => {
-    let alive = true
-    setWp(null)
-    setFailed(false)
-    fetchWorker(dao.id)
-      .then((data) => alive && setWp(data))
-      .catch((err) => {
-        console.error('worker proposals:', err)
-        if (alive) setFailed(true)
-      })
-    return () => {
-      alive = false
-    }
-  }, [dao.id])
+    void ensureWorker(dao.id)
+  }, [dao.id, version])
+
+  const cached = workerOf(dao.id)
+  const wp = cached ?? null
+  const failed = cached === null
 
   const all = wp?.props ?? []
   const shown = live ? all.filter(wpIsLive) : all
