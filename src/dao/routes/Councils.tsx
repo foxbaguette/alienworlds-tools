@@ -8,6 +8,8 @@ import { EXPLORER, decayedPower, fmtAge, fmtAmount, fmtPower, rawPower } from '.
 import { useDaos } from '../useDaos'
 import { useVotes } from '../useVotes'
 import { RefreshButton } from '../components/RefreshButton'
+import { StakePanel } from '../components/StakePanel'
+import { usePositions } from '../usePosition'
 import { useSession } from '../../wallet/session'
 
 /**
@@ -21,11 +23,16 @@ export default function Councils({ group }: { group: DaoGroup }) {
   const { daos, loading, error } = useDaos()
   const shown = daos.filter((d) => d.group === group)
   const { votes, read, refresh: refreshVotes } = useVotes(daos)
-  const { session } = useSession()
+  const { session, actor } = useSession()
+  /* Holdings for every DAO at once: one read per token contract covers them
+     all, so opening one card's actions costs nothing the others did not. */
+  const holdings = usePositions(shownOf(daos, group), actor)
+  const [acting, setActing] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
 
   const label = group === 'syndicate' ? 'Syndicates' : 'Unions'
+  const actingDao = shown.find((d) => d.id === acting) ?? null
   const state = groupVotes(shown, votes, read)
 
   /**
@@ -144,6 +151,7 @@ export default function Councils({ group }: { group: DaoGroup }) {
             vote={votes.get(dao.id)}
             slate={castableSlate(dao, votes)}
             busy={busy}
+            onActions={() => setActing(acting === dao.id ? null : dao.id)}
             onRefresh={(s) =>
               void sign(
                 [voteAction(session!, dao, s.keep)],
@@ -158,9 +166,23 @@ export default function Councils({ group }: { group: DaoGroup }) {
       </div>
 
       {!shown.length && loading ? <p className="dao-note">Reading councils…</p> : null}
+
+      {actingDao ? (
+        <StakePanel
+          dao={actingDao}
+          position={holdings.positions.get(actingDao.id) ?? null}
+          tlm={holdings.tlm}
+          swapTarget={holdings.swaps.get(actingDao.symbol)}
+          onDone={holdings.refresh}
+          onClose={() => setActing(null)}
+        />
+      ) : null}
     </div>
   )
 }
+
+/** The same filter the render uses, hoisted so the holdings hook can share it. */
+const shownOf = (daos: Dao[], group: DaoGroup) => daos.filter((d) => d.group === group)
 
 function DaoCard({
   dao,
@@ -168,11 +190,13 @@ function DaoCard({
   slate,
   busy,
   onRefresh,
+  onActions,
 }: {
   dao: Dao
   vote?: VoteRow
   slate: Slate
   busy: boolean
+  onActions: () => void
   onRefresh: (s: Slate) => void
 }) {
   const { session } = useSession()
@@ -282,6 +306,16 @@ function DaoCard({
         <Link className="btn" to={`/daos/${dao.id}`}>
           Details
         </Link>
+        {session ? (
+          <button
+            className="btn"
+            type="button"
+            onClick={onActions}
+            title={`Stake, unstake or convert ${dao.symbol}`}
+          >
+            Actions
+          </button>
+        ) : null}
         {session && slate.slate.length ? (
           <button
             className={`btn${slate.drop.length ? ' btn--warn' : ''}`}

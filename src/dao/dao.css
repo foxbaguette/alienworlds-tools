@@ -890,3 +890,44 @@
   cursor: pointer;
 }
 .abil-scope.is-open { font-weight: 650; color: var(--accent); }
+
+/* ── Staking ─────────────────────────────────────────────────────────────── */
+
+/* Opened from a card, shown below the grid rather than over it: the figures in
+   it are about one DAO, and covering the others would hide the comparison the
+   grid exists for. */
+.stake-panel {
+  margin-top: var(--sp-5);
+  padding: var(--sp-4);
+  display: grid;
+  gap: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.stake-panel .dao-h2 { margin: 0; }
+
+.stake-figures {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5);
+}
+.stake-figures li { display: grid; gap: 2px; }
+.stake-figures span { font-size: var(--fs-xs); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.stake-figures b { font-size: var(--fs-lg, 1.15rem); font-variant-numeric: tabular-nums; }
+
+.stake-waiting { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.stake-wait {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm);
+}
+.stake-wait i { font-style: normal; color: var(--text-3); }
