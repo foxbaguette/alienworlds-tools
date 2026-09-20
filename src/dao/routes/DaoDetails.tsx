@@ -25,6 +25,7 @@ import { EXPLORER, fmtAge, fmtAmount, fmtDays, isoDay } from '../format'
 import { daoById, useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
 import { ensureProposals, ensureWorker, proposalsOf, useProposalCaches, workerOf } from '../useProposals'
+import { fetchRedirect, type Redirect } from '../chain/inflation'
 
 type Tab = 'council' | 'proposals' | 'worker'
 
@@ -104,10 +105,59 @@ export default function DaoDetails() {
         ))}
       </div>
 
+      {hasWorkerProposals(dao) ? <RedirectPanel dao={dao} /> : null}
+
       {shown === 'council' ? <CouncilTab dao={dao} /> : null}
       {shown === 'proposals' ? <ProposalsTab dao={dao} /> : null}
       {shown === 'worker' ? <WorkerTab dao={dao} /> : null}
     </div>
+  )
+}
+
+/**
+ * Where a union's money comes from.
+ *
+ * Its proposal funds are filled by a redirected share of its planet's daily
+ * inflation and by nothing else, so this is the whole of its income. Unions
+ * only: a syndicate is not on the receiving end of that split.
+ *
+ * Quiet until it has an answer, and absent if it never gets one — history
+ * indexers are the flakiest thing this app talks to, and an empty panel saying
+ * "unavailable" on every load would be worse than no panel.
+ */
+/** A whole number stays whole: floating point makes 7 into 7.000000001. */
+function fmtPercent(n: number): string {
+  const one = Math.round(n * 10) / 10
+  return Number.isInteger(one) ? String(one) : one.toFixed(1)
+}
+
+function RedirectPanel({ dao }: { dao: Dao }) {
+  const [redirect, setRedirect] = useState<Redirect | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setRedirect(null)
+    void fetchRedirect(dao)
+      .then((r) => alive && setRedirect(r))
+      .catch((err) => console.error('redirect:', err))
+    return () => {
+      alive = false
+    }
+  }, [dao.id])
+
+  if (!redirect) return null
+
+  return (
+    <p className="dao-note redirect">
+      <b>{redirect.percent != null ? `${fmtPercent(redirect.percent)}%` : 'A share'}</b>{' '}
+      of {redirect.planet ?? 'its planet'}&rsquo;s daily inflation is redirected to{' '}
+      <code>{redirect.to}</code> — about <b>{Math.trunc(redirect.perDay).toLocaleString('en-US')} TLM</b> a day
+      <span className="dao-dim">
+        {' '}
+        averaged over the last {redirect.days} daily claim{redirect.days === 1 ? '' : 's'}. This is the whole of
+        what funds this union&rsquo;s proposals.
+      </span>
+    </p>
   )
 }
 
