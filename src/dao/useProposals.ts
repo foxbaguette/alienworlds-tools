@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { fetchProposals, type MsigProposal } from './chain/proposals'
 import { fetchWorker, type WorkerData } from './chain/worker'
+import { daoById, peekDaos } from './useDaos'
+import { currentSession } from '../wallet/session'
 
 /**
  * Proposals, read once per DAO and shared.
@@ -46,10 +48,19 @@ export function ensureProposals(daoId: string): Promise<void> {
   )
 }
 
+/**
+ * Worker data, which is half about the signed-in account — its membership, its
+ * deposit with the contract, whether it may raise a proposal at all. So a
+ * cached set whose reader was somebody else is not a hit: signing in or out has
+ * to re-read, and checking it HERE means no sign-in path can forget to.
+ */
 export function ensureWorker(daoId: string): Promise<void> {
-  if (worker.has(daoId)) return Promise.resolve()
-  return once(`worker:${daoId}`, () =>
-    fetchWorker(daoId)
+  const actor = currentSession() ? String(currentSession()!.actor) : null
+  const held = worker.get(daoId)
+  if (held !== undefined && (held?.actor ?? null) === actor) return Promise.resolve()
+  worker.delete(daoId)
+  return once(`worker:${daoId}:${actor ?? ''}`, () =>
+    fetchWorker(daoId, daoById(peekDaos(), daoId) ?? undefined, actor)
       .then((data) => worker.set(daoId, data))
       .catch((err: unknown) => {
         console.error(`worker proposals for ${daoId}:`, err)

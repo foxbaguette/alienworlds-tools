@@ -1,6 +1,6 @@
-import { ABI, Action } from '@wharfkit/session'
+import { ABI, Action, Serializer, Transaction } from '@wharfkit/session'
 import { call } from './nodes'
-import { MSIG_CONTRACT, getAbi } from './proposals'
+import { MSIG_CONTRACT, getAbi, type MsigProposal } from './proposals'
 import type { ChainAction } from './act'
 import type { Dao } from './daos'
 
@@ -96,6 +96,90 @@ export interface ProposalDraft {
   description: string
   /** Days the council has to sign. */
   days?: number
+}
+
+/** One action of a proposal being written, with its arguments still as JSON. */
+export interface DraftAction {
+  account: string
+  name: string
+  /** JSON, which is serialised against the contract's own ABI on the way out. */
+  data: string
+}
+
+export const blankDraftAction = (): DraftAction => ({ account: '', name: '', data: '{}' })
+
+/**
+ * A proposal on chain, turned back into something a person can read and edit.
+ *
+ * A packed transaction carries its actions' arguments as opaque bytes, so each
+ * one has to go BACK through its own contract's ABI before it can be shown —
+ * which is several reads, but only on the copy path and only once.
+ *
+ * An action that cannot be decoded is handed over as raw bytes rather than
+ * dropped: the reader can still see something was there and decide.
+ */
+export async function decodeProposal(p: MsigProposal): Promise<DraftAction[]> {
+  const trx = Serializer.decode({ type: Transaction, data: p.packed_transaction })
+  const out: DraftAction[] = []
+  for (const a of trx.actions ?? []) {
+    const account = String(a.account)
+    const name = String(a.name)
+    let data = '{}'
+    try {
+      const abi = ABI.from(await getAbi(account))
+      data = JSON.stringify(Serializer.objectify(Serializer.decode({ abi, type: name, data: a.data })), null, 2)
+    } catch (err) {
+      console.error(`Could not decode ${account}::${name}:`, err)
+      data = `/* could not decode — raw bytes: ${String(a.data)} */`
+    }
+    out.push({ account, name, data })
+  }
+  return out
+}
+
+/**
+ * A proposal carrying any number of hand-written actions.
+ *
+ * Every action is serialised BEFORE any of it is sent: a half-built proposal is
+ * not worth putting in front of a wallet, and a bad argument should be a
+ * message in the form rather than a rejected transaction.
+ */
+export async function proposeActions(
+  level: ChainAction['authorization'][number],
+  dao: Dao,
+  rows: DraftAction[],
+  draft: ProposalDraft,
+): Promise<ChainAction> {
+  if (!dao.owner) throw new Error(`${dao.title} has no owner account to propose against.`)
+  const council = { actor: dao.owner, permission: 'active' }
+
+  const inner = []
+  for (const a of rows) {
+    let args: unknown
+    try {
+      args = JSON.parse(a.data)
+    } catch (err) {
+      throw new Error(`${a.account}::${a.name} — arguments are not valid JSON: ${(err as Error).message}`)
+    }
+    inner.push(await encodeInner({ account: a.account, name: a.name, authorization: [council], data: args as Record<string, unknown> }))
+  }
+
+  return {
+    account: MSIG_CONTRACT,
+    name: 'propose',
+    authorization: [level],
+    data: {
+      proposer: level.actor,
+      proposal_name: newProposalName(),
+      requested: [council],
+      dac_id: dao.id,
+      metadata: [
+        { key: 'title', value: draft.title },
+        { key: 'description', value: draft.description || '- No description -' },
+      ],
+      trx: wrapTrx(inner, expiresAt(draft.days ?? PROPOSAL_DAYS)),
+    },
+  }
 }
 
 /**

@@ -931,3 +931,19 @@
   border-radius: var(--radius-sm);
 }
 .stake-wait i { font-style: normal; color: var(--text-3); }
+
+/* ── Writing a proposal ──────────────────────────────────────────────────── */
+
+.cp-form { display: grid; gap: var(--sp-3); }
+.cp-form .ale-form { margin: 0; }
+.cp-action {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm);
+}
+
+/* The document field and its upload button are one control. */
+.wp-doc { display: flex; gap: var(--sp-2); }
+.wp-doc input[type='text'] { flex: 1; }

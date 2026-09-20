@@ -30,6 +30,9 @@ import { TAP_MAX_X100, fetchTap, fmtRate, planetOf, tapSetAction, type Tap } fro
 import { PROPOSAL_DAYS, proposeAction } from '../chain/propose'
 import { isCancel, readableError, type ChainAction } from '../chain/act'
 import { todoFor } from '../useTodo'
+import { ProposalForm } from '../components/ProposalForm'
+import { WorkerProposalForm } from '../components/WorkerProposalForm'
+import { clearProposalCaches } from '../useProposals'
 import { useSession } from '../../wallet/session'
 
 type Tab = 'council' | 'proposals' | 'worker'
@@ -527,6 +530,8 @@ function CouncilTab({ dao }: { dao: Dao }) {
 
 function ProposalsTab({ dao }: { dao: Dao }) {
   const [filter, setFilter] = useState<'active' | 'executed'>('active')
+  /* null means closed; a proposal means "copy that one"; 'new' means blank. */
+  const [writing, setWriting] = useState<MsigProposal | 'new' | null>(null)
   const version = useProposalCaches()
 
   /* Shared with the all-proposals overview: opening a council from that list
@@ -556,14 +561,28 @@ function ProposalsTab({ dao }: { dao: Dao }) {
         </span>
       </h2>
 
-      <div className="sections dao-tabs dao-tabs--sm" role="tablist">
-        <button type="button" role="tab" aria-selected={filter === 'active'} onClick={() => setFilter('active')}>
-          Active
-        </button>
-        <button type="button" role="tab" aria-selected={filter === 'executed'} onClick={() => setFilter('executed')}>
-          Settled
+      <div className="page__actions">
+        <div className="sections dao-tabs dao-tabs--sm" role="tablist">
+          <button type="button" role="tab" aria-selected={filter === 'active'} onClick={() => setFilter('active')}>
+            Active
+          </button>
+          <button type="button" role="tab" aria-selected={filter === 'executed'} onClick={() => setFilter('executed')}>
+            Settled
+          </button>
+        </div>
+        <button className="btn" type="button" onClick={() => setWriting(writing === 'new' ? null : 'new')}>
+          New proposal
         </button>
       </div>
+
+      {writing ? (
+        <ProposalForm
+          dao={dao}
+          from={writing === 'new' ? null : writing}
+          onDone={clearProposalCaches}
+          onClose={() => setWriting(null)}
+        />
+      ) : null}
 
       <div className="dao-tablewrap">
         <table className="dao-table">
@@ -573,6 +592,7 @@ function ProposalsTab({ dao }: { dao: Dao }) {
               <th>State</th>
               <th className="num">Approvals</th>
               <th className="num">Expires</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -600,12 +620,22 @@ function ProposalsTab({ dao }: { dao: Dao }) {
                     <span className="dao-dim">/{need}</span>
                   </td>
                   <td className="num">{Number.isFinite(exp) ? isoDay(exp) : '—'}</td>
+                  <td className="num">
+                    <button
+                      className="btn"
+                      type="button"
+                      title="Open a new proposal prefilled with this one's actions"
+                      onClick={() => setWriting(writing === p ? null : p)}
+                    >
+                      Copy
+                    </button>
+                  </td>
                 </tr>
               )
             })}
             {!shown.length ? (
               <tr>
-                <td colSpan={4} className="dao-dim">
+                <td colSpan={5} className="dao-dim">
                   {failed
                     ? 'Could not read the proposals for this council.'
                     : !props
@@ -634,6 +664,7 @@ function StateChip({ state: p }: { state: MsigProposal }) {
 
 function WorkerTab({ dao }: { dao: Dao }) {
   const [live, setLive] = useState(true)
+  const [writing, setWriting] = useState(false)
   const version = useProposalCaches()
 
   useEffect(() => {
@@ -654,14 +685,23 @@ function WorkerTab({ dao }: { dao: Dao }) {
         <span className="dao-dim">{failed ? 'unavailable' : wp ? `${shown.length} of ${all.length}` : 'reading…'}</span>
       </h2>
 
-      <div className="sections dao-tabs dao-tabs--sm" role="tablist">
-        <button type="button" role="tab" aria-selected={live} onClick={() => setLive(true)}>
-          Live
-        </button>
-        <button type="button" role="tab" aria-selected={!live} onClick={() => setLive(false)}>
-          All {all.length || ''}
+      <div className="page__actions">
+        <div className="sections dao-tabs dao-tabs--sm" role="tablist">
+          <button type="button" role="tab" aria-selected={live} onClick={() => setLive(true)}>
+            Live
+          </button>
+          <button type="button" role="tab" aria-selected={!live} onClick={() => setLive(false)}>
+            All {all.length || ''}
+          </button>
+        </div>
+        <button className="btn" type="button" disabled={!wp} onClick={() => setWriting(!writing)}>
+          New worker proposal
         </button>
       </div>
+
+      {writing && wp ? (
+        <WorkerProposalForm dao={dao} wp={wp} onDone={clearProposalCaches} onClose={() => setWriting(false)} />
+      ) : null}
 
       <div className="dao-tablewrap">
         <table className="dao-table">

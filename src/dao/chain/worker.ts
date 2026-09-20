@@ -21,6 +21,8 @@
  *                                  └─── dispute ──▶ indispute
  */
 import { getPage, getRows } from './nodes'
+import { TLM_CONTRACT, TLM_SYMBOL, assetUnits, toAsset, unitsToAsset } from './stake'
+import type { ChainAction } from './act'
 import type { Dao } from './daos'
 
 export const WP_CONTRACT = 'prop.worlds'
@@ -106,6 +108,18 @@ export interface WorkerData {
   /** Arbiters with a rating above zero — createprop refuses the others. */
   arbiters: string[]
   receivers: Set<string>
+  /**
+   * Whose reads these were. Half of what is here is about one account, so
+   * signing in or out has to invalidate it — stamping the data with the reader
+   * makes that automatic rather than something a sign-in path can forget.
+   */
+  actor: string | null
+  /** Whether that account has agreed to the LATEST member terms. */
+  member: boolean | null
+  agreedTerms: number
+  latestTerms: number
+  /** Their balance with prop.worlds, which the proposal fee is drawn from. */
+  deposit: { quantity: string; contract: string } | null
 }
 
 /** Contract defaults, used only if the singleton cannot be read. */
@@ -231,8 +245,12 @@ export function wpDocUrl(hash: string | null | undefined): string | null {
   return null
 }
 
-export async function fetchWorker(dacId: string): Promise<WorkerData> {
-  const [props, votes, cfg, arbiters, receivers] = await Promise.all([
+export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | null): Promise<WorkerData> {
+  /* Bounded to one account, for the three reads that are about the signer. */
+  const one = actor ? { lower_bound: actor, upper_bound: actor, limit: 1 } : null
+  const tokenContract = dao?.tokenContract ?? null
+
+  const [props, votes, cfg, arbiters, receivers, member, terms, deposit] = await Promise.all([
     getRows<WorkerProposal>({ code: WP_CONTRACT, scope: dacId, table: 'proposals', limit: 500 }),
     getRows<WorkerVote>({ code: WP_CONTRACT, scope: dacId, table: 'propvotes', limit: 1000 }),
     getPage<{ data: { key: string; value: [string, unknown] }[] }>(
@@ -245,12 +263,44 @@ export async function fetchWorker(dacId: string): Promise<WorkerData> {
       limit: 500,
     }).catch(() => []),
     getRows<{ receiver: string }>({ code: WP_CONTRACT, scope: dacId, table: 'recwl', limit: 500 }).catch(() => []),
+    /* Every action in this contract calls assertValidMember, which wants the
+       account registered against the LATEST terms, not merely registered.
+       Reading it turns an unreadable wallet error into a sentence. */
+    one && tokenContract
+      ? getRows<{ agreedtermsversion: number }>({
+          code: tokenContract,
+          scope: dacId,
+          table: 'members',
+          ...one,
+        }).catch(() => [])
+      : Promise.resolve([]),
+    one && tokenContract
+      ? getRows<{ version: number }>({
+          code: tokenContract,
+          scope: dacId,
+          table: 'memberterms',
+          limit: 100,
+        }).catch(() => [])
+      : Promise.resolve([]),
+    /* The fee comes out of a deposit the contract holds, not the wallet, so
+       raising a proposal may need a transfer first. */
+    one
+      ? getRows<{ deposit: { quantity: string; contract: string } }>({
+          code: WP_CONTRACT,
+          scope: WP_CONTRACT,
+          table: 'deposits',
+          ...one,
+        }).catch(() => [])
+      : Promise.resolve([]),
   ])
 
   /* The singleton stores its fields as a key/value list of variants, exactly
      like dacglobals — each value is [type, value]. */
   const c: Record<string, unknown> = {}
   for (const kv of cfg[0]?.data ?? []) c[kv.key] = kv.value?.[1]
+
+  const latest = terms.reduce((n, t) => Math.max(n, Number(t.version) || 0), 0)
+  const agreed = Number(member[0]?.agreedtermsversion ?? 0)
 
   return {
     props: props.sort((a, b) => wpTime(b.created_at) - wpTime(a.created_at)),
@@ -264,5 +314,155 @@ export async function fetchWorker(dacId: string): Promise<WorkerData> {
     },
     arbiters: arbiters.filter((a) => Number(a.rating) > 0).map((a) => a.arbiter).sort(),
     receivers: new Set(receivers.map((r) => r.receiver)),
+    actor: actor ?? null,
+    member: !actor ? null : latest > 0 && agreed === latest,
+    agreedTerms: agreed,
+    latestTerms: latest,
+    deposit: deposit[0]?.deposit ?? null,
   }
+}
+
+/**
+ * Raising one — `createprop`.
+ *
+ * The fee is NOT paid with this transaction. prop.worlds keeps a deposit
+ * balance per account, topped up by an ordinary transfer — `receive` credits
+ * any transfer to the contract regardless of memo — so a proposal from an
+ * account with no deposit is two actions rather than one.
+ */
+export function wpFeeShortfall(wp: WorkerData): { contract: string; quantity: string } | null {
+  const fee = wp.config.proposal_fee
+  if (!fee || assetUnits(fee.quantity) <= 0) return null
+  const have = wp.deposit && wp.deposit.contract === fee.contract ? assetUnits(wp.deposit.quantity) : 0
+  const short = assetUnits(fee.quantity) - have
+  if (short <= 0) return null
+  return {
+    contract: fee.contract,
+    quantity: unitsToAsset(short, assetPrecision(fee.quantity), assetCode(fee.quantity)),
+  }
+}
+
+const assetPrecision = (a: string) => (String(a ?? '').split(' ')[0].split('.')[1] ?? '').length
+const assetCode = (a: string) => String(a ?? '').split(' ')[1] ?? ''
+
+export interface WorkerDraft {
+  title: string
+  summary: string
+  /** An IPFS CID or a plain URL — both appear on chain, so both are accepted. */
+  url: string
+  arbiter: string
+  pay: string
+  arbiterPay: string
+  days: number
+  category: number
+}
+
+/** A fresh proposal id; `createprop` takes one the caller invents. */
+export function newWorkerId(): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz12345'
+  const bytes = new Uint8Array(12)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map((b) => alphabet[b % alphabet.length]).join('')
+}
+
+/**
+ * The actions for a new worker proposal, or a sentence saying why not.
+ *
+ * Every check here is one the contract makes anyway. They are made first so a
+ * refusal costs nothing — otherwise the only way to find out is a wallet
+ * prompt and a failed transaction.
+ */
+export function createPropActions(
+  level: ChainAction['authorization'][number],
+  dao: Dao,
+  wp: WorkerData,
+  draft: WorkerDraft,
+): ChainAction[] | string {
+  const fee = wp.config.proposal_fee
+  const sym = fee ? assetCode(fee.quantity) : TLM_SYMBOL
+  const prec = fee ? assetPrecision(fee.quantity) : 4
+  const contract = fee ? fee.contract : TLM_CONTRACT
+
+  if (draft.title.trim().length < 4) return 'The title has to be more than three characters.'
+  if (draft.summary.trim().length < 4) return 'The summary has to be more than three characters.'
+  if (!draft.arbiter) return 'Pick an arbiter.'
+  if (draft.arbiter === level.actor) return 'You cannot arbitrate your own proposal.'
+
+  const pay = toAsset(draft.pay, prec, sym)
+  if (!pay) return 'Enter a pay amount above zero.'
+  /* Not a contract rule, but startwork sends the arbiter's pay to escrow as its
+     own transfer, and a transfer of zero is rejected — so a proposal created
+     with nothing for the arbiter can never start. */
+  const arbiterPay = toAsset(draft.arbiterPay, prec, sym)
+  if (!arbiterPay) {
+    return (
+      'The arbiter needs a pay amount above zero — startwork sends it as its own transfer, ' +
+      'and a transfer of zero is rejected.'
+    )
+  }
+
+  const actions: ChainAction[] = []
+  const short = wpFeeShortfall(wp)
+  if (short) {
+    actions.push({
+      account: short.contract,
+      name: 'transfer',
+      authorization: [level],
+      data: { from: level.actor, to: WP_CONTRACT, quantity: short.quantity, memo: `Proposal fee for ${dao.id}` },
+    })
+  }
+
+  actions.push({
+    account: WP_CONTRACT,
+    name: 'createprop',
+    authorization: [level],
+    data: {
+      proposer: level.actor,
+      title: draft.title.trim(),
+      summary: draft.summary.trim(),
+      arbiter: draft.arbiter,
+      proposal_pay: { quantity: pay, contract },
+      arbiter_pay: { quantity: arbiterPay, contract },
+      content_hash: draft.url.trim(),
+      id: newWorkerId(),
+      category: Math.max(0, Math.min(65535, Math.round(draft.category))),
+      job_duration: Math.max(1, Math.round(draft.days)) * 86400,
+      dac_id: dao.id,
+    },
+  })
+
+  return actions
+}
+
+/**
+ * Pinning a document to IPFS.
+ *
+ * The same endpoint, field name and response shape the WPS site uses, so a
+ * document uploaded here lands exactly where one uploaded there would.
+ *
+ * Content-Type is deliberately NOT set: the browser has to write it itself so
+ * it can attach the multipart boundary, and naming it by hand produces a
+ * header with no boundary the server can parse.
+ */
+export const IPFS_UPLOAD = 'https://api.alienworlds.io/workerproposal/upload'
+
+export async function uploadToIpfs(file: File): Promise<{ cid: string; already: boolean }> {
+  const body = new FormData()
+  body.append('file', file)
+  const res = await fetch(IPFS_UPLOAD, { method: 'POST', body })
+  const text = await res.text()
+
+  if (!res.ok) {
+    /* 409 means the file is already pinned, which is a success wearing an
+       error's clothes — the CID is in the message. Uploading the same file
+       twice answers 200 with the same CID today, so this path is here for
+       parity with the WPS client rather than because it has been seen. */
+    const cid = res.status === 409 ? text.slice(text.indexOf('Qm'), text.indexOf(' is')) : ''
+    if (!cid) throw new Error(text.slice(0, 200) || `upload failed (${res.status})`)
+    return { cid, already: true }
+  }
+
+  const cid = (JSON.parse(text) as { result?: { cid?: string } })?.result?.cid
+  if (!cid) throw new Error('the upload service returned no CID')
+  return { cid, already: false }
 }
