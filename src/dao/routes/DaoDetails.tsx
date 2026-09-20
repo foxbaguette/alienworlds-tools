@@ -15,6 +15,7 @@ import {
   wpEffectiveState,
   wpIsLive,
   wpPayableAt,
+  wpStranded,
   wpTally,
   wpTime,
   wpVotingOpen,
@@ -826,6 +827,7 @@ function WorkerRow({
   const stale = state !== p.state
   const doc = wpDocUrl(p.content_hash)
   const buttons = workerButtons(dao, p, wp, actor)
+  const stranded = wpStranded(p, wp)
 
   const act = async (which: Parameters<typeof workerAction>[3], label: string) => {
     if (!session || busy) return
@@ -860,14 +862,17 @@ function WorkerRow({
     when = `voting ends in ${fmtDays((wpTime(p.expiry) - Date.now()) / 1000)}`
   } else if (state === WP_FINALIZING || state === WP_FINAPPR) {
     const left = wpPayableAt(p, wp) - Date.now()
-    when = left > 0 ? `payable in ${fmtDays(left / 1000)}` : 'past its hold'
+    when = left > 0 ? `payable in ${fmtDays(left / 1000)}` : 'payable now'
   }
 
   return (
     <tr>
       <td>
+        {/* A stranded proposal reads "ready to pay" on chain, which is the one
+            thing it is not. The badge says the truth and the note below it says
+            why. */}
         <span
-          className={`wp-chip is-${WP_TONE[state] ?? 'wait'}`}
+          className={`wp-chip is-${stranded ? 'bad' : (WP_TONE[state] ?? 'wait')}`}
           title={
             stale
               ? `The chain still records this as "${WP_LABEL[p.state] ?? p.state}". Its voting window closed ${isoDay(
@@ -876,7 +881,7 @@ function WorkerRow({
               : `State on chain: ${p.state}`
           }
         >
-          {WP_LABEL[state] ?? state}
+          {stranded ? 'stranded' : (WP_LABEL[state] ?? state)}
         </span>
         <span className="dao-dim">{tally.round} round</span>
       </td>
@@ -903,6 +908,15 @@ function WorkerRow({
             </a>
           ) : null}
         </span>
+
+        {stranded ? (
+          <p className="dao-note dao-note--bad">
+            No escrow left. <code>startwork</code> moved the pay into <code>escrw.worlds</code> and{' '}
+            <code>finalize</code> is what releases it — but the escrow carries its own expiry, and once past it
+            the treasury may take the money back. There is none here now, so finalize would be refused and
+            nothing can move this proposal on.
+          </p>
+        ) : null}
 
         {buttons.length ? (
           <div className="wp-acts">

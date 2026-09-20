@@ -12,6 +12,7 @@ import {
   hasWorkerProposals,
   wpEffectiveState,
   wpPayableAt,
+  wpStranded,
   wpTally,
   type WorkerData,
 } from './chain/worker'
@@ -35,6 +36,10 @@ import { useSession } from '../wallet/session'
  *   4. A worker proposal of YOUR OWN that you can push to its next stage.
  *   5. A worker proposal that has cleared both its vote and its hold, and only
  *      needs finalizing.
+ *
+ * A proposal counts ONCE however many of those it satisfies. One proposal is
+ * one thing to go and look at, and a list saying "3" for two proposals is a
+ * list nobody can reconcile with what they see.
  *
  * The council ones are narrowed to proposals raised by the watched accounts on
  * purpose. Every council carries hundreds of proposals and most are nothing to
@@ -91,24 +96,34 @@ function workerTodo(dao: Dao, wp: WorkerData, actor: string, seated: boolean): s
 
     const what = `worker proposal ${quote(p.title || p.proposal_id)}`
 
-    /* A vote you can cast and have not. The two rounds take different vote
-       names, so "already voted" has to be asked about the round in hand. */
-    if (seated && (state === WP_PENDING || state === WP_APPROVED) && voted !== WP_VOTE_YES)
-      why.push(`Vote on ${what}`)
-    if (seated && (state === WP_FINALIZING || state === WP_FINAPPR) && voted !== WP_VOTE_FIN_YES)
-      why.push(`Vote on finalizing ${what}`)
+    /* Its pay has gone back to the treasury and finalize would be refused, so
+       there is nothing here to do — voting on it would change nothing. */
+    if (wpStranded(p, wp)) continue
 
-    /* Your own proposal, cleared to move. startwork also wants the arbiter's
-       agreement, so an approved proposal without it is not yours to push. */
-    if (mine && (state === WP_PENDING || state === WP_APPROVED) && tally.yes >= tally.need && p.arbiter_agreed)
-      why.push(`Start work on your ${what}`)
-    if (mine && state === WP_WORKING) why.push(`Mark your ${what} complete`)
+    /* Whatever this proposal most needs, said once. The order is by how far it
+       moves things: finishing beats starting, and starting beats voting. */
+    const lines: string[] = []
 
     /* Ready to pay: enough finalize votes AND past the contract's hold, which
        runs from creation rather than from completion. Anyone may finalize, so
        this counts for everyone, not just the worker. */
     if ((state === WP_FINALIZING || state === WP_FINAPPR) && tally.yes >= tally.need && now >= wpPayableAt(p, wp))
-      why.push(`Finalize ${what} — approved and past its hold`)
+      lines.push(`Finalize ${what} — it has its votes and has cleared its hold`)
+
+    /* Your own proposal, cleared to move. startwork also wants the arbiter's
+       agreement, so an approved proposal without it is not yours to push. */
+    if (mine && state === WP_WORKING) lines.push(`Mark your ${what} complete`)
+    if (mine && (state === WP_PENDING || state === WP_APPROVED) && tally.yes >= tally.need && p.arbiter_agreed)
+      lines.push(`Start work on your ${what}`)
+
+    /* A vote you can cast and have not. The two rounds take different vote
+       names, so "already voted" has to be asked about the round in hand. */
+    if (seated && (state === WP_PENDING || state === WP_APPROVED) && voted !== WP_VOTE_YES)
+      lines.push(`Vote on ${what}`)
+    if (seated && (state === WP_FINALIZING || state === WP_FINAPPR) && voted !== WP_VOTE_FIN_YES)
+      lines.push(`Vote on finalizing ${what}`)
+
+    if (lines.length) why.push(lines[0])
   }
 
   return why

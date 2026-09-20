@@ -26,6 +26,8 @@ import type { ChainAction } from './act'
 import type { Dao } from './daos'
 
 export const WP_CONTRACT = 'prop.worlds'
+/** Where the pay sits between startwork and finalize. */
+export const ESCROW_CONTRACT = 'escrw.worlds'
 
 export const WP_PENDING = 'pendingappr'
 export const WP_APPROVED = 'apprvtes'
@@ -120,6 +122,16 @@ export interface WorkerData {
   latestTerms: number
   /** Their balance with prop.worlds, which the proposal fee is drawn from. */
   deposit: { quantity: string; contract: string } | null
+  /**
+   * Proposal ids that still have an escrow holding their money.
+   *
+   * `startwork` moves the pay into `escrw.worlds` and `finalize` releases it,
+   * so a proposal in the finalize round with no escrow can never be paid —
+   * `finalize` asserts ERR::ESCROW_ACCOUNT_NOT_FOUND. An escrow can vanish
+   * before that: it carries its own expiry, and once past it the sender may
+   * refund itself, which leaves the proposal stranded looking ready.
+   */
+  escrows: Set<string>
 }
 
 /** Contract defaults, used only if the singleton cannot be read. */
@@ -232,6 +244,19 @@ export const wpPayableAt = (p: WorkerProposal, wp: WorkerData) =>
   wpTime(p.created_at) + wp.config.min_proposal_duration * 1000
 
 /**
+ * Whether the money is still there to pay.
+ *
+ * Only asked of the finalize round: before startwork there is no escrow yet and
+ * none is expected. After it, a missing one means the pay has already gone back
+ * where it came from and nothing can move the proposal on.
+ */
+export const wpStranded = (p: WorkerProposal, wp: WorkerData): boolean => {
+  const state = wpEffectiveState(p)
+  if (state !== WP_FINALIZING && state !== WP_FINAPPR) return false
+  return !wp.escrows.has(p.proposal_id)
+}
+
+/**
  * Where the proposal document lives. Workers put either an IPFS CID or a plain
  * URL in `content_hash`; both appear on chain, so both are made openable. The
  * gateway is Alien Worlds' own, which is where the WPS site links every one.
@@ -250,7 +275,7 @@ export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | nul
   const one = actor ? { lower_bound: actor, upper_bound: actor, limit: 1 } : null
   const tokenContract = dao?.tokenContract ?? null
 
-  const [props, votes, cfg, arbiters, receivers, member, terms, deposit] = await Promise.all([
+  const [props, votes, cfg, arbiters, receivers, member, terms, deposit, escrows] = await Promise.all([
     getRows<WorkerProposal>({ code: WP_CONTRACT, scope: dacId, table: 'proposals', limit: 500 }),
     getRows<WorkerVote>({ code: WP_CONTRACT, scope: dacId, table: 'propvotes', limit: 1000 }),
     getPage<{ data: { key: string; value: [string, unknown] }[] }>(
@@ -292,6 +317,7 @@ export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | nul
           ...one,
         }).catch(() => [])
       : Promise.resolve([]),
+    getRows<{ key: string }>({ code: ESCROW_CONTRACT, scope: dacId, table: 'escrows', limit: 500 }).catch(() => []),
   ])
 
   /* The singleton stores its fields as a key/value list of variants, exactly
@@ -319,6 +345,7 @@ export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | nul
     agreedTerms: agreed,
     latestTerms: latest,
     deposit: deposit[0]?.deposit ?? null,
+    escrows: new Set(escrows.map((e) => String(e.key))),
   }
 }
 
@@ -647,8 +674,10 @@ export function workerButtons(
     out.push({
       act: 'finalize',
       label: 'Finalize and pay',
-      blocked:
-        tally.yes < tally.need
+      blocked: wpStranded(p, wp)
+        ? `There is no escrow left for this proposal, so finalize would be refused — the pay was returned to ` +
+          `the treasury when the escrow ran out. Nothing can move it on.`
+        : tally.yes < tally.need
           ? `Needs ${tally.need} approvals to finalize and has ${tally.yes}.`
           : Date.now() < payable
             ? `The contract holds every proposal for ${Math.round(

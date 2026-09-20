@@ -6,6 +6,7 @@ import {
   WP_WORKING,
   workerAction,
   workerButtons,
+  wpStranded,
   type WorkerData,
   type WorkerProposal,
 } from '@/dao/chain/worker'
@@ -66,6 +67,7 @@ const data = (over: Partial<WorkerData> = {}): WorkerData => ({
   agreedTerms: 3,
   latestTerms: 3,
   deposit: null,
+  escrows: new Set(['abc123']),
   ...over,
 })
 
@@ -188,5 +190,40 @@ describe('the actions behind the buttons', () => {
     for (const act of ['arbagree', 'startwork', 'completework', 'finalize'] as const) {
       expect(workerAction(level, dao, proposal(), act).authorization).toEqual([level])
     }
+  })
+})
+
+/*
+ * A proposal whose escrow is gone.
+ *
+ * startwork puts the pay into escrw.worlds and finalize releases it. The escrow
+ * carries its own expiry, and past it the treasury can take the money back —
+ * which leaves the proposal sitting in the finalize round looking ready and
+ * unable to move. Both of Eyeke Union's "ready to pay" proposals are in exactly
+ * that state, which is what made the to-do count say three things were waiting
+ * when none of them could be done.
+ */
+describe('a proposal with no escrow left', () => {
+  const votes = ['seat1.wam', 'seat2.wam'].map((voter) => ({
+    voter,
+    proposal_id: 'abc123',
+    vote: 'finalapprove',
+    category_id: null,
+    delegatee: null,
+  }))
+  const old = proposal({ state: WP_FINAPPR, created_at: ago(400) })
+
+  it('is stranded only in the finalize round', () => {
+    expect(wpStranded(old, data({ escrows: new Set() }))).toBe(true)
+    expect(wpStranded(old, data())).toBe(false)
+    /* Before startwork there is no escrow, and none is expected. */
+    expect(wpStranded(proposal(), data({ escrows: new Set() }))).toBe(false)
+  })
+
+  it('refuses finalize with the reason rather than offering it', () => {
+    const bs = workerButtons(dao, old, data({ votes, escrows: new Set() }), 'nobody.wam')
+    expect(find(bs, 'finalize')!.blocked).toMatch(/no escrow left/i)
+    /* And it is still offered, so the row says why rather than going blank. */
+    expect(labels(bs)).toContain('Finalize and pay')
   })
 })
