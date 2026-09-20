@@ -17,11 +17,25 @@ import { EXPLORER } from '../../dao/format'
  * Which is also what makes four seconds affordable. Re-reading the whole hour
  * at that rate would be fifteen full sweeps a minute against servers that
  * rate-limit; this is fifteen requests that usually return a handful of rows.
+ *
+ * What ARRIVES in a batch is not shown as one. A poll routinely returns half a
+ * dozen actions at once — the chain produces them in blocks, and the indexer
+ * hands over whatever landed since the last ask — and six rows appearing
+ * together reads as a page redraw rather than as things happening. So a poll
+ * fills a queue and the queue is drained one row at a time, oldest first, so
+ * each lands on top in the order it happened.
+ *
+ * The drain paces itself to clear within one poll, so a busy minute speeds up
+ * instead of falling further behind: a feed that is thirty seconds behind the
+ * chain is not a live feed.
  */
 const WINDOW_MS = 60 * 60 * 1000
 const POLL_MS = 4_000
 /** How far back a follow-up poll looks, to catch late-indexed actions. */
 const OVERLAP_MS = 60_000
+/** The gap between one row and the next, clamped either side of POLL_MS/queued. */
+const MIN_GAP_MS = 130
+const MAX_GAP_MS = 700
 
 export function LiveFeed() {
   const [events, setEvents] = useState<FeedEvent[]>([])
@@ -32,10 +46,20 @@ export function LiveFeed() {
   /** Bumped when a planet's land grid arrives, so travels can be re-described. */
   const [, redraw] = useState(0)
 
-  /** Everything held, newest first, keyed so a repeat is free to ignore. */
+  /** Everything on screen, keyed so a repeat is free to ignore. */
   const held = useRef(new Map<string, FeedEvent>())
+  /** Arrived, not shown yet. Oldest first, so each release lands on top. */
+  const queue = useRef<FeedEvent[]>([])
+  const [queued, setQueued] = useState(0)
   const fresh = useRef(new Set<string>())
   const newest = useRef(0)
+
+  /** Drops anything that has fallen out of the hour, then publishes. */
+  const publish = () => {
+    const cutoff = Date.now() - WINDOW_MS
+    for (const [k, e] of held.current) if (e.at < cutoff) held.current.delete(k)
+    setEvents([...held.current.values()].sort((x, y) => y.at - x.at))
+  }
 
   useEffect(() => {
     void fetchPlayerInfo()
@@ -58,19 +82,21 @@ export function LiveFeed() {
         setLastAt(Date.now())
 
         const first = !newest.current
-        fresh.current = new Set()
+        const waiting = new Set(queue.current.map((e) => e.key))
         for (const r of rows) {
-          if (!held.current.has(r.key) && !first) fresh.current.add(r.key)
-          held.current.set(r.key, r)
           newest.current = Math.max(newest.current, r.at)
+          if (held.current.has(r.key) || waiting.has(r.key)) continue
+          /* The opening sweep is an hour of history, not news: it goes up
+             whole. Draining 250 rows one at a time would take two minutes. */
+          if (first) held.current.set(r.key, r)
+          else queue.current.push(r)
         }
 
-        /* Anything older than the window leaves, rather than lingering because
-           nothing replaced it. */
-        const cutoff = Date.now() - WINDOW_MS
-        for (const [k, e] of held.current) if (e.at < cutoff) held.current.delete(k)
-
-        setEvents([...held.current.values()].sort((x, y) => y.at - x.at))
+        if (first) publish()
+        else {
+          queue.current.sort((x, y) => x.at - y.at)
+          setQueued(queue.current.length)
+        }
       } catch (err) {
         if (!alive) return
         console.error('live feed:', err)
@@ -86,6 +112,33 @@ export function LiveFeed() {
       clearTimeout(timer)
     }
   }, [live])
+
+  /*
+   * The queue, one row at a time.
+   *
+   * A timeout rather than an interval, because the gap is recomputed after
+   * every release: the more is waiting, the faster it goes, so a burst clears
+   * inside one poll rather than pushing the feed behind the chain.
+   *
+   * Deliberately not tied to `live`. Pausing stops asking for more; it should
+   * not strand what has already arrived half shown.
+   */
+  useEffect(() => {
+    if (!queued) return
+    const gap = Math.min(MAX_GAP_MS, Math.max(MIN_GAP_MS, POLL_MS / queued))
+    const timer = setTimeout(() => {
+      const next = queue.current.shift()
+      if (!next) return setQueued(0)
+      held.current.set(next.key, next)
+      fresh.current.add(next.key)
+      /* Long enough for the entry animation, short enough that a row does not
+         carry "new" into its second minute on screen. */
+      setTimeout(() => fresh.current.delete(next.key), 2_000)
+      publish()
+      setQueued(queue.current.length)
+    }, gap)
+    return () => clearTimeout(timer)
+  }, [queued])
 
   /*
    * A travel gives a grid position and nothing else, so the planet comes from
@@ -108,7 +161,11 @@ export function LiveFeed() {
     <section className="section">
       <div className="page__actions">
         <h2 className="dao-h2">
-          Live activity <span className="dao-dim">{events.length} in the last hour</span>
+          Live activity{' '}
+          <span className="dao-dim">
+            {events.length} in the last hour
+            {queued ? ` · ${queued} arriving` : ''}
+          </span>
         </h2>
         <span className={`live-dot${live ? ' is-on' : ''}`} aria-hidden="true" />
         <button className="btn" type="button" onClick={() => setLive((v) => !v)}>
