@@ -1045,3 +1045,31 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
 .ov__body .ale-form { margin: 0; }
 .ov__body p { margin: 0; }
 .ov__body .section { padding: 0; background: none; border: 0; box-shadow: none; }
+
+/* ── Token exchanges ─────────────────────────────────────────────────────── */
+
+.xch-amount { font-variant-numeric: tabular-nums; }
+
+/* A memo says what a swap actually was, but it is machine-written and long, so
+   it trails the line rather than competing with it. */
+.xch-memo {
+  display: block;
+  margin-top: 1px;
+  font-style: normal;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Over the threshold. Weight and a rule down the side rather than a colour —
+   the colours on this list already mean which way the tokens went, and a
+   seventh would leave nothing plain to read against. */
+.feed__row.is-big { background: var(--accent-soft); }
+.feed__row.is-big .xch-amount { font-weight: 700; }
+.feed__row.is-big .feed__time::after {
+  content: '●';
+  margin-left: 4px;
+  color: var(--accent);
+}
