@@ -168,8 +168,8 @@ export default function AllProposals() {
    * One transaction for the lot.
    *
    * Approvals go in before executions on purpose: a proposal one signature short
-   * can be approved and run in the same transaction, and the contract sees the
-   * actions in order.
+   * can be approved and executed in the same transaction, and the contract sees
+   * the actions in order.
    */
   const submit = async (what: 'approve' | 'exec' | 'both') => {
     if (!session || busy) return
@@ -256,7 +256,7 @@ export default function AllProposals() {
             type="button"
             onClick={selectActionable}
             disabled={!actionable.length}
-            title="Everything here you hold a seat for and have not already signed, plus anything ready to run"
+            title="Everything here you hold a seat for and have not already signed, plus anything ready to execute"
           >
             {picked.size === actionable.length && actionable.length
               ? 'Clear selection'
@@ -267,9 +267,9 @@ export default function AllProposals() {
             {busy
               ? 'Signing…'
               : toApprove.length && toExec.length
-                ? `Approve ${toApprove.length} and run ${toExec.length}`
+                ? `Approve ${toApprove.length} and execute ${toExec.length}`
                 : toExec.length
-                  ? `Run ${toExec.length}`
+                  ? `Execute ${toExec.length}`
                   : `Approve ${toApprove.length}`}
           </button>
 
