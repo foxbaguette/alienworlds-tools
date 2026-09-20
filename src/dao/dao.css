@@ -1271,8 +1271,21 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
     border: 0;
     border-radius: 0;
   }
+  /*
+   * The figures PACK rather than stacking.
+   *
+   * One label/value pair to a line is five lines per candidate and a council
+   * that scrolls for a page and a half. As a wrapping row they sit two or
+   * three across and the card is half the height — and the ones that are long
+   * take a line of their own without being told to, which is the whole reason
+   * this is flex-wrap and not a fixed two-column grid.
+   */
   .cardtable tr {
-    padding: var(--sp-3) var(--sp-4);
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: var(--sp-3);
+    row-gap: 1px;
+    padding: var(--sp-3);
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -1312,15 +1325,21 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   .cardtable td,
   .cardtable td.num {
     display: block;
-    padding: 3px 0;
+    /* Room to grow, a floor that fits "Holds 500,002", and no stretching to
+       fill a line it shares. The floor is what decides how many fit: at 9.5rem
+       nothing paired up on a 375px screen, because two of them plus the gap
+       came to more than the card had. */
+    flex: 0 1 auto;
+    min-width: 7.5rem;
+    padding: 2px 0;
     text-align: left;
     white-space: normal;
     border-bottom: 0;
   }
+  /* The label sits against its value rather than reserving a column: with the
+     pairs side by side there is no column left to line up with. */
   .cardtable td::before {
     content: attr(data-label);
-    display: inline-block;
-    min-width: 8.5em;
     padding-right: var(--sp-2);
     font-size: var(--fs-xs);
     color: var(--text-3);
@@ -1332,6 +1351,7 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
     display: flex;
     align-items: center;
     flex-wrap: wrap;
+    flex: 1 1 100%;
     gap: var(--sp-1) var(--sp-2);
     margin: 0 0 var(--sp-2);
     padding: 0 0 var(--sp-2);
@@ -1348,6 +1368,7 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   .cardtable td.stand-names {
     display: flex;
     flex-wrap: wrap;
+    flex: 1 1 100%;
     gap: var(--sp-1) var(--sp-3);
     padding-bottom: var(--sp-1);
   }
@@ -1360,6 +1381,10 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
      rather than under it: the label to its left is already doing the work the
      line break was doing. Needs the element in the selector to outweigh
      `.dao-table td .dao-dim`, which blocks it. */
+  /* Both selectors carry the element on the end so they outweigh the rules
+     that block these: `.dao-table td .dao-dim` for an ordinary cell, and
+     `.stand-table td.num .dao-dim`, which is a class heavier, for a number. */
+  .cardtable td span.dao-dim,
   .cardtable td.num span.dao-dim {
     display: inline;
     margin: 0 0 0 var(--sp-2);
