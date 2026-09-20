@@ -990,3 +990,9 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   color: var(--good);
   border-color: var(--good);
 }
+
+/* Buying RAM. Under the table rather than over it: the numbers being acted on
+   are in the row above, and covering them would hide the reason. */
+.ram-buy { margin-top: var(--sp-5); }
+.ram-buy .ale-form { margin: 0; }
+.ram-buy p { margin: 0; }
