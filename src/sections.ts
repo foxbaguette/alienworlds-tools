@@ -90,7 +90,7 @@ export const SECTIONS: Section[] = [
         tools: [
           { to: '/daos/proposals', label: 'All proposals' },
           { to: '/daos/candidates', label: 'Candidates' },
-          { to: '/daos/exchanges', label: 'Token exchanges' },
+          { to: '/daos/activity', label: 'Live activity' },
         ],
       },
     ],

@@ -86,7 +86,7 @@ export function useDaoNav(pathname: string): NavGroup[] {
           badgeWhy: across ? acrossWhy : undefined,
         },
         { to: '/daos/candidates', label: 'Candidates' },
-        { to: '/daos/exchanges', label: 'Token exchanges' },
+        { to: '/daos/activity', label: 'Live activity' },
       ],
     },
   ]
@@ -96,7 +96,7 @@ export function useDaoNav(pathname: string): NavGroup[] {
      labelled with it until the title is known. */
   const m = /^\/daos\/([^/]+)/.exec(pathname)
   const id = m?.[1]
-  if (id && !['syndicates', 'unions', 'proposals', 'candidates', 'exchanges'].includes(id)) {
+  if (id && !['syndicates', 'unions', 'proposals', 'candidates', 'activity'].includes(id)) {
     const dao = daos.find((d) => d.id === id)
     groups.push({
       label: dao?.title ?? id,

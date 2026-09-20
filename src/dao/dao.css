@@ -1073,3 +1073,25 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   margin-left: 4px;
   color: var(--accent);
 }
+
+/* A vote or a delay change that is holding a council in its current shape.
+   The strongest mark on the feed, because it is the only row that says
+   something about the future rather than the past. */
+.feed__row.is-flip { border-left-color: var(--critical); }
+.xch-flip {
+  display: block;
+  margin-top: 2px;
+  font-style: normal;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--critical);
+}
+
+/* The first candidate who would NOT get a seat. Shown because the gap to them
+   is the only number that says how safe the seats are. */
+.dao-table tr.is-missed td { opacity: 0.62; border-top: 1px dashed var(--border-strong); }
+
+/* A second figure under the first — voters, a percentage, a delay. Scoped to
+   this table: elsewhere a dim span in a number cell is a suffix, and "2/2"
+   must not become two lines. */
+.stand-table td.num .dao-dim { display: block; font-size: var(--fs-xs); }
