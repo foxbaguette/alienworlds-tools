@@ -947,3 +947,22 @@
 /* The document field and its upload button are one control. */
 .wp-doc { display: flex; gap: var(--sp-2); }
 .wp-doc input[type='text'] { flex: 1; }
+
+/* ── Candidates ──────────────────────────────────────────────────────────── */
+
+.cand-th { cursor: pointer; user-select: none; white-space: nowrap; }
+.cand-th:hover { color: var(--accent); }
+.cand-th.is-sorted { color: var(--accent); }
+.cand-th i { margin-left: 2px; font-style: normal; }
+
+/* The councils a candidate stands in, as their token codes. Short enough to
+   sit in one cell where twelve full titles would not. */
+.cand-where { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.cand-where a {
+  padding: 1px 5px;
+  font-size: var(--fs-xs);
+  text-decoration: none;
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm);
+}
+.cand-table td.num { font-variant-numeric: tabular-nums; }

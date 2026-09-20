@@ -12,6 +12,7 @@ import { useDaoNav } from './dao/useDaoNav'
 import Councils from './dao/routes/Councils'
 import DaoDetails from './dao/routes/DaoDetails'
 import AllProposals from './dao/routes/AllProposals'
+import Candidates from './dao/routes/Candidates'
 import MsigGroups, { MsigGroupDetails } from './dao/routes/MsigGroups'
 import Competitions, { CompetitionDetails } from './comps/routes/Competitions'
 import AleAdmin from './ale/routes/AleAdmin'
@@ -115,6 +116,7 @@ function Shell() {
           <Route path="/daos/syndicates" element={<Councils group="syndicate" />} />
           <Route path="/daos/unions" element={<Councils group="union" />} />
           <Route path="/daos/proposals" element={<AllProposals />} />
+          <Route path="/daos/candidates" element={<Candidates />} />
           <Route path="/daos/:id" element={<DaoDetails />} />
           <Route path="/daos/:id/:tab" element={<DaoDetails />} />
           <Route path="/msig" element={<MsigGroups />} />
