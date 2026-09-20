@@ -11,13 +11,18 @@ import { PLANETS } from '../chain/weather'
 
 const KINDS: BuildingKind[] = ['arena', 'dungeon', 'tavern']
 
+/** Every column is sortable; these are what each one sorts on. */
+type SortKey = 'land' | 'kind' | 'rating' | 'defenders' | 'owner' | 'tlm' | 'shards'
+
 /**
  * Every arena, dungeon and tavern in the game.
  *
- * Sorted by what is claimable, because that is the number that grows on its own
- * and the one nobody can see from inside the game. Owners arrive a moment after
- * the rest — they come from AtomicAssets, not from the chain — so the column
- * fills in rather than holding the whole list up.
+ * Every column sorts, and it opens on what is claimable: that is the number
+ * that grows on its own and the one nobody can see from inside the game.
+ *
+ * Owners arrive a moment after the rest — they come from AtomicAssets, not from
+ * the chain — so the column fills in rather than holding the whole list up, and
+ * sorting on it before then puts the unknown ones last either way.
  */
 export function Buildings() {
   const [rows, setRows] = useState<Building[] | null>(null)
@@ -27,6 +32,8 @@ export function Buildings() {
   const [planet, setPlanet] = useState<string>('all')
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState<string | null>(null)
+  const [sort, setSort] = useState<SortKey>('tlm')
+  const [desc, setDesc] = useState(true)
 
   const read = () => {
     setRows(null)
@@ -62,6 +69,59 @@ export function Buildings() {
           b.defenders.some((d) => d.gamertag.toLowerCase().includes(q) || d.owner.includes(q))),
     )
   }, [rows, kind, planet, query])
+
+  /*
+   * Sorting is over the FILTERED list rather than the whole one, so a planet
+   * tab and a sort compose instead of fighting. The rating is decayed first —
+   * sorting on the stored score would order buildings by when they were last
+   * touched as much as by how good they are.
+   */
+  const sorted = useMemo(() => {
+    const value = (b: Building): number | string => {
+      switch (sort) {
+        case 'land':
+          return `${b.planet} ${String(b.x).padStart(3, '0')} ${String(b.y).padStart(3, '0')}`
+        case 'kind':
+          return `${b.kind} ${String(b.level).padStart(3, '0')}`
+        case 'rating':
+          return ratingNow(b, decay)
+        case 'defenders':
+          return b.kind === 'tavern' ? -1 : b.defenders.length
+        /* Owners arrive after the rest; an unknown one sorts last either way
+           rather than jumping to the top when the column is reversed. */
+        case 'owner':
+          return b.owner ?? '\uffff'
+        case 'shards':
+          return b.shards
+        default:
+          return b.tlm
+      }
+    }
+    return [...shown].sort((a, b) => {
+      const x = value(a)
+      const y = value(b)
+      const cmp = typeof x === 'string' ? x.localeCompare(String(y)) : Number(x) - Number(y)
+      return desc ? -cmp : cmp
+    })
+  }, [shown, sort, desc, decay])
+
+  const head = (key: SortKey, label: string, numeric = true) => (
+    <th
+      className={`${numeric ? 'num ' : ''}cand-th${sort === key ? ' is-sorted' : ''}`}
+      onClick={() => {
+        if (sort === key) setDesc(!desc)
+        else {
+          setSort(key)
+          /* Numbers read best largest-first, names A to Z. */
+          setDesc(numeric)
+        }
+      }}
+      title={`Sort by ${label}`}
+    >
+      {label}
+      {sort === key ? <i>{desc ? '▾' : '▴'}</i> : null}
+    </th>
+  )
 
   const totals = useMemo(() => {
     const tlm = shown.reduce((n, b) => n + b.tlm, 0)
@@ -134,17 +194,17 @@ export function Buildings() {
           <table className="dao-table">
             <thead>
               <tr>
-                <th>Land</th>
-                <th>Building</th>
-                <th className="num">Rating</th>
-                <th className="num">Defenders</th>
-                <th>Owner</th>
-                <th className="num">Claimable TLM</th>
-                <th className="num">Shards</th>
+                {head('land', 'Land', false)}
+                {head('kind', 'Building', false)}
+                {head('rating', 'Rating')}
+                {head('defenders', 'Defenders')}
+                {head('owner', 'Owner', false)}
+                {head('tlm', 'Claimable TLM')}
+                {head('shards', 'Shards')}
               </tr>
             </thead>
             <tbody>
-              {shown.map((b) => {
+              {sorted.map((b) => {
                 const id = `${b.planet}:${b.land_id}:${b.kind}`
                 const rating = ratingNow(b, decay)
                 return (
