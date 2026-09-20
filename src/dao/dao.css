@@ -1,0 +1,148 @@
+/*
+ * The DAO routes.
+ *
+ * Nothing here defines a colour, a size or a radius of its own — every value is
+ * a token from styles/tokens.css, which is what makes these pages and the stats
+ * pages look like one site rather than two that happen to share a sidebar.
+ */
+
+.dao-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--sp-4);
+}
+
+.dao-card {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.dao-card__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.dao-card__top h2 {
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.dao-card__top h2 a { color: var(--text); text-decoration: none; }
+.dao-card__top h2 a:hover { color: var(--accent); }
+
+/* The election clock. Accent, because it is the one thing on a card that is
+   counting down to something. */
+.dao-clock {
+  flex: none;
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  cursor: help;
+}
+.dao-clock.is-soon { font-weight: 600; }
+.dao-clock.is-pending { color: var(--text-3); background: var(--surface-sunk); }
+
+.dao-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.dao-card__id {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.chip {
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  cursor: help;
+}
+.chip i { font-style: normal; color: var(--text-3); }
+
+/* The watched accounts. A second voice used for nothing else, so a marked name
+   anywhere on the site means one of that list. */
+.chip--watched {
+  color: var(--series-2);
+  background: transparent;
+  border-color: var(--series-2);
+  font-weight: 600;
+}
+
+.council {
+  list-style: none;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  flex: 1;
+}
+
+.council li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--grid);
+}
+.council li:last-child { border-bottom: 0; }
+
+.council a {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+.council a:hover { color: var(--accent); }
+.council a.is-watched { color: var(--series-2); font-weight: 600; }
+
+.council__none {
+  padding: var(--sp-3) 0;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.tag {
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  cursor: help;
+}
+.tag--bad { color: var(--critical); border: 1px solid var(--critical); }
+
+.dao-card__foot {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+.dao-card__foot .btn { flex: 1; min-height: 32px; font-size: var(--fs-sm); text-decoration: none; }
+
+.dao-note {
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm);
+}
+.dao-note--bad { color: var(--critical); background: transparent; border: 1px solid var(--critical); }

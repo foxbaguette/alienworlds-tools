@@ -1,0 +1,5653 @@
+// DAO Manager — every Alien Worlds DAO and the custodians currently seated on it.
+//
+// Two reads:
+//
+//   index.worlds / dacs                 the directory of DAOs
+//   <CUSTODIAN> / custodians1 @ dac_id  the council seated on one of them
+//
+// The custodian contract is not hardcoded. Each directory row carries an
+// `accounts` map keyed by role, and role 2 is CUSTODIAN — today every DAO points
+// at dao.worlds, but the directory is what decides that.
+//
+// Connecting a wallet is optional and, for now, does nothing but identify you:
+// nothing on this page signs a transaction. It is here so the actions that will
+// need it have a session to use.
+
+// The inner action of a multisig proposal is carried as raw `bytes`, so it has
+// to be serialized here. `abi_json_to_bin` used to do this server-side and is
+// now removed or disabled on every node in the list.
+import { ABI, Serializer, Transaction } from '@wharfkit/antelope'
+import { SessionKit, Chains } from '@wharfkit/session'
+import WebRenderer from '@wharfkit/web-renderer'
+import { WalletPluginAnchor } from '@wharfkit/wallet-plugin-anchor'
+import { WalletPluginCloudWallet } from '@wharfkit/wallet-plugin-cloudwallet'
+
+// ── Config ────────────────────────────────────────────────────────────────
+
+// Carried over from the Very Serious Space War site, where each of these was
+// verified from a browser with the exact request this app makes: POST
+// /v1/chain/get_table_rows with `Content-Type: application/json`, which triggers
+// a CORS preflight. That distinction matters — several nodes answer GET with
+// `access-control-allow-origin: *` but do not handle the OPTIONS preflight, so a
+// server-side probe passes them and the browser still refuses.
+//
+// Known-good from curl but REJECTED by the browser, do not re-add without
+// retesting in a browser: wax.greymass.com, wax.eu.eosamsterdam.net,
+// hyperion.wax.eosrio.io, wax-public.neftyblocks.com, api.wax.greeneosio.com.
+//
+// Removed for a different reason: api.wax.detroitledger.tech. It passes a lone
+// probe and then refuses under any real load — its rate-limited responses carry
+// no CORS headers, so the browser reports them as CORS failures, a run of them
+// from that node alone on every heavy read. The bench catches it, but only after
+// it has cost a probe slot and two failed reads every session.
+const ENDPOINTS = [
+    'https://wax.blacklusion.io',
+    'https://api.waxsweden.org',
+    'https://wax.eosdac.io',
+    'https://wax.api.eosnation.io',
+    'https://waxapi.ledgerwise.io',
+    'https://api.wax.bountyblok.io',
+    'https://api.hivebp.io',
+    'https://wax.eosphere.io',
+    'https://wax.eosusa.io',
+]
+
+const DIRECTORY = 'index.worlds'
+const EXPLORER  = 'https://waxblock.io/account/'
+const APP_NAME  = 'DAO Manager'
+
+// Trilium is the game's own token and belongs to no single DAO, so it is read
+// straight from its contract and shown beside the account rather than on a card.
+const TLM_CONTRACT = 'alien.worlds'
+const TLM_SYMBOL   = 'TLM'
+
+// dacdir::account_type. TREASURY is what separates the two groups (see
+// classify); CUSTODIAN is the contract each DAO's council lives in.
+const TREASURY  = 1
+const CUSTODIAN = 2
+
+// The two accounts a DAO can actually spend from. Which one it is differs by
+// group, and dacdirectory_shared.hpp says why in its own comments:
+//
+//   SPENDINGS         = 11  "Account to hold all the spending allowance for
+//                            the current period."             eyeke.dac
+//   PROP_FUNDS        = 12  proposal funds, deposits only     eyeke.wp.dac
+//   PROP_FUNDS_SOURCE = 13  "...to ensure that the union daos have spending
+//                            access but the syndicates only have deposit
+//                            access."                         eyeke.wp.dac
+//
+// 13 is registered on the unions and on nothing else; 11 is the syndicate's
+// own account. That is precisely why the spendable balance lives on
+// <planet>.wp.dac for a union and <planet>.dac for a syndicate. Preferring 13
+// and falling back to 11 puts that question to the directory instead of
+// assembling account names out of the DAO id.
+const SPENDINGS         = 11
+const PROP_FUNDS_SOURCE = 13
+
+// Accounts to watch, and how many seats on one council it takes before that
+// council is marked. Nothing on chain says these accounts are related — this is
+// a hand-supplied list, and the marker means "these accounts hold this many
+// seats", not anything the contracts assert.
+const WATCHED = new Set([
+    '5thba.wam',
+    '42lra.wam',
+    't1dbe.wam',
+    'fgaqa.c.wam',
+    'im24u.c.wam',
+])
+const CONTROL_THRESHOLD = 3
+
+// Test A and Test B are registered in the directory exactly like any other DAO
+// — treasury, refs, a seated council — so nothing in the data marks them as
+// scratch. Hiding them is a curation choice, which is why this is a list of ids
+// and not a rule.
+const HIDDEN = new Set(['testa', 'testb'])
+
+// Every read is spread across all healthy nodes, and no single node is asked for
+// more than RATE_LIMIT calls in any RATE_WINDOW. Leaning on one node does not
+// just risk an HTTP 429 — it gets answered with an empty `rows` array, which is
+// indistinguishable from "nothing staked" and silently renders as a holder
+// having nothing. Pacing this is a correctness measure, not just politeness.
+// Measured, not guessed. A cold load is 69 reads with a median round trip of
+// 106ms; at ten in flight that is under a second of network. It was taking five,
+// and a request timeline showed why — concurrency sat at ONE to THREE for most
+// of the load, peaking at ten only in bursts. The budget was the bottleneck.
+//
+// Twelve in two seconds is six reads a second from any one node, and the budget
+// is per node: nine healthy nodes carry fifty-four a second between them, which
+// is more than the whole load. Across nine nodes, 69 reads is under eight each —
+// nowhere near enough to trouble a public node.
+//
+// The original fear behind the low number was real but is addressed elsewhere
+// now: a node under pressure answers with an EMPTY rows array rather than an
+// error, which reads as "nothing staked" and renders as fact. Spreading across
+// nodes makes that far less likely, and `suspectEmpty` below catches it when it
+// happens instead of trusting it.
+const RATE_LIMIT = 12
+const RATE_WINDOW = 2000
+
+// High enough to keep every node's budget spent rather than to cap anything: the
+// scheduler is the throttle, and the workers only have to outnumber it.
+const CONCURRENCY = 16
+
+// A node that cannot answer get_info in a second and a half is not one to read
+// from. The patient pass exists for slow connections, where the quick one can
+// time out on everything at once and strand the page claiming the chain is down.
+const PROBE_TIMEOUT = 1500
+const PROBE_RETRY_TIMEOUT = 6000
+
+// A node this far behind head serves reads from an older chain state. Free to
+// check while probing, and it is the same staleness that once made a stakes read
+// count the same tokens twice.
+const MAX_LAG_SECONDS = 180
+
+// A read that fails gets re-issued against a different node before giving up.
+const MAX_ATTEMPTS = 3
+
+// Consecutive failures before a node sits out, and for how long. `fails` was
+// already counted and then never acted on, so a node that started refusing CORS
+// mid-session kept its turn in the rotation and burned a retry every time it
+// came round.
+const BENCH_AFTER = 2
+const BENCH_MS = 60000
+
+// ── State ─────────────────────────────────────────────────────────────────
+
+// Every healthy node, each carrying the timestamps of its own recent calls.
+let pool = [{ url: ENDPOINTS[0], recent: [], fails: 0 }]
+let apiUrl = ENDPOINTS[0]      // the fastest one, used for signing
+let daos = []
+let group = 'syndicate'
+let session = null
+let position = new Map()   // dac_id -> what the signed-in account holds there
+let votes = new Map()      // dac_id -> the signed-in account's `votes` row, if any
+
+// Which DAOs answered the vote read at all — including the ones that answered
+// "no row". Never voting in a DAO and being unable to ask it are completely
+// different facts, and `votes` alone cannot tell them apart: both leave the id
+// absent. Keeping the successful reads separately is what lets a partial slate
+// be recognised as deliberate rather than broken.
+let voteReads = new Set()  // dac_id, for every vote read that came back
+
+const $ = (id) => document.getElementById(id)
+const daosEl    = $('daos')
+const statusEl  = $('status')
+const barEl     = $('progress')
+const barFill   = $('progressFill')
+
+// The status line stays out of the way unless something needs saying. A
+// running count of how many nodes answered is not news; a failed read is.
+function setStatus(text, kind = '', { retry = false } = {}) {
+    statusEl.textContent = text ?? ''
+    statusEl.classList.toggle('is-error', kind === 'error')
+    statusEl.hidden = !text
+    // A failure the reader can act on beats one that tells them to reload. The
+    // button restarts the whole boot, session and all.
+    if (retry && text) {
+        const b = document.createElement('button')
+        b.className = 'act-mini'
+        b.type = 'button'
+        b.textContent = 'try again'
+        b.style.marginLeft = '10px'
+        b.addEventListener('click', () => { b.disabled = true; boot() })
+        statusEl.appendChild(b)
+    }
+}
+
+
+// ── Progress ──────────────────────────────────────────────────────────────
+//
+// Paced reads take seconds rather than milliseconds, so the wait needs to be
+// visible. Counted in requests, which is the unit the scheduler actually meters.
+
+let progress = null
+
+function startPhase(total) {
+    progress = { done: 0, total: Math.max(1, total) }
+    barFill.style.width = '0%'
+    barEl.hidden = false
+}
+
+function noteRequest() {
+    if (!progress) return
+    progress.done++
+    // Conditional follow-up reads can push past the estimate; the bar tracks
+    // toward full rather than overshooting it.
+    barFill.style.width = `${Math.min(100, (progress.done / progress.total) * 100)}%`
+}
+
+function endPhase() {
+    progress = null
+    barEl.hidden = true
+}
+
+// ── Session ───────────────────────────────────────────────────────────────
+
+// The chain url here is a starting point only; whichever node the probe settles
+// on is pushed in with setEndpoint, so signing follows reads rather than talking
+// to some other node.
+const sessionKit = new SessionKit({
+    appName: APP_NAME,
+    chains: [{ id: Chains.WAX.id, url: ENDPOINTS[0] }],
+    ui: new WebRenderer(),
+    walletPlugins: [new WalletPluginCloudWallet(), new WalletPluginAnchor()],
+})
+
+// ── Chain reads ───────────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function rawPost(body, url, timeout, path) {
+    path = path || 'get_table_rows'
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), timeout)
+    try {
+        const res = await fetch(`${url}/v1/chain/${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: ctrl.signal,
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return await res.json()
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+// Hands out the least-recently-loaded node that still has room in its window,
+// waiting rather than overspending when every node is at its limit. Each node
+// keeps its own timestamps, so one slow node cannot hold up the others' budget.
+// `count` reserves that many slots on ONE node at once. Reads that have to agree
+// with each other must come from the same node: spread across the pool they can
+// straddle a block boundary and return figures from two different chain states,
+// which is subtly wrong rather than visibly broken.
+async function acquireNode(count = 1) {
+    for (;;) {
+        const now = Date.now()
+        let best = null
+        let soonest = Infinity
+        let benched = 0
+
+        for (const node of pool) {
+            // A node that keeps failing sits out rather than taking its turn and
+            // costing a retry each time.
+            if ((node.benchedUntil ?? 0) > now) { benched++; continue }
+
+            while (node.recent.length && now - node.recent[0] >= RATE_WINDOW) node.recent.shift()
+            if (node.recent.length + count <= RATE_LIMIT) {
+                if (!best || node.recent.length < best.recent.length) best = node
+            } else if (node.recent.length) {
+                soonest = Math.min(soonest, node.recent[0] + RATE_WINDOW - now)
+            }
+        }
+
+        if (best) {
+            for (let i = 0; i < count; i++) best.recent.push(now)
+            return best
+        }
+        // Nothing eligible because everything is benched: a wrong node beats no
+        // node, so the bench is cleared rather than waited out.
+        if (benched === pool.length) {
+            for (const node of pool) node.benchedUntil = 0
+            continue
+        }
+        // Every node is spent; wait for the earliest window to roll over.
+        await sleep(Math.max(40, Math.min(soonest === Infinity ? 250 : soonest, 250)))
+    }
+}
+
+// `url` bypasses the scheduler entirely — that path is the probe, which is
+// deliberately one call to one named node.
+async function post(body, { timeout = 15000, url = null, path } = {}) {
+    // A named node has already had its budget charged by whoever pinned it (or
+    // is the probe, which is metering itself). It still counts toward progress.
+    if (url) {
+        try {
+            return await rawPost(body, url, timeout, path)
+        } finally {
+            noteRequest()
+        }
+    }
+
+    let lastErr
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const node = await acquireNode()
+        try {
+            const data = await rawPost(body, node.url, timeout)
+            node.fails = 0
+            return data
+        } catch (err) {
+            lastErr = err
+            node.fails = (node.fails ?? 0) + 1
+            if (node.fails >= BENCH_AFTER) node.benchedUntil = Date.now() + BENCH_MS
+        } finally {
+            noteRequest()
+        }
+    }
+    throw lastErr
+}
+
+// Follows `more` rather than trusting one page. Both tables here are small, but
+// a council is bounded by the DAO's own `numelected` and nothing should assume
+// that stays at five.
+// `extra` carries anything get_table_rows accepts — bounds, a secondary index —
+// so a single-account lookup is one bounded read rather than a table scan. A
+// bounded query comes back with `more: false`, so the paging below is a no-op
+// for those and only does work for the open-ended reads.
+async function getRows(code, scope, table, extra = {}) {
+    // `url` pins the read to one node; it is a transport option, not a query
+    // parameter, so it must not reach the request body.
+    const { limit = 100, url, ...rest } = extra
+    const out = []
+    let lower_bound = rest.lower_bound
+    for (let page = 0; page < 10; page++) {
+        const data = await post({ json: true, code, scope, table, limit, ...rest, lower_bound }, { url })
+        if (!Array.isArray(data.rows)) throw new Error(`no rows for ${code}/${scope}/${table}`)
+        out.push(...data.rows)
+        if (!data.more) break
+        lower_bound = data.next_key
+    }
+    return out
+}
+
+// Any chain endpoint other than get_table_rows, through the same node pool.
+async function chainCall(path, body) {
+    let lastErr
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const node = await acquireNode()
+        try {
+            return await rawPost(body, node.url, 15000, path)
+        } catch (err) {
+            lastErr = err
+        } finally {
+            noteRequest()
+        }
+    }
+    throw lastErr
+}
+
+// Contract ABIs, fetched once each. Needed only to serialize the inner action of
+// a proposal, so this is a cold path — but it goes through the same node pool as
+// everything else rather than picking a node of its own.
+const abiCache = new Map()
+
+async function getAbi(account) {
+    if (abiCache.has(account)) return abiCache.get(account)
+    let lastErr
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const node = await acquireNode()
+        try {
+            const res = await rawPost({ account_name: account }, node.url, 15000, 'get_abi')
+            if (!res?.abi) throw new Error(`no ABI for ${account}`)
+            const abi = ABI.from(res.abi)
+            abiCache.set(account, abi)
+            return abi
+        } catch (err) {
+            lastErr = err
+        } finally {
+            noteRequest()
+        }
+    }
+    throw lastErr
+}
+
+// A single page, no `more` following. For reads off a sorted index where only
+// the head matters, paging would drag in the whole table.
+async function postRows(code, scope, table, extra = {}) {
+    const { limit = 100, url, ...rest } = extra
+    const data = await post({ json: true, code, scope, table, limit, ...rest }, { url })
+    if (!Array.isArray(data.rows)) throw new Error(`no rows for ${code}/${scope}/${table}`)
+    return data.rows
+}
+
+// Probe with the exact request the app makes — POST + application/json, which
+// forces a CORS preflight. A bare GET would pass on nodes the browser later
+// refuses.
+async function probe(url, timeout = PROBE_TIMEOUT) {
+    const t0 = performance.now()
+    try {
+        // get_table_rows, because it is the request the app actually makes. A
+        // probe on a different endpoint is a probe of something else.
+        //
+        // What that buys is not a CORS check — the preflight is triggered by the
+        // POST and the content type, not by the path, and a node that allows one
+        // allows the other. It is a LOAD check. A node at its own rate limit
+        // answers with an error whose response carries no CORS headers, so the
+        // browser reports a refused read as a CORS failure; and the endpoint that
+        // gets rate limited is the one being hammered, which is this one, not
+        // get_info. Probing the cheap endpoint says a node is up. Probing the
+        // expensive one says it will serve us.
+        const data = await post(
+            { json: true, code: DIRECTORY, scope: DIRECTORY, table: 'dacs', limit: 1 },
+            { timeout, url })
+        if (!Array.isArray(data.rows)) return null
+        // `at` is when this node served the probe, so its budget can start from
+        // there rather than from zero.
+        return { url, ms: performance.now() - t0, at: Date.now() }
+    } catch {
+        return null
+    }
+}
+
+// How far behind head a node is serving from. A node can be quick and still be
+// handing out an old chain state — the failure that once had a stakes read count
+// the same tokens twice.
+//
+// A second pass rather than part of the probe, because get_table_rows cannot
+// report a head time and the probe has to stay on get_table_rows (see above).
+// Run only over the nodes that already answered, and parallel across them, so it
+// costs one round trip for the whole pool.
+async function lagOf(url) {
+    try {
+        const info = await post({}, { timeout: PROBE_TIMEOUT, url, path: 'get_info' })
+        const head = Date.parse(`${info.head_block_time}Z`)
+        return Number.isFinite(head) ? (Date.now() - head) / 1000 : null
+    } catch {
+        // A node that will not serve get_info but does serve get_table_rows is
+        // still perfectly usable. Unknown lag is not disqualifying.
+        return null
+    }
+}
+
+// Runs `fn` over `items` a few at a time. Workers pull from a shared cursor, so
+// a slow DAO holds up only itself.
+async function mapLimit(items, limit, fn) {
+    const out = new Array(items.length)
+    let cursor = 0
+    const worker = async () => {
+        while (cursor < items.length) {
+            const i = cursor++
+            out[i] = await fn(items[i])
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+    return out
+}
+
+// ── Loading ───────────────────────────────────────────────────────────────
+
+// Syndicates hold a treasury; unions do not. That is a real functional
+// difference the directory encodes, rather than a naming convention — and it
+// agrees exactly with the titles, which end in "Union" on the same six rows.
+// The structural signal is the one used here because it is what the contracts
+// actually mean by the distinction.
+//
+// Test A and Test B have treasuries, so they sit with the syndicates.
+const classify = (accountKeys) => accountKeys.includes(TREASURY) ? 'syndicate' : 'union'
+
+// Runs a group of reads that must agree with each other against ONE node, and
+// moves the whole group to another node if that one fails. Splitting them across
+// nodes is what this exists to prevent: at different block heights they can
+// disagree and invent, say, an at-risk seat that is not at risk.
+//
+// The retry has to re-run the group, not the failed member — a half-answered
+// group is the exact inconsistency being avoided.
+async function pinnedReads(count, build) {
+    let lastErr
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const node = await acquireNode(count).catch(() => null)
+        try {
+            return await Promise.all(build(node ? { url: node.url } : {}))
+        } catch (err) {
+            lastErr = err
+            if (node) {
+                node.fails = (node.fails ?? 0) + 1
+                if (node.fails >= BENCH_AFTER) node.benchedUntil = Date.now() + BENCH_MS
+            }
+        }
+    }
+    throw lastErr
+}
+
+// A node under pressure answers with an empty `rows` array instead of an error.
+// That is the one failure mode that renders as fact — "no custodians seated",
+// "nothing staked" — rather than as a problem, and it is why reads here were
+// paced so conservatively for so long.
+//
+// It cannot be caught in general: plenty of tables are legitimately empty. It
+// CAN be caught where the answer is known to be impossible, which is what this
+// is for. A DAO with no council AND no candidates AND no globals does not exist;
+// something answered with nothing. Throwing sends `pinnedReads` to another node.
+function suspectEmpty(dao, seated, cands, globals) {
+    if (seated.length || cands.length || globals.length) return
+    throw new Error(`${dao.id}: empty council, candidates and globals in one read`)
+}
+
+async function loadDao(row) {
+    const accounts = Object.fromEntries(row.accounts.map((a) => [a.key, a.value]))
+    const [precision, code] = String(row.symbol?.sym ?? '').split(',')
+    const dao = {
+        id: row.dac_id,
+        title: row.title || row.dac_id,
+        // setperiodlen requires this account's authority, and it is what a msig
+        // proposal has to request approval from.
+        owner: row.owner ?? null,
+        group: classify(row.accounts.map((a) => a.key)),
+        // Which token this DAO runs on, and where it lives. Both come from the
+        // directory rather than being assumed, the same as the custodian
+        // contract does.
+        symbol: code ?? '',
+        precision: Number(precision) || 0,
+        tokenContract: row.symbol?.contract ?? null,
+        custodianContract: accounts[CUSTODIAN] ?? null,
+        // Where this DAO's own money sits, and the TLM in it. Not the DAO
+        // token — that is EYE, MAG and so on, and it is a different contract.
+        treasury: accounts[PROP_FUNDS_SOURCE] ?? accounts[SPENDINGS] ?? null,
+        tlm: null,
+        council: [],       // the seated rows, in the order the chain seats them
+        custodians: [],    // just their names, which is all a card needs
+        error: null,
+    }
+
+    if (!dao.custodianContract) {
+        dao.error = 'no custodian contract registered'
+        return dao
+    }
+
+    try {
+        // Who sits now, and who would sit if a period ran this second. The two
+        // are compared against each other, so they come from one node: split
+        // across a block boundary they can disagree and invent an at-risk seat.
+        const [seated, allCands, globals] = await pinnedReads(3, (opts) => [
+            getRows(dao.custodianContract, dao.id, 'custodians1', { limit: 100, ...opts }),
+            // The whole table rather than a page of the `bydecayed` index. It is
+            // one call either way — 85 rows at its largest, every scope answering
+            // `more: false` — and having the inactive rows too is what lets a vote
+            // that can no longer be cast be recognised instead of guessed at.
+            //
+            // Ordering is not lost by doing it here: `bydecayed` is literally
+            // `UINT64_MAX - rank` over a stored `rank` field, so sorting by rank
+            // descending below reproduces exactly the order newperiod walks.
+            getRows(dao.custodianContract, dao.id, 'candidates', { limit: 500, ...opts }),
+            // Carries `lastperiodtime` and `periodlength`, which together are the
+            // only statement of when the next election is due.
+            postRows(dao.custodianContract, dao.id, 'dacglobals', { limit: 1, ...opts }),
+        ])
+
+        suspectEmpty(dao, seated, allCands, globals)
+
+        const g = {}
+        for (const kv of globals[0]?.data ?? []) g[kv.key] = kv.value?.[1]
+        const last = Date.parse(`${g.lastperiodtime}Z`)
+        const length = Number(g.periodlength)
+        dao.nextElection = Number.isFinite(last) && Number.isFinite(length) && length > 0
+            ? last + length * 1000
+            : null
+        dao.periodLength = Number.isFinite(length) ? length : null
+        // The contract refuses a period shorter than any pending-period delay that
+        // has been set. Absent from every DAO today, so it defaults to nothing.
+        dao.pendingPeriodDelay = Number(g.pending_period_delay) || 0
+        // How many custodian signatures satisfy the owner's "high" permission,
+        // which is what a msig proposal ultimately needs. The owner's "active"
+        // permission just delegates to "high" with a threshold of 1, so "high"
+        // is the real bar — 3 on every DAO today, and the same number dacglobals
+        // calls auth_threshold_high.
+        dao.approvalThreshold = Number(g.auth_threshold_high) || 3
+
+        // The contract seats candidates off that same index, so leaving these in
+        // primary-key order would print a council in an order the chain does not
+        // use.
+        dao.council = seated.sort((a, b) => Number(b.rank) - Number(a.rank))
+        dao.custodians = dao.council.map((c) => c.cust_name)
+
+        // Every candidate row by name, active flag and all. This is what
+        // `votecust` consults, so it is what decides whether a vote already cast
+        // can still be re-cast.
+        dao.candidates = new Map(allCands.map((c) => [c.candidate_name, !!Number(c.is_active)]))
+
+        // The details view wants these same rows in full. It used to fetch them
+        // again on open; now that the grid load already has them, it does not.
+        candidatesCache.set(dao.id, allCands)
+
+        const ranked = [...allCands].sort((a, b) => Number(b.rank) - Number(a.rank))
+
+        // newperiod walks the ranked index, skips inactive candidates, requires
+        // vote power above zero, and stops at `numelected`. `custodians1` holds
+        // exactly numelected rows once a period has run, so the seat count is
+        // the seated count — no extra dacglobals read to learn it.
+        const contenders = ranked.filter((c) => c.is_active && Number(c.total_vote_power) > 0)
+        dao.wouldSeat = contenders.slice(0, dao.council.length).map((c) => c.candidate_name)
+        dao.nextInLine = contenders[dao.council.length]?.candidate_name ?? null
+        dao.rankOf = new Map(contenders.map((c, i) => [c.candidate_name, i + 1]))
+
+        // Only meaningful if the ranked read actually returned something.
+        dao.atRisk = contenders.length
+            ? new Set(dao.custodians.filter((n) => !dao.wouldSeat.includes(n)))
+            : new Set()
+    } catch (err) {
+        dao.error = err.message ?? String(err)
+    }
+
+    // Outside the council's try on purpose. A node that will not serve one
+    // scope of alien.worlds has said nothing about whether the council read
+    // succeeded, and reporting the card as unavailable over a missing balance
+    // would throw away the part that did work.
+    if (dao.treasury) {
+        try {
+            dao.tlm = (await getRows(TLM_CONTRACT, dao.treasury, 'accounts', { limit: 20 }))
+                .map((r) => r.balance)
+                .find((b) => assetCode(b) === TLM_SYMBOL) ?? null
+        } catch (err) {
+            console.error(`Could not read ${dao.treasury}'s TLM:`, err)
+        }
+    }
+
+    return dao
+}
+
+// Resolves with the first probe that comes back healthy, or null if every one of
+// them fails. Deliberately NOT Promise.any: that rejects only once all have
+// rejected, and a probe resolves with null rather than rejecting.
+function firstAnswer(promises) {
+    return new Promise((resolve) => {
+        let left = promises.length
+        if (!left) return resolve(null)
+        let done = false
+        for (const p of promises) {
+            p.then((r) => {
+                if (r && !done) { done = true; resolve(r) }
+                if (--left === 0 && !done) resolve(null)
+            })
+        }
+    })
+}
+
+// Settles on the fastest node that answers. Everything downstream reads the
+// chain, so there is no point loading DAOs — or restoring a session — against a
+// node that is not there.
+async function pickEndpoint() {
+    setStatus('Finding a node…')
+
+    // Waiting for ALL ten probes cost a second and a quarter of dead time at the
+    // head of every load, almost all of it spent waiting on nodes that were
+    // never going to answer. The fastest replies in about 30ms.
+    //
+    // So: start on the first node that answers, and let the rest of the pool
+    // arrive behind it. Reads begin roughly a second earlier and simply get more
+    // nodes to spread over as the probes land.
+    const pending = ENDPOINTS.map((u) => probe(u, PROBE_TIMEOUT))
+    const first = await firstAnswer(pending)
+
+    // Ten TLS handshakes to ten cold hosts at once, on a slow connection, is
+    // enough to blow a short deadline on every one of them — and the page then
+    // dead-ends claiming the whole chain is unreachable. A first round that comes
+    // back empty is "too slow", not "nothing is there", and gets one more round
+    // with a deadline nothing healthy should ever miss.
+    let healthy = first ? [first] : []
+    if (!healthy.length) {
+        setStatus('Nothing answered in time — trying again more patiently…')
+        healthy = (await Promise.all(ENDPOINTS.map((u) => probe(u, PROBE_RETRY_TIMEOUT))))
+            .filter(Boolean)
+    }
+
+    if (!healthy.length) {
+        setStatus('No WAX node answered.', 'error', { retry: true })
+        return false
+    }
+
+    healthy.sort((a, b) => a.ms - b.ms)
+
+    // No lag check here on purpose. It costs a round trip, which is the one this
+    // rewrite exists to save, and with a single candidate in hand a stale node
+    // would fail the whole boot rather than be skipped. Every node that joins
+    // AFTER this one is lag-checked as it arrives, and a node that starts
+    // failing is benched — so a stale first node stops being used within
+    // seconds rather than being relied on.
+
+    // Every node that answered carries reads from here on. More nodes is a
+    // bigger budget: the per-node limit is fixed, so the aggregate rate is
+    // simply how many of them are up.
+    //
+    // Each node's window opens already holding its probe. The probe bypasses the
+    // scheduler by design — it is one deliberate call to one named node — but it
+    // is still a call that node just served, and starting the budget at zero
+    // would let the first burst put four on it inside the window.
+    pool = healthy.map(({ url, at }) => ({ url, recent: [at], fails: 0, benchedUntil: 0 }))
+
+    // With every node idle, "least loaded" resolves to whichever comes first in
+    // the array every single time — so a burst all lands on one node, which is
+    // exactly the condition that gets answered with empty rows. Rotating the
+    // starting point spreads the tie. Ranking is untouched; this only decides who
+    // wins a draw.
+    if (pool.length > 1) {
+        const turn = Math.floor(Math.random() * pool.length)
+        pool = [...pool.slice(turn), ...pool.slice(0, turn)]
+    }
+    apiUrl = healthy[0].url
+    sessionKit.setEndpoint(Chains.WAX.id, apiUrl)   // signing follows reads
+
+    // Everything still in flight joins the pool as it answers. Reads that have
+    // already started simply find more nodes to spread over on their next turn.
+    const have = new Set(pool.map((n) => n.url))
+    for (const p of pending) {
+        p.then(async (r) => {
+            if (!r || have.has(r.url)) return
+            const lag = await lagOf(r.url)
+            if (lag != null && lag > MAX_LAG_SECONDS) {
+                return console.warn(`Skipping ${r.url}: ${Math.round(lag)}s behind head`)
+            }
+            have.add(r.url)
+            pool.push({ url: r.url, recent: [r.at], fails: 0, benchedUntil: 0 })
+        })
+    }
+
+    return true
+}
+
+function countsAndRender() {
+    $('countSyndicates').textContent = daos.filter((d) => d.group === 'syndicate').length
+    $('countUnions').textContent     = daos.filter((d) => d.group === 'union').length
+    render()
+}
+
+async function loadDaos() {
+    let directory
+    try {
+        setStatus('Reading the directory…')
+        startPhase(1)
+        directory = await getRows(DIRECTORY, DIRECTORY, 'dacs', { limit: 200 })
+    } catch (err) {
+        endPhase()
+        setStatus(`Could not read ${DIRECTORY}: ${err.message}`, 'error')
+        return
+    }
+
+    const shown = directory.filter((row) => !HIDDEN.has(row.dac_id))
+
+    setStatus(`${shown.length} DAOs — reading councils…`)
+    startPhase(shown.length)
+
+    // Painted as they arrive rather than all at once at the end. The last DAO
+    // does not arrive any sooner, but the first one does — by several seconds —
+    // and a page that fills in is a page that is working.
+    daos = []
+    let paint = null
+    await mapLimit(shown, CONCURRENCY, async (row) => {
+        const dao = await loadDao(row)
+        daos.push(dao)
+        daos.sort((a, b) => a.title.localeCompare(b.title))
+        // One repaint a frame at most: twelve councils landing together would
+        // otherwise rebuild the grid twelve times in the same tick.
+        if (!paint) paint = requestAnimationFrame(() => { paint = null; countsAndRender() })
+        return dao
+    })
+    endPhase()
+    countsAndRender()
+
+    const failed = daos.filter((d) => d.error)
+    setStatus(failed.length
+        ? `${failed.length} council${failed.length === 1 ? '' : 's'} unavailable — ` +
+          `${failed.map((d) => d.id).join(', ')}`
+        : null, failed.length ? 'error' : '')
+
+    render()
+}
+
+// ── Your position ─────────────────────────────────────────────────────────
+//
+// Four things, per DAO, for whoever is signed in. All of them live on the DAO's
+// own token contract, and all of them are scoped by dac_id rather than by the
+// token symbol — which is not what `get_table_by_scope` reports, so they have to
+// be read directly:
+//
+//   accounts   scope = the holder    what they hold liquid
+//   stakes     scope = dac_id        what they have staked, keyed by account
+//   staketime  scope = dac_id        their chosen unstake delay, keyed by account
+//   unstakes   scope = dac_id        releases in flight, via the `byaccount` index
+//
+// `staketime` has no row until someone sets one; the contract then falls back to
+// `stakeconfig.min_stake_time`, so a missing row means the minimum, not zero.
+
+const assetAmount = (a) => Number(String(a ?? '0').split(' ')[0]) || 0
+const assetCode   = (a) => String(a ?? '').split(' ')[1] ?? ''
+
+// Assets are fixed-point, so the arithmetic below is done in minor units and
+// never in floats — 600292.4900 minus 600000.0000 has to come out as exactly
+// 292.4900, and binary floating point does not promise that. WAX supplies are
+// far inside Number's safe integer range at four decimals.
+const assetPrecision = (a) => (String(a ?? '').split(' ')[0].split('.')[1] ?? '').length
+
+function assetUnits(a) {
+    if (!a) return 0
+    const [whole, frac = ''] = String(a).split(' ')[0].split('.')
+    return Number(whole) * 10 ** frac.length + Number(frac || 0)
+}
+
+function unitsToAsset(units, precision, code) {
+    const s = String(Math.max(0, Math.round(units))).padStart(precision + 1, '0')
+    const whole = s.slice(0, s.length - precision)
+    const frac = precision ? `.${s.slice(s.length - precision)}` : ''
+    return `${whole}${frac} ${code}`
+}
+
+// Whole tokens only. The fractional part is dropped rather than rounded, and
+// the symbol goes with it — the card these figures sit in is already the DAO
+// whose token it is. Both survive in the row's tooltip, so the exact asset is
+// never more than a hover away.
+function fmtAmount(a) {
+    const [whole] = String(a).split(' ')[0].split('.')
+    return Number(whole).toLocaleString('en-US')
+}
+
+// Whole days, for ages. 'voted 341d ago' is the question being answered; a
+// decimal place on it is noise.
+const fmtAge = (ms) => `${Math.max(0, Math.floor(ms / 86400000))}d`
+
+// `new Date(NaN).toISOString()` THROWS rather than returning anything useful, so
+// every date printed from chain data goes through here. One unparseable
+// timestamp was enough to take a whole screen down with it.
+function isoDay(ms) {
+    if (!Number.isFinite(ms)) return '—'
+    try { return new Date(ms).toISOString().slice(0, 10) } catch { return '—' }
+}
+
+// How far off a date is, rather than the date itself. "in 12d" answers the
+// question people actually have about a period; 2026-09-11 makes them do the
+// subtraction. The exact date stays on hover.
+function fmtWhen(ms) {
+    if (!Number.isFinite(ms)) return '—'
+    const diff = ms - Date.now()
+    const days = Math.round(Math.abs(diff) / 86400000)
+    if (days === 0) return diff >= 0 ? 'today' : 'today'
+    return diff > 0 ? `in ${days}d` : `${days}d ago`
+}
+
+function isoMinute(ms) {
+    if (!Number.isFinite(ms)) return '—'
+    try { return new Date(ms).toISOString().replace('T', ' ').slice(0, 16) } catch { return '—' }
+}
+
+// Time to the next election. `newperiod` is permissionless but somebody still
+// has to send it, so a due date in the past means nobody has — which is a real
+// state, not an error, and says "pending" rather than counting up.
+//
+// Seconds only appear inside the last hour: above that they change nothing a
+// reader cares about and just make the whole card twitch every second.
+function fmtCountdown(ms) {
+    if (!Number.isFinite(ms)) return '—'
+    if (ms <= 0) return 'pending'
+
+    const total = Math.floor(ms / 1000)
+    const d = Math.floor(total / 86400)
+    const h = Math.floor((total % 86400) / 3600)
+    const m = Math.floor((total % 3600) / 60)
+    const s = total % 60
+
+    if (total < 3600) return `${m}m ${s}s`
+    if (d > 0) return `${d}d ${h}h ${m}m`
+    return `${h}h ${m}m`
+}
+
+// Repaints just the countdown text in place. A full re-render every second would
+// throw away scroll position, checkbox state and any half-typed amount.
+function tickCountdowns() {
+    const now = Date.now()
+    for (const el of document.querySelectorAll('[data-due]')) {
+        const due = Number(el.dataset.due)
+        const text = fmtCountdown(due - now)
+        if (el.textContent !== text) el.textContent = text
+        el.classList.toggle('is-pending', due - now <= 0)
+        el.classList.toggle('is-soon', due - now > 0 && due - now < 3600000)
+    }
+}
+
+function fmtDays(seconds) {
+    const days = seconds / 86400
+    const shown = days >= 10 ? Math.round(days) : Math.round(days * 10) / 10
+    return `${shown} day${shown === 1 ? '' : 's'}`
+}
+
+// One DAO's three staking tables, pinned to a single node so they agree with
+// each other. If that node fails the reads go back through the scheduler, where
+// a retry can land anywhere — a consistent answer is preferred, but no answer is
+// worse than a possibly-skewed one.
+async function readStakeTables(dao, actor, bounded) {
+    const unstakeQuery = {
+        // `unstakes` is keyed by an auto-incrementing id, so finding one
+        // account's releases means the byaccount secondary index.
+        index_position: 2, key_type: 'name',
+        lower_bound: actor, upper_bound: actor, limit: 100,
+    }
+
+    const read = (opts) => Promise.all([
+        getRows(dao.tokenContract, dao.id, 'stakes', { ...bounded, ...opts }),
+        getRows(dao.tokenContract, dao.id, 'staketime', { ...bounded, ...opts }),
+        getRows(dao.tokenContract, dao.id, 'unstakes', { ...unstakeQuery, ...opts }),
+    ])
+
+    let rows
+    try {
+        const node = await acquireNode(3)
+        rows = await read({ url: node.url })
+    } catch {
+        rows = await read({})
+    }
+    const [stakeRows, timeRows, unstakeRows] = rows
+    return { stakeRows, timeRows, unstakeRows }
+}
+
+async function loadPosition() {
+    if (!session || !daos.length) {
+        position = new Map()
+        votes = new Map()
+        voteReads = new Set()
+        setTlm(null)
+        render()
+        return
+    }
+
+    const actor = String(session.actor)
+    const bounded = { lower_bound: actor, upper_bound: actor, limit: 1 }
+    const next = new Map()
+    const nextVotes = new Map()
+    const nextVoteReads = new Set()
+
+    // One balances read per token contract, one for TLM, then three per DAO. Any
+    // stakeconfig follow-ups land on top of this, which the bar clamps rather
+    // than overruns.
+    const contractCount = new Set(daos.map((d) => d.tokenContract).filter(Boolean)).size
+    setStatus(`Reading your holdings across ${daos.length} DAOs…`)
+    startPhase(contractCount + 1 + daos.length * 3)
+
+    try {
+        // Trilium first: it is one read and it is the figure sitting next to the
+        // account name, so it should not wait behind twelve DAOs.
+        const [tlmRow] = await getRows(TLM_CONTRACT, actor, 'accounts', { limit: 20 })
+            .then((rows) => rows.filter((r) => assetCode(r.balance) === TLM_SYMBOL))
+            .catch(() => [])
+        setTlm(tlmRow?.balance ?? null)
+
+        // One read per token contract gets every balance that holder has, so
+        // this does not have to be asked per DAO.
+        const contracts = [...new Set(daos.map((d) => d.tokenContract).filter(Boolean))]
+        const balances = new Map()
+        for (const contract of contracts) {
+            for (const row of await getRows(contract, actor, 'accounts', { limit: 200 })) {
+                balances.set(`${contract}:${assetCode(row.balance)}`, row.balance)
+            }
+        }
+
+        await mapLimit(daos, CONCURRENCY, async (dao) => {
+            if (!dao.tokenContract) return
+
+            // All three from one node, in one window. `unstake` moves tokens out
+            // of `stakes` and into `unstakes` in a single transaction, so reading
+            // the two from nodes at different heights can show the same tokens
+            // twice — once as staked and once as unstaking.
+            const { stakeRows, timeRows, unstakeRows } = await readStakeTables(dao, actor, bounded)
+
+            // The vote lives on the custodian contract, not the token contract,
+            // and has to agree with nothing else — so it goes back through the
+            // scheduler rather than eating a slot on the pinned node.
+            if (dao.custodianContract) {
+                try {
+                    const [row] = await getRows(dao.custodianContract, dao.id, 'votes', bounded)
+                    if (row) nextVotes.set(dao.id, row)
+                    // Recorded even with no row. An empty answer is an answer:
+                    // it says this account has never voted here, which is a
+                    // DAO to skip rather than one to worry about.
+                    nextVoteReads.add(dao.id)
+                } catch (err) {
+                    // Left out of BOTH, so the refresh button can tell this
+                    // apart from a DAO that simply holds no vote.
+                    console.error(`Could not read your vote in ${dao.id}:`, err)
+                }
+            }
+
+            const balance = balances.get(`${dao.tokenContract}:${dao.symbol}`) ?? null
+            const staked  = stakeRows[0]?.stake ?? null
+
+            const unstakes = unstakeRows
+                .filter((u) => assetAmount(u.stake) > 0)
+                .map((u) => ({ key: u.key, stake: u.stake, release: Date.parse(`${u.release_time}Z`) }))
+                .sort((a, b) => a.release - b.release)
+
+            // `accounts.balance` is the TOTAL held, not the free part. What is
+            // actually spendable is the contract's own `get_liquid`:
+            //
+            //     liquid = balance - stake - unstakes not yet released
+            //
+            // A released unstake is deliberately not subtracted — the contract
+            // erases those rows on sight, so they are back in hand.
+            const now = Date.now()
+            const lockedUnits = unstakes
+                .filter((u) => u.release > now)
+                .reduce((n, u) => n + assetUnits(u.stake), 0)
+            const freeUnits = assetUnits(balance) - assetUnits(staked) - lockedUnits
+
+            const entry = {
+                total:     assetAmount(balance) > 0 ? balance : null,
+                // Always a real asset string, zero included. Whether the line is
+                // worth printing is a rendering question, not a data one — and
+                // the answer there is yes, so cards with a position all share a
+                // shape instead of the first row appearing and disappearing.
+                notStaked: unitsToAsset(freeUnits, dao.precision, dao.symbol),
+                hasFree:   freeUnits > 0,
+                staked:    assetAmount(staked) > 0 ? staked : null,
+                delay:     timeRows[0] ? Number(timeRows[0].delay) : null,
+                delayIsMinimum: false,
+                unstakes,
+            }
+
+            if (entry.hasFree || entry.staked || entry.unstakes.length) next.set(dao.id, entry)
+        })
+
+        // Only the DAOs actually holding a stake without an explicit delay need
+        // the config read, which is usually none of them.
+        const needConfig = daos.filter((d) => {
+            const e = next.get(d.id)
+            return e?.staked && e.delay == null
+        })
+        await mapLimit(needConfig, CONCURRENCY, async (dao) => {
+            const [config] = await getRows(dao.tokenContract, dao.id, 'stakeconfig', { limit: 1 })
+            if (!config) return
+            Object.assign(next.get(dao.id), {
+                delay: Number(config.min_stake_time),
+                delayIsMinimum: true,
+            })
+        })
+
+        position = next
+        votes = nextVotes
+        voteReads = nextVoteReads
+        setStatus(null)
+    } catch (err) {
+        console.error('Could not read your position:', err)
+        setNote('Could not read your balances', { sticky: true })
+        setStatus('Could not read your holdings — reload to retry', 'error')
+        position = new Map()
+        votes = new Map()
+        voteReads = new Set()
+    } finally {
+        endPhase()
+    }
+
+    render()
+
+    // Not awaited: the page is already usable, and the to-do count arrives on
+    // the button a moment later.
+    prefetchTodo()
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+
+// Every line here is dropped when it would read as a zero, so a DAO you have
+// nothing in shows nothing at all rather than four empty rows.
+function positionHtml(dao) {
+    const p = position.get(dao.id)
+    if (!p) return ''
+
+    const lines = []
+
+    // Shown even at zero: every DAO you hold a position in then has the same
+    // first row, rather than the block starting on a different line depending on
+    // whether anything happens to be free.
+    //
+    // The free figure is derived, not read, so its tooltip shows the sum it came
+    // from — otherwise a number that matches no single table row looks invented.
+    {
+        const parts = [`${p.notStaked} free`]
+        if (p.total) parts.push(`${p.total} held`)
+        if (p.staked) parts.push(`${p.staked} staked`)
+        lines.push(['Not staked', esc(fmtAmount(p.notStaked)), parts.join(' · ')])
+    }
+    if (p.staked) lines.push(['Staked', esc(fmtAmount(p.staked)), p.staked])
+
+    // The delay governs a future unstake, so it is only worth saying while
+    // there is a stake for it to apply to.
+    if (p.staked && p.delay > 0) {
+        lines.push([
+            'Stake time',
+            esc(fmtDays(p.delay)),
+            p.delayIsMinimum ? "this DAO's minimum — no delay set" : '',
+        ])
+    }
+
+    // Every release collapses into ONE row here, however many there are. The
+    // card has to stay the same height as every other card, and the per-release
+    // detail — with its own cancel — is what the panel is for.
+    const now = Date.now()
+    if (p.unstakes.length) {
+        const totalUnits = p.unstakes.reduce((n, u) => n + assetUnits(u.stake), 0)
+        const total = unitsToAsset(totalUnits, dao.precision, dao.symbol)
+        const soonest = p.unstakes[0]           // sorted by release when built
+        const done = soonest.release <= now
+        const when = done ? 'claimable' : `in ${fmtDays((soonest.release - now) / 1000)}`
+
+        const detail = p.unstakes.map((u) => `${u.stake} ${u.release <= now
+            ? 'claimable'
+            : `on ${isoDay(u.release)}`}`).join(' · ')
+
+        lines.push([
+            p.unstakes.length > 1 ? `Unstaking ×${p.unstakes.length}` : 'Unstaking',
+            `${esc(fmtAmount(total))} <i class="${done ? 'is-ready' : ''}">${esc(when)}</i>`,
+            detail,
+        ])
+    }
+
+    if (!lines.length) return ''
+
+    return `<dl class="mine">${lines.map(([label, value, title]) => `
+        <div${title ? ` title="${esc(title)}"` : ''}>
+            <dt>${esc(label)}</dt><dd>${value}</dd>
+        </div>`).join('')}</dl>`
+}
+
+function daoHtml(dao) {
+    const held = dao.custodians.filter((name) => WATCHED.has(name)).length
+
+    const council = dao.error
+        ? `<li class="none">Unavailable — ${esc(dao.error)}</li>`
+        : dao.custodians.length === 0
+            ? '<li class="none">No custodians seated</li>'
+            : dao.custodians.map((name) => {
+                // Seated today, but below the cut on today's ranking — they lose
+                // the seat if a period runs before the votes move.
+                const risk = dao.atRisk?.has(name)
+                const place = dao.rankOf?.get(name)
+                return `<li${risk ? ' class="is-risk"' : ''}>
+                    <a class="${WATCHED.has(name) ? 'is-watched' : ''}"
+                       href="${EXPLORER}${encodeURIComponent(name)}" target="_blank"
+                       rel="noopener">${esc(name)}</a>
+                    ${risk ? `<span class="risk" title="Ranked ${
+                        place ? `${place}${place === 1 ? 'st' : place === 2 ? 'nd' : place === 3 ? 'rd' : 'th'}`
+                              : 'below'} of the standing candidates, for ${dao.council.length} seats — ` +
+                        `would lose this seat if a period ran now">at risk</span>` : ''}
+                </li>`
+            }).join('')
+
+    // The marker states the count it is derived from, so it never has to be
+    // taken on trust — the seats it counts are the blue ones directly below it.
+    const marker = held >= CONTROL_THRESHOLD
+        ? `<span class="mc" title="${held} of ${dao.custodians.length} seats held by the watched accounts">MC controlled</span>`
+        : ''
+
+    // What the DAO itself can spend. Whole tokens, like every other figure on a
+    // card; the exact asset and the account holding it are in the tooltip, so
+    // nothing is lost by trimming the four decimals off the face of it.
+    const purse = dao.tlm
+        ? `<span class="treasury" title="${esc(dao.tlm)} held by ${esc(dao.treasury)} — ${
+              dao.group === 'union'
+                  ? "the union's proposal funds, the account it has spending access to"
+                  : "the syndicate's spending allowance for the current period"
+          }">${esc(fmtAmount(dao.tlm))} <i>TLM</i></span>`
+        : ''
+
+    // When your vote here was last cast. Sits with the id rather than in the
+    // corner now that the election clock has the title line.
+    const vote = votes.get(dao.id)
+    const voted = vote ? Date.parse(`${vote.vote_time_stamp}Z`) : NaN
+    const age = Number.isFinite(voted)
+        ? `<span class="vote-age" title="You voted ${isoDay(voted)} for ${
+              esc((vote.candidates ?? []).join(', ') || 'nobody')}">voted ${
+              esc(fmtAge(Date.now() - voted))} ago</span>`
+        : ''
+
+    // Refreshing one DAO's vote on its own. Withdrawn candidates come off the
+    // slate first, exactly as the group button does — and a slate with nothing
+    // left is offered disabled rather than hidden, because "your vote here is
+    // broken" is worth saying out loud.
+    const cast = session && votes.get(dao.id)?.candidates?.length ? castableSlate(dao) : null
+    const voteBtn = !cast ? '' : `
+        <button class="card-btn${cast.drop.length ? ' is-stale' : ''}"
+                data-revote="${esc(dao.id)}" type="button"
+                ${busy || !cast.keep.length ? 'disabled' : ''}
+                title="${esc(cast.drop.length
+                    ? `${cast.drop.map((d) => `${d.name} ${d.why}`).join(', ')}. ${cast.keep.length
+                        ? `Re-casts ${cast.keep.join(', ')} alone.`
+                        : 'Nothing left to re-cast — pick someone new in the details view.'}`
+                    : `Re-cast ${cast.keep.join(', ')} to reset this vote's age`)}">
+            Refresh vote${cast.drop.length ? ' !' : ''}</button>`
+
+    // The clock is painted once here and then only its text is rewritten, once a
+    // second, by tickCountdowns.
+    const due = dao.nextElection
+    const clock = due
+        ? `<span class="election" data-due="${due}"
+                 title="Next election due ${isoMinute(due)} UTC${
+                     dao.periodLength ? ` · period is ${fmtDays(dao.periodLength)}` : ''}">${
+                 esc(fmtCountdown(due - Date.now()))}</span>`
+        : ''
+
+    // The holdings sit beside the council rather than above it. With no session,
+    // or nothing held here, the aside is absent and the council takes the full
+    // card — so an empty column never has to be reserved for it.
+    return `
+    <article class="dao" data-id="${esc(dao.id)}">
+        <div class="dao-top">
+            <h2>${esc(dao.title)}</h2>
+            ${clock}
+        </div>
+        <p class="dao-id">${esc(dao.id)}${purse}${marker}${age}</p>
+        <div class="dao-body">
+            <ul class="council">${council}</ul>
+            ${positionHtml(dao)}
+        </div>
+        <div class="dao-btns">
+            <button class="card-btn" data-details="${esc(dao.id)}" type="button">Details</button>
+            ${voteBtn}
+            <button class="card-btn is-primary" data-actions="${esc(dao.id)}" type="button">Actions</button>
+        </div>
+    </article>`
+}
+
+function render() {
+    // The MSIG tab shows a different kind of thing entirely — point allocators
+    // rather than councils — so it renders from its own list.
+    daosEl.innerHTML = group === 'msig'
+        ? (allocators.length
+            ? allocators.map(allocatorHtml).join('')
+            : `<p class="empty-note">No allocators found on ${POINTS_CONTRACT}.</p>`)
+        : daos.filter((d) => d.group === group).map(daoHtml).join('')
+
+    refreshVotesChrome()
+    todoChrome()
+
+    // Neither applies to allocators: there are no votes to refresh and no
+    // council seat that could owe a signature.
+    if (group === 'msig') {
+        $('refreshVotesBtn').hidden = true
+        $('todoBtn').hidden = true
+    }
+    // Point allocators have no proposals of their own, so the overview button
+    // belongs to the two council grids only.
+    $('overviewBtn').hidden = group === 'msig'
+
+    const open = daosEl.querySelector(`.dao[data-id="${selectedId}"]`)
+    if (open) open.classList.add('is-selected')
+    // The panel reads the same `position` map the cards do, so anything that
+    // re-renders one has to re-render the other.
+    if (selectedId) renderPanel()
+
+    syncHash()
+}
+
+// ── Wallet ────────────────────────────────────────────────────────────────
+
+const connectBtn = $('connectWalletBtn')
+const walletEl   = $('wallet')
+const walletMenu = $('walletMenu')
+const walletWho  = $('walletWho')
+const walletNote = $('walletNote')
+
+let noteTimer
+
+// The one place beside the button that says what just happened. Cancelling a
+// wallet dialog is a decision, not a failure, so it clears itself; a real error
+// stays until the next attempt.
+function setNote(text, { sticky = false } = {}) {
+    clearTimeout(noteTimer)
+    walletNote.textContent = text ?? ''
+    walletNote.hidden = !text
+    if (text && !sticky) noteTimer = setTimeout(() => { walletNote.hidden = true }, 4000)
+}
+
+function setMenuOpen(open) {
+    walletMenu.hidden = !open
+    connectBtn.setAttribute('aria-expanded', String(open))
+}
+
+// Trilium sits beside the account name, not on a card: it is the one balance
+// that belongs to the player rather than to any single DAO.
+function setTlm(asset) {
+    const el = $('tlm')
+    if (!asset || assetAmount(asset) <= 0) {
+        el.hidden = true
+        el.textContent = ''
+        return
+    }
+    el.textContent = `${fmtAmount(asset)} TLM`
+    el.title = asset
+    el.hidden = false
+}
+
+function setWalletChrome() {
+    const label = connectBtn.querySelector('.btn-label')
+    connectBtn.classList.toggle('is-connected', !!session)
+    label.textContent = session ? String(session.actor) : 'Connect Wallet'
+    connectBtn.title = session
+        ? `Signed in as ${session.permissionLevel}`
+        : 'Connect a WAX wallet — optional, nothing here signs anything'
+    walletWho.textContent = session ? String(session.permissionLevel) : ''
+
+    // A menu left standing open across a change of session would be offering to
+    // sign out of one that has already gone.
+    setMenuOpen(false)
+}
+
+// Antelope buries the useful text a few levels down.
+const readableError = (error) =>
+    String(error?.details?.[0]?.message ?? error?.message ?? 'Unknown error')
+        .replace(/^assertion failure with message:\s*/i, '')
+
+const isUserCancel = (error) => {
+    const m = String(error?.message ?? '').toLowerCase()
+    return m.includes('cancel') || m.includes('rejected') || m.includes('closed')
+}
+
+async function connect() {
+    connectBtn.disabled = true
+    connectBtn.querySelector('.btn-label').textContent = 'Connecting…'
+    setNote('')
+
+    try {
+        // No walletPlugin argument, so WharfKit shows its own picker — Cloud
+        // Wallet and Anchor, in the order the plugins were registered.
+        const result = await sessionKit.login()
+        session = result.session
+        setWalletChrome()
+        await loadPosition()
+    } catch (error) {
+        if (isUserCancel(error)) {
+            setNote('Cancelled')
+        } else {
+            console.error('Login failed:', error)
+            setNote(readableError(error), { sticky: true })
+        }
+        session = null
+    } finally {
+        connectBtn.disabled = false
+        setWalletChrome()
+    }
+}
+
+async function disconnect() {
+    setMenuOpen(false)
+    try {
+        if (session) await sessionKit.logout(session)
+    } catch (error) {
+        // The local session is dropped either way — leaving someone stuck signed
+        // in because a wallet would not acknowledge the logout is worse than a
+        // stale record on the wallet's side.
+        console.error('Logout failed:', error)
+    }
+    session = null
+    setWalletChrome()
+    await loadPosition()
+    setNote('Signed out')
+}
+
+// A session in storage is one the browser already holds; restoring it needs no
+// wallet dialog, so it must not open one if the wallet has since forgotten us.
+async function restoreSession() {
+    try {
+        const restored = await sessionKit.restore()
+        if (!restored) return
+        session = restored
+        setWalletChrome()
+        await loadPosition()
+    } catch (error) {
+        console.error('Session restore failed:', error)
+    }
+}
+
+connectBtn.addEventListener('click', () => {
+    if (session) {
+        setMenuOpen(walletMenu.hidden)
+        return
+    }
+    setMenuOpen(false)
+    connect()
+})
+
+$('logoutBtn').addEventListener('click', disconnect)
+
+// Anywhere else shuts the menu, which is what an open menu is expected to do.
+// Tested against the wrapper rather than the button, or a click landing on the
+// menu itself would close it before the item could act.
+document.addEventListener('click', (e) => {
+    if (walletMenu.hidden || walletEl.contains(e.target)) return
+    setMenuOpen(false)
+})
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setMenuOpen(false)
+})
+
+// ── Actions ───────────────────────────────────────────────────────────────
+//
+// Everything below signs. The exact shapes were read off the contracts and then
+// confirmed against live mainnet traces:
+//
+//   stake        token.worlds::stake(account, quantity)
+//   unstake      token.worlds::unstake(account, quantity)
+//   claim        token.worlds::claimunstkes(account, token_symbol)
+//   cancel       token.worlds::cancel(unstake_id, token_symbol)
+//   TLM -> token alien.worlds::transfer(-> stake.worlds, memo "staking")
+//                + stake.worlds::stake(account, planet_name, quantity)   [one trx]
+//   token -> TLM token.worlds::transfer(-> stake.worlds, memo "Unstaking")
+//
+// `planet_name` is not uniform: syndicates are addressed by their planet account
+// (`eyeke.world`, from plnts.worlds) and unions by their dac_id (`kavianunn`,
+// from stake.worlds/stakedaos). Both branches were confirmed on chain.
+
+const STAKE_CONTRACT = 'stake.worlds'
+const PLANETS_CONTRACT = 'plnts.worlds'
+
+let selectedId = null
+let swapTargets = new Map()   // symbol code -> the name stake.worlds wants
+let stakeConfigs = new Map()  // dac_id -> { min, max }
+let busy = false
+
+const panelEl = $('panel')
+const panelInner = $('panelInner')
+
+const daoById = (id) => daos.find((d) => d.id === id)
+
+// A number typed by a person into the fixed-point string the chain requires.
+// Truncates rather than rounds: rounding up could ask to move more than is held.
+function toAsset(input, precision, code) {
+    const n = Number(String(input).trim().replace(/,/g, ''))
+    if (!Number.isFinite(n) || n <= 0) return null
+    const units = Math.floor(n * 10 ** precision + 1e-6)
+    if (units <= 0) return null
+    return unitsToAsset(units, precision, code)
+}
+
+// The two lookups stake.worlds needs, read once. Syndicates come from the planet
+// registry keyed by symbol; unions are listed on stake.worlds itself.
+async function loadSwapTargets() {
+    const next = new Map()
+    try {
+        for (const p of await getRows(PLANETS_CONTRACT, PLANETS_CONTRACT, 'planets', { limit: 100 })) {
+            const code = String(p.dac_symbol ?? '').split(',')[1]
+            if (code && p.active) next.set(code, p.planet_name)
+        }
+    } catch (err) {
+        console.error('Could not read the planet registry:', err)
+    }
+    try {
+        for (const d of await getRows(STAKE_CONTRACT, STAKE_CONTRACT, 'stakedaos', { limit: 100 })) {
+            const code = String(d.dac_symbol ?? '').split(',')[1]
+            if (code) next.set(code, d.dac_id)
+        }
+    } catch (err) {
+        console.error('Could not read the union swap list:', err)
+    }
+    swapTargets = next
+}
+
+async function stakeConfigFor(dao) {
+    if (stakeConfigs.has(dao.id)) return stakeConfigs.get(dao.id)
+    const [row] = await getRows(dao.tokenContract, dao.id, 'stakeconfig', { limit: 1 })
+    const cfg = row
+        ? { min: Number(row.min_stake_time), max: Number(row.max_stake_time), enabled: !!row.enabled }
+        : null
+    stakeConfigs.set(dao.id, cfg)
+    return cfg
+}
+
+// Held in a variable rather than only in the DOM. A successful action re-reads
+// the position, which re-renders the panel — so a note written straight to the
+// element would be wiped by the very refresh it was reporting.
+let panelMessage = null
+let panelAction = null   // which action the modal is showing a form for
+
+function panelNote(text, kind = '') {
+    panelMessage = text ? { text, kind } : null
+    paintNote()
+}
+
+function paintNote() {
+    const el = $('panelNote')
+    if (!el) return
+    el.textContent = panelMessage?.text ?? ''
+    el.className = `panel-note${panelMessage?.kind ? ` is-${panelMessage.kind}` : ''}`
+    el.hidden = !panelMessage
+}
+
+// A cheap fingerprint of what an action is about to change, so the wait
+// afterwards can watch for it rather than guessing at a duration.
+async function stakeSnapshot(dao) {
+    if (!dao?.tokenContract || !session) return null
+    try {
+        const actor = String(session.actor)
+        const { stakeRows, unstakeRows } = await readStakeTables(dao, actor, {
+            lower_bound: actor, upper_bound: actor, limit: 1,
+        })
+        return JSON.stringify([stakeRows, unstakeRows])
+    } catch {
+        return null
+    }
+}
+
+// Polls the affected DAO until its staking tables differ from `before`. Bounded,
+// because not every action changes them — a conversion touches balances only —
+// and the caller re-reads regardless once this returns.
+async function waitForChange(dao, before) {
+    if (before == null) return sleep(2000)
+    for (let i = 0; i < 8; i++) {
+        await sleep(1000)
+        if (await stakeSnapshot(dao) !== before) return
+    }
+}
+
+// One place where every signature is sent, so the busy-lock, the error text and
+// the re-read afterwards cannot be forgotten by an individual handler.
+async function submit(actions, describe) {
+    if (!session || busy) return
+    const dao = daoById(selectedId)
+    busy = true
+    renderPanel()
+    panelNote(`${describe} — check your wallet…`, 'work')
+
+    const before = await stakeSnapshot(dao)
+
+    try {
+        const result = await session.transact({ actions }, { broadcast: true })
+        const id = String(result?.resolved?.transaction?.id ?? result?.response?.transaction_id ?? '')
+        panelNote(`${describe} sent${id ? ` · ${id.slice(0, 8)}` : ''} — re-reading…`, 'ok')
+
+        // An accepted transaction is not a row you can read yet — the block has
+        // to land. A fixed wait is a guess that gets it wrong on a slow block, so
+        // this watches the two tables the actions touch until they actually move,
+        // and only then re-reads everything.
+        await waitForChange(dao, before)
+        await loadPosition()
+        panelNote(`${describe} done.`, 'ok')
+    } catch (err) {
+        if (isUserCancel(err)) panelNote('Cancelled.')
+        else {
+            console.error(`${describe} failed:`, err)
+            panelNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderPanel()
+    }
+}
+
+const auth = () => [session.permissionLevel]
+
+function actStake(dao, amount) {
+    const q = toAsset(amount, dao.precision, dao.symbol)
+    if (!q) return panelNote('Enter an amount above zero.', 'error')
+    return submit([{
+        account: dao.tokenContract, name: 'stake', authorization: auth(),
+        data: { account: String(session.actor), quantity: q },
+    }], `Stake ${q}`)
+}
+
+function actUnstake(dao, amount) {
+    const q = toAsset(amount, dao.precision, dao.symbol)
+    if (!q) return panelNote('Enter an amount above zero.', 'error')
+    return submit([{
+        account: dao.tokenContract, name: 'unstake', authorization: auth(),
+        data: { account: String(session.actor), quantity: q },
+    }], `Unstake ${q}`)
+}
+
+function actClaim(dao) {
+    return submit([{
+        account: dao.tokenContract, name: 'claimunstkes', authorization: auth(),
+        data: { account: String(session.actor), token_symbol: `${dao.precision},${dao.symbol}` },
+    }], 'Claim')
+}
+
+function actCancel(dao, key) {
+    return submit([{
+        account: dao.tokenContract, name: 'cancel', authorization: auth(),
+        data: { unstake_id: String(key), token_symbol: `${dao.precision},${dao.symbol}` },
+    }], 'Cancel unstake')
+}
+
+function actSetStakeTime(dao, days, cfg) {
+    const n = Number(String(days).trim())
+    if (!Number.isFinite(n) || n <= 0) return panelNote('Enter a number of days.', 'error')
+    const seconds = Math.round(n * 86400)
+    if (cfg && (seconds < cfg.min || seconds > cfg.max)) {
+        return panelNote(`Must be between ${fmtDays(cfg.min)} and ${fmtDays(cfg.max)}.`, 'error')
+    }
+    return submit([{
+        account: dao.tokenContract, name: 'staketime', authorization: auth(),
+        data: {
+            account: String(session.actor),
+            unstake_time: seconds,
+            token_symbol: `${dao.precision},${dao.symbol}`,
+        },
+    }], `Stake time ${fmtDays(seconds)}`)
+}
+
+// TLM in. Both actions ride in one transaction — the transfer alone would just
+// park TLM on stake.worlds with nothing to claim it.
+function actBuy(dao, amount) {
+    const target = swapTargets.get(dao.symbol)
+    if (!target) return panelNote('This DAO is not listed for TLM swaps.', 'error')
+    const q = toAsset(amount, 4, TLM_SYMBOL)
+    if (!q) return panelNote('Enter an amount above zero.', 'error')
+    const actor = String(session.actor)
+    return submit([
+        {
+            account: TLM_CONTRACT, name: 'transfer', authorization: auth(),
+            data: { from: actor, to: STAKE_CONTRACT, quantity: q, memo: 'staking' },
+        },
+        {
+            account: STAKE_CONTRACT, name: 'stake', authorization: auth(),
+            data: { account: actor, planet_name: target, quantity: q },
+        },
+    ], `Convert ${q} to ${dao.symbol}`)
+}
+
+// Token out. stake.worlds burns what it receives and refunds TLM 1:1.
+function actSell(dao, amount) {
+    const q = toAsset(amount, dao.precision, dao.symbol)
+    if (!q) return panelNote('Enter an amount above zero.', 'error')
+    return submit([{
+        account: dao.tokenContract, name: 'transfer', authorization: auth(),
+        data: { from: String(session.actor), to: STAKE_CONTRACT, quantity: q, memo: 'Unstaking' },
+    }], `Convert ${q} to TLM`)
+}
+
+// Re-casting the same slate is what "refreshing" a vote is: `votecust` rewrites
+// `vote_time_stamp`, which feeds each candidate's `avg_vote_time_stamp` and so
+// their `rank`. The candidate list is unchanged — only its age is.
+function voteAction(dao, candidates) {
+    return {
+        account: dao.custodianContract, name: 'votecust', authorization: auth(),
+        data: { voter: String(session.actor), newvotes: candidates, dac_id: dao.id },
+    }
+}
+
+// Why `votecust` would refuse this name, or null if it would take it.
+//
+// The contract checks three things about every name in `newvotes`: that it is a
+// registered member on the latest terms, that a candidate row exists, and that
+// the row is active. The last two are answered here from `dao.candidates`. The
+// membership check is not — it is about the CANDIDATE's own terms agreement, not
+// the voter's, and pre-reading it for every candidate of every DAO would cost
+// more than it saves. That one surfaces as the chain's own error instead.
+//
+// Note the asymmetry that makes any of this survivable: only `newvotes` is
+// validated. The vote being replaced is walked with `find()` and missing rows
+// are skipped, so a slate holding a dead candidate can always be REPLACED — it
+// just cannot be re-cast unchanged.
+function voteBlocker(dao, name) {
+    if (!dao.candidates) return null          // not read; do not invent a verdict
+    if (!dao.candidates.has(name)) return 'no longer a registered candidate'
+    if (!dao.candidates.get(name)) return 'has withdrawn and is no longer standing'
+    return null
+}
+
+// The slate as it could be cast today, and what had to come off it. A candidate
+// who has withdrawn takes the whole transaction down with them, which is how one
+// dead name broke a refresh across every DAO at once.
+function castableSlate(dao) {
+    const slate = votes.get(dao.id)?.candidates ?? []
+    const keep = []
+    const drop = []
+    for (const name of slate) {
+        const why = voteBlocker(dao, name)
+        if (why) drop.push({ name, why })
+        else keep.push(name)
+    }
+    return { slate, keep, drop }
+}
+
+// One transaction covering every vote this account actually holds in the group.
+//
+// `eligible` is the DAOs with a vote row and candidates in it — the ones there is
+// something to re-cast in. `missing` is the DAOs whose vote could not be READ,
+// which is a different thing entirely from a DAO with no vote in it: voting in
+// two unions out of six is an ordinary way to use these DAOs, and the button has
+// to work for it. Only an unread DAO is a gap, because only there is it unknown
+// whether a vote was left behind.
+function groupVoteState() {
+    const inGroup = daos.filter((d) => d.group === group)
+    const missing = inGroup.filter((d) => !voteReads.has(d.id))
+
+    // A slate is only re-castable as far as its candidates still stand. Names
+    // that have withdrawn come off it — they would refuse the whole transaction,
+    // and they are not being voted for in any real sense either, since the
+    // contract stopped counting them the moment they went inactive.
+    const held = inGroup
+        .filter((d) => (votes.get(d.id)?.candidates ?? []).length > 0)
+        .map((d) => ({ dao: d, ...castableSlate(d) }))
+
+    // Kept separate because these are not a refresh. Re-casting an empty slate
+    // is how `votecust` DELETES a vote, so a DAO whose every candidate has gone
+    // has to be decided on, never swept along with the batch.
+    const emptied = held.filter((h) => h.keep.length === 0)
+    const eligible = held.filter((h) => h.keep.length > 0)
+    const trimmed = eligible.filter((h) => h.drop.length > 0)
+
+    return {
+        inGroup, missing, eligible, trimmed, emptied,
+        complete: inGroup.length > 0 && missing.length === 0,
+    }
+}
+
+function todoChrome() {
+    const btn = $('todoBtn')
+    const councils = todoDaos()
+    btn.hidden = !session || councils.length === 0
+    if (btn.hidden) return
+
+    // The count is what makes this a to-do rather than a link: how many
+    // proposals are still waiting on THIS account's signature. Anything already
+    // approved is no longer outstanding, so it is not counted.
+    const waiting = todoRows().filter(({ p }) => !approvedByMe(p)).length
+
+    // Until every qualifying council's proposals are in, that number would be an
+    // undercount presented as a fact. Showing nothing beats a figure that
+    // quietly grows a second later.
+    const ready = councils.every((d) => proposalsCache.has(d.id))
+
+    btn.innerHTML = ready
+        ? `To do <span class="count${waiting ? ' is-waiting' : ''}">${waiting}</span>`
+        : 'To do'
+    btn.title = ready
+        ? `${waiting} proposal${waiting === 1 ? '' : 's'} still need your approval across ` +
+          `${councils.map((d) => d.title).join(', ')}`
+        : `Reading proposals across ${councils.map((d) => d.title).join(', ')}…`
+}
+
+// Fills the cache the count reads from. Runs in the background once the holdings
+// have landed: the number is worth having up front, but not worth making the
+// page wait for.
+async function prefetchTodo() {
+    const jobs = todoDaos().map(fetchProposals).filter(Boolean)
+    if (jobs.length) await Promise.all(jobs)
+    todoChrome()
+    if (todoOpen) renderTodo()
+}
+
+function refreshVotesChrome() {
+    const btn = $('refreshVotesBtn')
+    if (!session || !daos.length) {
+        btn.hidden = true
+        return
+    }
+    const { eligible, missing, complete, trimmed, emptied } = groupVoteState()
+    const label = group === 'syndicate' ? 'syndicates' : 'unions'
+    const one = eligible.length === 1
+
+    // The count is what the button will sign, so the label is honest by
+    // construction — it never claims to cover DAOs it is not touching.
+    btn.hidden = false
+    btn.disabled = busy || eligible.length === 0
+    btn.classList.toggle('is-partial',
+        eligible.length > 0 && (!complete || trimmed.length > 0 || emptied.length > 0))
+    btn.textContent = `Refresh votes · ${eligible.length} ${one ? label.slice(0, -1) : label}`
+
+    const notes = []
+    if (!complete) {
+        notes.push(`${missing.length} of these ${label} could not be read (${
+            missing.map((d) => d.id).join(', ')}), so a vote held there is not in this batch.`)
+    }
+    for (const h of trimmed) {
+        notes.push(`In ${h.dao.title} this drops ${h.drop.map((d) => d.name).join(' and ')} — ${
+            h.drop[0].why} — and re-casts ${h.keep.join(', ')}.`)
+    }
+    for (const h of emptied) {
+        notes.push(`${h.dao.title} is left out: every candidate you voted for there (${
+            h.slate.join(', ')}) has gone. ` +
+            `Re-casting an empty slate is how votecust DELETES a vote, so this one needs a ` +
+            `new pick in its details view, not a refresh.`)
+    }
+
+    btn.title = eligible.length
+        ? [`Re-cast your slate in ${eligible.map((h) => h.dao.title).join(', ')}.`, ...notes].join(' ')
+        : emptied.length
+            ? notes.join(' ')
+            : complete
+                ? `No votes cast in any ${label} yet`
+                : `No vote could be read in any of these ${label} — ${
+                      missing.map((d) => d.id).join(', ')}`
+}
+
+async function refreshGroupVotes() {
+    const { eligible, missing, trimmed, emptied } = groupVoteState()
+    if (!session || busy || !eligible.length) return
+
+    const actions = eligible.map((h) => voteAction(h.dao, h.keep))
+    busy = true
+    refreshVotesChrome()
+    setStatus(`Refreshing ${eligible.length} votes — check your wallet…`)
+
+    try {
+        await session.transact({ actions }, { broadcast: true })
+        await sleep(2500)
+        await loadPosition()
+        const left = [
+            ...missing.map((d) => `${d.id} could not be read`),
+            ...emptied.map((h) => `${h.dao.id} has no candidate left standing`),
+        ]
+        const cut = trimmed.flatMap((h) => h.drop.map((d) => `${d.name} in ${h.dao.id}`))
+        setStatus([
+            `Refreshed votes in ${eligible.length} DAO${eligible.length === 1 ? '' : 's'}.`,
+            cut.length ? `Dropped ${cut.join(', ')} — no longer standing.` : '',
+            left.length ? `Left out: ${left.join('; ')}.` : '',
+        ].filter(Boolean).join(' '), left.length ? 'error' : '')
+    } catch (err) {
+        if (isUserCancel(err)) setStatus('Vote refresh cancelled.')
+        else {
+            console.error('Vote refresh failed:', err)
+            setStatus(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        refreshVotesChrome()
+        renderPanel()
+    }
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────────
+
+function form(id, label, { hint, unit, max, cta, disabled }) {
+    return `
+    <div class="act">
+        <div class="act-head">
+            <span class="act-label">${esc(label)}</span>
+            ${hint ? `<span class="act-hint">${esc(hint)}</span>` : ''}
+        </div>
+        <div class="act-row">
+            <input id="${id}-in" type="text" inputmode="decimal" placeholder="0"
+                   autocomplete="off" ${disabled ? 'disabled' : ''}>
+            ${unit ? `<span class="act-unit">${esc(unit)}</span>` : ''}
+            ${max ? `<button class="act-max" data-max="${id}" data-value="${esc(max)}"
+                             type="button" ${disabled ? 'disabled' : ''}>max</button>` : ''}
+            <button class="act-go" data-act="${id}" type="button" ${disabled ? 'disabled' : ''}>${esc(cta)}</button>
+        </div>
+    </div>`
+}
+
+// Same contract as renderDetails: the overlay is only revealed once there is
+// something in it, and a failed build closes rather than stranding the reader
+// behind a blank sheet.
+function renderPanel() {
+    if (!selectedId) {
+        panelEl.hidden = true
+        document.body.classList.remove('is-modal')
+        return
+    }
+    const dao = daoById(selectedId)
+    if (!dao) return closePanel()
+
+    try {
+        panelInner.innerHTML = buildPanel(dao)
+    } catch (err) {
+        console.error('Could not render the actions panel:', err)
+        panelInner.innerHTML = `
+            <header class="panel-head">
+                <div><h2>${esc(dao.title)}</h2></div>
+                <button class="panel-close" id="panelClose" type="button" aria-label="Close">×</button>
+            </header>
+            <p class="panel-note is-error">These actions could not be drawn: ${
+                esc(String(err.message ?? err))}</p>`
+    }
+    paintNote()
+}
+
+function buildPanel(dao) {
+    const p = position.get(dao.id)
+    const cfg = stakeConfigs.get(dao.id)
+    const now = Date.now()
+    const released = (p?.unstakes ?? []).filter((u) => u.release <= now)
+    const swappable = swapTargets.has(dao.symbol)
+
+    const head = `
+        <header class="panel-head">
+            <div>
+                <h2>${esc(dao.title)}</h2>
+                <p class="panel-sub">${esc(dao.id)} · ${esc(dao.symbol)}</p>
+            </div>
+            <button class="panel-close" id="panelClose" type="button" aria-label="Close">×</button>
+        </header>`
+
+    if (!session) {
+        return `${head}
+            <p class="panel-empty">Connect a wallet to stake, unstake or convert here.</p>`
+    }
+
+    const rows = []
+    if (p) {
+        rows.push(['Not staked', fmtAmount(p.notStaked), p.notStaked])
+        if (p.staked) rows.push(['Staked', fmtAmount(p.staked), p.staked])
+        if (p.delay) {
+            rows.push(['Stake time', fmtDays(p.delay),
+                p.delayIsMinimum ? "this DAO's minimum — none set" : ''])
+        }
+    }
+
+    const unstakeRows = (p?.unstakes ?? []).map((u) => `
+        <div class="panel-row is-unstake">
+            <span class="panel-k">Unstaking</span>
+            <span class="panel-v">${esc(fmtAmount(u.stake))}
+                <i class="${u.release <= now ? 'is-ready' : ''}">${
+                    u.release <= now ? 'claimable' : `in ${esc(fmtDays((u.release - now) / 1000))}`
+                }</i></span>
+            <button class="act-mini" data-cancel="${u.key}" type="button"
+                    title="Return this to your stake">cancel</button>
+        </div>`).join('')
+
+    const free = p?.notStaked ? assetAmount(p.notStaked) : 0
+    const staked = p?.staked ? assetAmount(p.staked) : 0
+
+    // Every action, with what it needs and whether it can run at all. Building
+    // this as data rather than as six inline forms is what lets the chooser and
+    // the form be two views of the same list.
+    const menu = [
+        {
+            id: 'stake', label: 'Stake', blurb: 'Lock tokens to give them voting power',
+            unit: dao.symbol, max: free > 0 ? String(free) : '', cta: 'Stake',
+            ready: free > 0, why: 'nothing free to stake',
+            hint: free > 0 ? `${fmtAmount(p.notStaked)} ${dao.symbol} free` : '',
+        },
+        {
+            id: 'unstake', label: 'Unstake', blurb: 'Start releasing staked tokens',
+            unit: dao.symbol, max: staked > 0 ? String(staked) : '', cta: 'Unstake',
+            ready: staked > 0, why: 'nothing staked',
+            hint: staked > 0
+                ? `${fmtAmount(p.staked)} staked · releases after ${fmtDays(p?.delay ?? cfg?.min ?? 0)}`
+                : '',
+        },
+        {
+            id: 'staketime', label: 'Change stake time', blurb: 'Set how long unstaking takes',
+            unit: 'days', cta: 'Set', ready: !!cfg, why: 'reading limits…',
+            hint: cfg ? `${fmtDays(cfg.min)} – ${fmtDays(cfg.max)} · cannot be reduced while staked` : '',
+        },
+        {
+            id: 'claim', label: 'Claim unstake', blurb: 'Free up releases that have matured',
+            cta: 'Claim', noInput: true,
+            ready: released.length > 0, why: 'nothing released yet',
+            hint: released.length ? `${released.length} release${released.length === 1 ? '' : 's'} ready` : '',
+        },
+        {
+            id: 'buy', label: `Get ${dao.symbol}`, blurb: `Convert TLM into ${dao.symbol}, 1:1`,
+            unit: 'TLM', cta: 'Convert', ready: swappable, why: 'not listed for swaps',
+            hint: swappable ? 'sends TLM, receives the DAO token' : '',
+        },
+        {
+            id: 'sell', label: 'Get TLM', blurb: `Convert ${dao.symbol} back into TLM, 1:1`,
+            unit: dao.symbol, max: free > 0 ? String(free) : '', cta: 'Convert',
+            ready: swappable && free > 0, why: swappable ? 'nothing free to convert' : 'not listed for swaps',
+            hint: swappable && free > 0 ? `from the ${fmtAmount(p?.notStaked ?? '0')} not staked` : '',
+        },
+    ]
+
+    const chosen = menu.find((a) => a.id === panelAction)
+
+    // Two views of the same modal: pick an action, or fill one in. Showing all
+    // six forms at once was the thing that felt overwhelming.
+    const body = chosen
+        ? `
+        <button class="act-back" id="actionBack" type="button">← all actions</button>
+        <div class="act-chosen">
+            <h3>${esc(chosen.label)}</h3>
+            <p class="act-blurb">${esc(chosen.blurb)}</p>
+            ${chosen.hint ? `<p class="act-hint-line">${esc(chosen.hint)}</p>` : ''}
+        </div>
+        ${chosen.noInput
+            ? `<div class="act-row"><button class="act-go is-wide" data-act="${chosen.id}" type="button"
+                   ${busy || !chosen.ready ? 'disabled' : ''}>${esc(chosen.cta)}</button></div>`
+            : `<div class="act-row">
+                   <input id="${chosen.id}-in" type="text" inputmode="decimal" placeholder="0"
+                          autocomplete="off" ${busy || !chosen.ready ? 'disabled' : ''}>
+                   ${chosen.unit ? `<span class="act-unit">${esc(chosen.unit)}</span>` : ''}
+                   ${chosen.max ? `<button class="act-max" data-max="${chosen.id}"
+                          data-value="${esc(chosen.max)}" type="button">max</button>` : ''}
+                   <button class="act-go" data-act="${chosen.id}" type="button"
+                          ${busy || !chosen.ready ? 'disabled' : ''}>${esc(chosen.cta)}</button>
+               </div>`}
+        ${!chosen.ready ? `<p class="act-blocked">${esc(chosen.why)}</p>` : ''}`
+        : `
+        <div class="act-menu">
+            ${menu.map((a) => `
+                <button class="act-pick${a.ready ? '' : ' is-off'}" data-pick="${a.id}" type="button">
+                    <span class="act-pick-label">${esc(a.label)}</span>
+                    <span class="act-pick-blurb">${esc(a.ready ? a.blurb : a.why)}</span>
+                </button>`).join('')}
+        </div>`
+
+    return `${head}
+        <section class="panel-pos">
+            ${rows.map(([k, v, t]) => `
+                <div class="panel-row"${t ? ` title="${esc(t)}"` : ''}>
+                    <span class="panel-k">${esc(k)}</span><span class="panel-v">${esc(v)}</span>
+                </div>`).join('')}
+            ${unstakeRows}
+            ${!p ? '<p class="panel-empty">You hold nothing in this DAO yet.</p>' : ''}
+        </section>
+
+        <p class="panel-note" id="panelNote" hidden></p>
+        ${body}`
+}
+
+async function openPanel(id) {
+    if (selectedId !== id) panelMessage = null
+    panelAction = null
+    selectedId = id
+    panelEl.hidden = false
+    document.body.classList.add('is-modal')
+    renderPanel()
+
+    const dao = daoById(id)
+    if (dao && session && !stakeConfigs.has(id)) {
+        try {
+            await stakeConfigFor(dao)
+            if (selectedId === id) renderPanel()
+        } catch (err) {
+            console.error('Could not read the stake config:', err)
+        }
+    }
+}
+
+function closePanel() {
+    selectedId = null
+    panelAction = null
+    panelMessage = null
+    panelEl.hidden = true
+    document.body.classList.remove('is-modal')
+}
+
+// Clicking the scrim closes the overlay. This has to live on the overlay itself:
+// events bubble upward, so a click that lands on the backdrop never reaches a
+// listener attached to the box inside it.
+panelEl.addEventListener('click', (e) => {
+    if (e.target === panelEl) closePanel()
+})
+
+const inputVal = (id) => panelInner.querySelector(`#${id}-in`)?.value ?? ''
+
+panelInner.addEventListener('click', async (e) => {
+    // Same rule as the details view: the way out is checked before anything that
+    // could fail to resolve.
+    if (e.target.closest('#panelClose')) return closePanel()
+
+    const dao = daoById(selectedId)
+    if (!dao) return
+
+    const pick = e.target.closest('[data-pick]')
+    if (pick) {
+        panelAction = pick.dataset.pick
+        panelMessage = null
+        return renderPanel()
+    }
+    if (e.target.closest('#actionBack')) {
+        panelAction = null
+        panelMessage = null
+        return renderPanel()
+    }
+
+    const max = e.target.closest('[data-max]')
+    if (max) {
+        const input = panelInner.querySelector(`#${max.dataset.max}-in`)
+        if (input) input.value = max.dataset.value
+        return
+    }
+
+    const cancel = e.target.closest('[data-cancel]')
+    if (cancel) return actCancel(dao, cancel.dataset.cancel)
+
+    const go = e.target.closest('[data-act]')
+    if (!go) return
+    const cfg = stakeConfigs.get(dao.id)
+    switch (go.dataset.act) {
+        case 'stake':     return actStake(dao, inputVal('stake'))
+        case 'unstake':   return actUnstake(dao, inputVal('unstake'))
+        case 'staketime': return actSetStakeTime(dao, inputVal('staketime'), cfg)
+        case 'buy':       return actBuy(dao, inputVal('buy'))
+        case 'sell':      return actSell(dao, inputVal('sell'))
+        case 'claim':     return actClaim(dao)
+    }
+})
+
+// Escape asks the DOM what is on screen rather than trusting the id variables.
+// If those ever fall out of step with what is displayed, this still gets you out
+// — which is the whole point of an escape hatch.
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    if (!overviewEl.hidden) return closeOverview()
+    if (!createEl.hidden) return closeCreate()
+    if (!todoEl.hidden) return closeTodo()
+    if (!detailsEl.hidden) return closeDetails()
+    if (!panelEl.hidden) return closePanel()
+})
+
+// ── Details view ──────────────────────────────────────────────────────────
+//
+// A full page rather than a modal: candidates run to dozens and proposals carry
+// paragraphs. Its two halves — the council with its candidates, and the
+// proposals — are far too much at once, so a switch shows one at a time.
+
+// The proposals every DAO actually runs are multisig proposals on msig.worlds,
+// scoped by dac_id — thousands of them per syndicate. `prop.worlds` is a
+// different, much rarer thing (worker proposals, unions only) and is not what
+// "proposals" means here.
+//
+// msig.worlds is not listed in the directory's accounts map — there is no
+// account_type for it — so unlike the custodian and token contracts it has to be
+// named outright.
+const MSIG_CONTRACT = 'msig.worlds'
+
+// `state` is a bare uint8 with no enum in the ABI. Derived from live data across
+// three syndicates: 2585 of one value, 297 of another, 95 of a third, which lines
+// up with executed / open / cancelled respectively.
+const MSIG_OPEN = 0
+const MSIG_EXECUTED = 1
+const MSIG_CANCELLED = 2
+
+// A packed transaction begins with its header, and the header begins with a
+// little-endian uint32 expiration. That is the only expiry a msig proposal has.
+function msigExpiry(packed) {
+    const hex = String(packed ?? '').slice(0, 8)
+    if (hex.length < 8) return NaN
+    const le = hex.match(/../g).reverse().join('')
+    return parseInt(le, 16) * 1000
+}
+
+const msigTitle = (p) =>
+    (p.metadata ?? []).find((m) => m.key === 'title')?.value ||
+    (p.metadata ?? []).find((m) => m.key === 'description')?.value ||
+    p.proposal_name
+
+const STATE_LABEL = { 0: 'open', 1: 'executed', 2: 'cancelled' }
+const STATE_CLASS = { 0: 'open', 1: 'completed', 2: 'blocked' }
+
+let detailsId = null
+let candidatesCache = new Map()
+let proposalsCache = new Map()
+let propFilter = 'active'
+// Proposals first: they are the half with something to act on, and they go
+// stale. The council is a standing fact you can read whenever.
+let detailsKind = 'dao'      // dao council, or point allocator
+let detailsTab = 'proposals'   // proposals, or council & candidates
+let periodFormOpen = false   // the election-period proposal form
+let pickedCandidates = new Set()
+let pickedProposals = new Set()
+
+const detailsEl = $('details')
+
+
+const isExpired = (p) => msigExpiry(p.packed_transaction) < Date.now()
+
+// Active is what is still open AND still inside its transaction expiry. An
+// expired proposal can never execute, so it is not shown at all — not here and
+// not with a warning pill.
+//
+// Expiry is only meaningful while a proposal is open: an executed one ran before
+// its deadline, and every executed proposal is past that deadline by now, so
+// applying the same test there would hide all of them.
+function propMatches(p) {
+    return propFilter === 'executed'
+        ? p.state === MSIG_EXECUTED
+        : p.state === MSIG_OPEN && !isExpired(p)
+}
+
+const approvalsOf = (p) => p.approvals?.provided_approvals ?? []
+const approvalCount = (p) => approvalsOf(p).length
+
+// How close a proposal is to being executable is the single most useful thing
+// about it, so it is drawn rather than written: one pip per signature the
+// threshold wants, filled as they arrive. At a threshold of three that reads
+// instantly across a column, which a mono "2 / 3" never did.
+//
+// Zero stays quiet — nobody has signed, which is a starting state, not an alarm.
+// Part-way is bright. Complete goes green, the same green the page already uses
+// for "this can run".
+function approvalCell(p, need) {
+    const got = approvalCount(p)
+    const enough = got >= need
+    const who = approvalsOf(p).map((a) => a.level?.actor).filter(Boolean).join(', ')
+    const title = `${got} of ${need} signatures needed${
+        who ? ` — signed by ${esc(who)}` : ' — nobody has signed yet'}`
+
+    // On an executed proposal the count is settled history and every row reads
+    // the same. Giving those the full badge would shout the same thing 250 times
+    // and drown the open ones, which are the only rows where it decides anything.
+    if (p.state !== MSIG_OPEN) {
+        return `<td class="approvals is-past" title="${title}">${got}<span class="app-need">/${need}</span></td>`
+    }
+
+    const tone = enough ? 'is-enough' : got > 0 ? 'is-part' : 'is-none'
+    const pips = Array.from({ length: Math.max(need, got) }, (_, i) =>
+        `<i class="${i < got ? 'on' : ''}"></i>`).join('')
+
+    return `
+    <td class="approvals ${tone}" title="${title}">
+        <span class="app-badge">
+            <span class="app-n">${got}<span class="app-need">/${need}</span></span>
+            <span class="pips">${pips}</span>
+            <span class="app-tag">${enough ? 'ready' : `needs ${need - got} more`}</span>
+        </span>
+    </td>`
+}
+
+// An approval is recorded per account, so signing one twice is wasted — the
+// contract already holds this account's signature.
+const approvedByMe = (p) =>
+    !!session && approvalsOf(p).some((a) => String(a.level?.actor ?? '') === String(session.actor))
+
+// Approving needs a seat on this council, an open proposal, and — the point of
+// this rule — no approval from this account already on file.
+const canApprove = (p, amCustodian) =>
+    amCustodian && p.state === MSIG_OPEN && !approvedByMe(p)
+
+// Executing needs the collected approvals to actually satisfy the permission the
+// proposal asks for. That threshold is the owner's "high" permission, so a
+// proposal short of it cannot run however open it looks; sending exec anyway
+// just burns a transaction on a guaranteed rejection.
+const canExecute = (p, dao) =>
+    p.state === MSIG_OPEN && !isExpired(p) && approvalCount(p) >= (dao?.approvalThreshold ?? 3)
+
+// ── Proposing a new election period ───────────────────────────────────────
+//
+// `dao.worlds::setperiodlen(periodlength, dac_id)` runs under the DAO OWNER's
+// authority, not a custodian's, so a custodian cannot send it directly. It has
+// to be raised as a multisig proposal for the council to approve.
+//
+// The bounds are the contract's own checks, from config.cpp:
+//   periodlength >= 1 day
+//   periodlength <= 6 months, where a month is 30 days
+//   periodlength >= the DAO's pending period delay
+const PERIOD_MIN_DAYS = 1
+const PERIOD_MAX_DAYS = 180
+
+const periodFloorDays = (dao) =>
+    Math.max(PERIOD_MIN_DAYS, Math.ceil((dao.pendingPeriodDelay || 0) / 86400))
+
+// A proposal name is an eosio name: twelve characters from a 32-symbol alphabet.
+// Random rather than derived — two proposals raised in one DAO must not collide.
+function proposalName() {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz12345'
+    const bytes = new Uint8Array(12)
+    crypto.getRandomValues(bytes)
+    return [...bytes].map((b) => alphabet[b % alphabet.length]).join('')
+}
+
+async function actProposePeriod(dao, days) {
+    const n = Math.round(Number(days))
+    const floor = periodFloorDays(dao)
+    if (!Number.isFinite(n) || n < floor || n > PERIOD_MAX_DAYS) {
+        return detailsNote(`Pick a period between ${floor} and ${PERIOD_MAX_DAYS} days.`, 'error')
+    }
+    if (!dao.owner) return detailsNote('This DAO has no owner account registered.', 'error')
+
+    const seconds = n * 86400
+    const actor = String(session.actor)
+
+    let inner
+    try {
+        const abi = await getAbi(dao.custodianContract)
+        // The msig ABI types an action's arguments as `bytes`, so they go in
+        // pre-serialized rather than as an object.
+        const data = Serializer.encode({
+            abi, type: 'setperiodlen',
+            object: { periodlength: seconds, dac_id: dao.id },
+        })
+        inner = {
+            account: dao.custodianContract,
+            name: 'setperiodlen',
+            authorization: [{ actor: dao.owner, permission: 'active' }],
+            data: String(data),
+        }
+    } catch (err) {
+        console.error('Could not encode setperiodlen:', err)
+        return detailsNote(`Could not build the proposal: ${readableError(err)}`, 'error')
+    }
+
+    // Seven days to collect approvals, matching what this DAO's own proposals
+    // use. ref_block_num and ref_block_prefix are zero on every live proposal:
+    // msig.worlds dispatches the inner actions itself, so the proposed
+    // transaction is never TAPOS-checked.
+    const expiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19)
+    const current = dao.periodLength ? fmtDays(dao.periodLength) : 'unknown'
+
+    return submitDetails([{
+        account: MSIG_CONTRACT, name: 'propose', authorization: auth(),
+        data: {
+            proposer: actor,
+            proposal_name: proposalName(),
+            requested: [{ actor: dao.owner, permission: 'active' }],
+            dac_id: dao.id,
+            metadata: [
+                { key: 'title', value: `Set election period to ${n} day${n === 1 ? '' : 's'}` },
+                {
+                    // Custodians read this in a voting UI, so it says what the
+                    // proposal does and nothing else. The seconds, the contract
+                    // name and who raised it are all recoverable from the
+                    // transaction itself.
+                    key: 'description',
+                    value: `Change the election period for ${dao.title} from ${current} to ` +
+                        `${n} day${n === 1 ? '' : 's'}`,
+                },
+            ],
+            trx: {
+                expiration: expiry,
+                ref_block_num: 0,
+                ref_block_prefix: 0,
+                max_net_usage_words: 0,
+                max_cpu_usage_ms: 0,
+                delay_sec: 0,
+                context_free_actions: [],
+                actions: [inner],
+                transaction_extensions: [],
+            },
+        },
+    }], `Propose a ${n}-day election period`, () => refreshProposals(dao))
+}
+
+// An empty table with no explanation reads as a failed load, so the empty state
+// has to say which kind of empty it is.
+function emptyProposals(dao, props) {
+    if (props === null) return 'Could not read proposals — the node did not answer.'
+    if (!props) return 'Reading…'
+    if (props.length === 0) return 'No multisig proposals have ever been raised here.'
+
+    if (propFilter === 'executed') return `None of the ${props.length} most recent have executed.`
+
+    // Saying how many were withheld matters: without it an empty tab looks like
+    // a failed read rather than a DAO with nothing left to act on.
+    const stale = props.filter((p) => p.state === MSIG_OPEN && isExpired(p)).length
+    return stale
+        ? `Nothing open to act on. ${stale} proposal${stale === 1 ? ' is' : 's are'} still open but ` +
+          `past the expiry inside its transaction, so it can no longer execute — those are not listed.`
+        : `Nothing open in the ${props.length} most recent.`
+}
+
+// One DAO's proposals, joined to their approvals. Split out from loadDetails so
+// the to-do view can gather several DAOs' worth without also dragging in
+// candidate lists it has no use for.
+//
+// The PRIMARY key of `proposals` is `proposal_name`, which sorts alphabetically
+// — reading it in reverse returns the names closest to "zzzz", not the newest
+// rows. `index_position: 3` is the `id` index, and id is a creation counter, so
+// that one really is chronological.
+//
+// One page of it, newest first. Eyeke holds 3028 proposals; paging the lot to
+// fill a screen would be absurd, and anything still open and unexpired was
+// necessarily created recently.
+function fetchProposals(dao) {
+    if (proposalsCache.has(dao.id)) return null
+    return Promise.all([
+        postRows(MSIG_CONTRACT, dao.id, 'proposals', {
+            index_position: 3, key_type: 'i64', limit: 300, reverse: true,
+        }),
+        postRows(MSIG_CONTRACT, dao.id, 'approvals', { limit: 500 }).catch(() => []),
+    ])
+        .then(([rows, approvals]) => {
+            const byName = new Map(approvals.map((a) => [a.proposal_name, a]))
+            // Sorted here rather than trusted from the node: the filters
+            // downstream preserve order, so this is the one place newest-first
+            // is established.
+            proposalsCache.set(dao.id, rows
+                .map((p) => ({ ...p, approvals: byName.get(p.proposal_name) }))
+                .sort((a, b) => Number(b.id) - Number(a.id)))
+        })
+        .catch((err) => { console.error('proposals:', err); proposalsCache.set(dao.id, null) })
+}
+
+async function loadDetails(dao) {
+    const jobs = []
+    if (!candidatesCache.has(dao.id) && dao.custodianContract) {
+        jobs.push(getRows(dao.custodianContract, dao.id, 'candidates', { limit: 500 })
+            .then((rows) => candidatesCache.set(dao.id, rows))
+            .catch((err) => { console.error('candidates:', err); candidatesCache.set(dao.id, null) }))
+    }
+    const proposals = fetchProposals(dao)
+    if (proposals) jobs.push(proposals)
+
+    const worker = fetchWorker(dao)
+    if (worker) jobs.push(worker)
+
+    if (jobs.length) {
+        startPhase(jobs.length)
+        await Promise.all(jobs)
+        endPhase()
+    }
+}
+
+const DETAILS_TABS = ['council', 'proposals', 'worker']
+
+async function openDetails(id, tab) {
+    closeTodo()
+    closeOverview()
+    detailsId = id
+    detailsKind = 'dao'
+    // Proposals unless a restored view asks for another. A syndicate has no
+    // worker tab to land on, so that one falls back rather than opening a
+    // switch with nothing behind it.
+    detailsTab = DETAILS_TABS.includes(tab) &&
+        (tab !== 'worker' || hasWorkerProposals(daoById(id) ?? {}))
+        ? tab
+        : 'proposals'
+    periodFormOpen = false
+    wpForm = null
+    wpFilter = 'live'
+
+    // Start from the slate already cast, so the boxes show what you voted for
+    // rather than an empty list you have to reconstruct from memory. Re-casting
+    // it unchanged is exactly a vote refresh; changing one box is an edit.
+    pickedCandidates = new Set(votes.get(id)?.candidates ?? [])
+    pickedProposals = new Set()
+    closePanel()
+    renderDetails()
+    const dao = daoById(id)
+    if (dao) {
+        await loadDetails(dao)
+        if (detailsId === id) renderDetails()
+    }
+}
+
+function closeDetails() {
+    detailsId = null
+    detailsEl.hidden = true
+    document.body.classList.remove('is-details')
+    syncHash()
+}
+
+function seatRow(dao, c, seat) {
+    const power = Number(c.total_vote_power)
+    const age = Date.parse(`${c.avg_vote_time_stamp}Z`)
+    const risk = dao.atRisk?.has(c.cust_name)
+    const place = dao.rankOf?.get(c.cust_name)
+    return `
+    <tr class="${risk ? 'is-risk' : ''}">
+        <td class="num">${seat}</td>
+        <td><a class="${WATCHED.has(c.cust_name) ? 'is-watched' : ''}"
+               href="${EXPLORER}${encodeURIComponent(c.cust_name)}"
+               target="_blank" rel="noopener">${esc(c.cust_name)}</a>
+            ${risk ? `<span class="risk" title="Currently ranked ${place ?? '?'} of the standing candidates">
+                at risk${place ? ` · ranked ${place}` : ''}</span>` : ''}</td>
+        <td class="num">${esc(fmtPower(power, dao))}</td>
+        <td class="num">${c.number_voters}</td>
+        <td class="num">${Number.isFinite(age) ? esc(fmtAge(Date.now() - age)) : '—'}</td>
+    </tr>`
+}
+
+// Vote power is a running sum of token balances, so it is denominated in this
+// DAO's own token at that token's precision.
+function fmtPower(raw, dao) {
+    const n = Number(raw) / 10 ** dao.precision
+    if (!Number.isFinite(n)) return '—'
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`
+    if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`
+    return n.toFixed(0)
+}
+
+// Wraps the build so a throw can never leave a full-screen overlay standing with
+// nothing in it and no way out. Revealing happens AFTER the html exists.
+function renderDetails() {
+    if (!detailsId) return
+    let html
+    try {
+        if (detailsKind === 'allocator') {
+            html = buildAllocatorDetails(detailsId)
+        } else {
+            const dao = daoById(detailsId)
+            if (!dao) return closeDetails()
+            html = buildDetails(dao)
+        }
+    } catch (err) {
+        console.error('Could not render the details view:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="detailsBack" type="button">← Back</button>
+                <div class="d-title"><h2>${esc(String(detailsId))}</h2></div>
+            </header>
+            <p class="panel-note is-error">This view could not be drawn: ${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+
+    detailsEl.innerHTML = html
+    detailsEl.hidden = false
+    document.body.classList.add('is-details')
+    paintDetailsNote()
+    syncHash()
+}
+
+function buildDetails(dao) {
+    const maxVotes = 2
+    const vote = votes.get(dao.id)
+    const votedAt = vote ? Date.parse(`${vote.vote_time_stamp}Z`) : NaN
+    const seated = new Set(dao.custodians)
+    const amCustodian = session && seated.has(String(session.actor))
+
+    const cands = candidatesCache.get(dao.id)
+    const props = proposalsCache.get(dao.id)
+
+    // ── your vote
+    const cast = castableSlate(dao)
+    const voteBlock = !session ? '' : `
+        <section class="d-block">
+            <h3>Your vote</h3>
+            ${vote && vote.candidates?.length ? `
+                <p class="d-line">
+                    <b>${vote.candidates.map((c) => esc(c)).join(', ')}</b>
+                    <span class="d-dim">· cast ${esc(fmtAge(Date.now() - votedAt))} ago
+                        (${isoDay(votedAt)})</span>
+                </p>
+                ${cast.drop.length ? `<p class="panel-note is-error">${
+                    cast.drop.map((d) => `<b>${esc(d.name)}</b> ${esc(d.why)}`).join(', ')}.
+                    ${cast.keep.length
+                        ? `Refreshing re-casts ${cast.keep.map((n) => esc(n)).join(', ')} alone.`
+                        : 'Nothing is left to re-cast — an empty slate would delete the vote ' +
+                          'rather than refresh it, so pick someone new below.'}</p>` : ''}
+                <button class="act-go" id="reVote" type="button"
+                    ${busy || !cast.keep.length ? 'disabled' : ''}>${
+                    cast.drop.length && cast.keep.length
+                        ? `Refresh without ${esc(cast.drop.map((d) => d.name).join(', '))}`
+                        : 'Refresh this vote'}</button>
+            ` : `<p class="d-line d-dim">No vote cast in this DAO.</p>`}
+        </section>`
+
+    // ── candidates + voting
+    const standing = (cands ?? [])
+        .filter((c) => c.is_active)
+        .sort((a, b) => Number(b.rank) - Number(a.rank))
+
+    // The slate holds these, the active list does not, so they are drawn in
+    // front of it — ticked, marked, and above all untickable.
+    const staleRows = !session ? [] : [...pickedCandidates]
+        .map((name) => ({ name, why: voteBlocker(dao, name) }))
+        .filter((r) => r.why)
+
+    const candBlock = `
+        <section class="d-block">
+            <h3>Candidates
+                <span class="d-dim">${cands === null ? 'unavailable'
+                    : cands ? `${standing.length} standing` : 'reading…'}</span>
+            </h3>
+            ${session ? `<p class="d-line d-dim">Pick up to ${maxVotes}, then cast.
+                <span id="pickCount">${pickedCandidates.size} selected</span></p>` : ''}
+            <div class="d-scroll">
+            <table class="d-table">
+                <thead><tr>
+                    ${session ? '<th></th>' : ''}
+                    <th>Candidate</th><th class="num">Vote power</th>
+                    <th class="num">Voters</th><th class="num">Vote age</th><th class="num">Seat</th>
+                </tr></thead>
+                <tbody>
+                ${staleRows.map((r) => `<tr class="is-picked is-gone">
+                    ${session ? `<td><input type="checkbox" data-cand="${esc(r.name)}" checked></td>` : ''}
+                    <td><a href="${EXPLORER}${encodeURIComponent(r.name)}"
+                           target="_blank" rel="noopener">${esc(r.name)}</a>
+                        <span class="risk" title="You voted for this account and votecust will now refuse the whole slate because of it — untick it and cast again">${
+                            esc(r.why)}</span></td>
+                    <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num"></td>
+                </tr>`).join('')}
+                ${standing.map((c) => {
+                    const seat = dao.custodians.indexOf(c.candidate_name)
+                    const age = Date.parse(`${c.avg_vote_time_stamp}Z`)
+                    const on = pickedCandidates.has(c.candidate_name)
+                    return `<tr class="${on ? 'is-picked' : ''}">
+                        ${session ? `<td><input type="checkbox" data-cand="${esc(c.candidate_name)}"
+                             ${on ? 'checked' : ''}></td>` : ''}
+                        <td><a class="${WATCHED.has(c.candidate_name) ? 'is-watched' : ''}"
+                               href="${EXPLORER}${encodeURIComponent(c.candidate_name)}"
+                               target="_blank" rel="noopener">${esc(c.candidate_name)}</a>
+                            ${(dao.wouldSeat ?? []).includes(c.candidate_name) && seat < 0
+                                ? '<span class="incoming" title="Ranked inside the seat count — would take a seat if a period ran now">incoming</span>'
+                                : ''}</td>
+                        <td class="num">${esc(fmtPower(c.total_vote_power, dao))}</td>
+                        <td class="num">${c.number_voters}</td>
+                        <td class="num">${Number.isFinite(age) ? esc(fmtAge(Date.now() - age)) : '—'}</td>
+                        <td class="num">${seat >= 0 ? seat + 1 : ''}</td>
+                    </tr>`
+                }).join('') || (staleRows.length ? '' : `<tr><td colspan="6" class="d-dim">${
+                    cands === null ? 'Could not read candidates.' : 'None standing.'}</td></tr>`)}
+                </tbody>
+            </table>
+            </div>
+            ${!session ? '' : `
+                ${staleRows.length ? `<p class="panel-note is-error">${
+                    staleRows.map((r) => `<b>${esc(r.name)}</b> ${esc(r.why)}`).join(', ')}.
+                    Until that is unticked, every cast from here is refused — the contract checks
+                    each name on the new slate before it will take any of it.</p>` : ''}
+                <button class="act-go" id="castVote" type="button"
+                    ${busy || pickedCandidates.size === 0 || staleRows.length ? 'disabled' : ''}>
+                    Cast vote${pickedCandidates.size ? ` for ${pickedCandidates.size}` : ''}</button>`}
+        </section>`
+
+    // ── proposals
+    //
+    // Keyed by `proposal_name`. A msig proposal has no `proposal_id` — that was
+    // the field on prop.worlds, and reading it here returned undefined for every
+    // row, so `chosen` was always empty and both buttons stayed disabled however
+    // many boxes were ticked. The tick itself worked, which is what made it look
+    // like a button bug rather than a key mismatch.
+    const shown = (props ?? []).filter(propMatches)
+    const chosen = shown.filter((p) => pickedProposals.has(p.proposal_name))
+    const approvable = chosen.filter((p) => canApprove(p, amCustodian))
+    const runnable = chosen.filter((p) => canExecute(p, dao))
+    const need = dao.approvalThreshold ?? 3
+    // Anyone may select. Approving skips anything this account has already
+    // signed; executing skips anything short of the threshold. Both are per row,
+    // so the buttons count what the selection can actually do rather than
+    // assuming one rule applies to the lot.
+    const canPick = !!session
+    // Raising one is a custodian's job, and setperiodlen needs the owner's
+    // authority — which is exactly what a proposal collects.
+    const floorDays = periodFloorDays(dao)
+    const startDays = Math.min(PERIOD_MAX_DAYS, Math.max(floorDays,
+        Math.round((dao.periodLength ?? 7 * 86400) / 86400)))
+
+    const proposeBlock = !amCustodian ? '' : `
+        <div class="d-propose">
+            ${periodFormOpen ? `
+                <div class="d-propose-form">
+                    <div class="act-head">
+                        <span class="act-label">New election period</span>
+                        <span class="act-hint">${esc(fmtDays(dao.periodLength ?? 0))} today ·
+                            ${floorDays}–${PERIOD_MAX_DAYS} days allowed</span>
+                    </div>
+                    <div class="slider-row">
+                        <input type="range" id="periodSlider" min="${floorDays}" max="${PERIOD_MAX_DAYS}"
+                               step="1" value="${startDays}" ${busy ? 'disabled' : ''}>
+                        <output id="periodOut">${startDays} days</output>
+                    </div>
+                    <p class="act-blurb">Creates a multisig proposal for
+                        <code>${esc(dao.custodianContract)}::setperiodlen</code>, requesting approval from
+                        <code>${esc(dao.owner ?? '—')}</code>. It takes effect only once the council
+                        approves and someone executes it.</p>
+                    <div class="d-actions">
+                        <button class="act-go" id="periodSubmit" type="button" ${busy ? 'disabled' : ''}>
+                            Create proposal</button>
+                        <button class="act-mini" id="periodCancel" type="button">cancel</button>
+                    </div>
+                </div>
+            ` : `
+                <button class="card-btn" id="periodOpen" type="button">Propose a new election period</button>
+            `}
+        </div>`
+
+    const propBlock = `
+        <section class="d-block">
+            <h3>Proposals
+                <span class="d-dim">${props === null ? 'unavailable'
+                    : props ? `${shown.length} of the ${props.length} most recent` : 'reading…'}</span>
+            </h3>
+
+            ${proposeBlock}
+
+            <div class="d-filter">
+                <span class="${propFilter === 'active' ? 'is-on' : ''}">Active</span>
+                <button class="toggle ${propFilter === 'executed' ? 'is-right' : ''}"
+                        id="propToggle" type="button" role="switch"
+                        aria-checked="${propFilter === 'executed'}"><i></i></button>
+                <span class="${propFilter === 'executed' ? 'is-on' : ''}">Executed</span>
+            </div>
+
+            ${session && shown.length && !amCustodian ? `
+                <p class="d-line d-dim">Approving needs a seat on this council, which you do not hold here.
+                Finalizing is open to anyone; starting work is the proposer's alone.</p>` : ''}
+
+            <div class="d-scroll">
+            <table class="d-table">
+                <thead><tr>
+                    ${canPick ? '<th></th>' : ''}
+                    <th>Proposal</th><th>State</th><th class="num">Approvals</th><th class="num">Expires</th>
+                </tr></thead>
+                <tbody>
+                ${shown.map((p) => {
+                    const on = pickedProposals.has(p.proposal_name)
+                    const exp = msigExpiry(p.packed_transaction)
+                    const mine = approvedByMe(p)
+                    const title = msigTitle(p)
+                    return `<tr class="${on ? 'is-picked' : ''}">
+                        ${canPick ? `<td><input type="checkbox" data-prop="${esc(p.proposal_name)}"
+                             ${on ? 'checked' : ''}></td>` : ''}
+                        <td>
+                            <b class="row-title">${esc(title.length > 90 ? `${title.slice(0, 90)}…` : title)}</b>
+                            <span class="row-meta">
+                                <span class="who" title="Proposer">${esc(p.proposer)}</span>
+                                ${WATCHED.has(p.proposer)
+                                    ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                                <span class="row-id">${esc(p.proposal_name)}</span>
+                            </span>
+                        </td>
+                        <td><span class="pill is-${STATE_CLASS[p.state] ?? 'open'}">${
+                            esc(STATE_LABEL[p.state] ?? `state ${p.state}`)}</span>
+                            ${mine ? '<span class="pill is-mine" title="This account has already approved">you</span>' : ''}</td>
+                        ${approvalCell(p, need)}
+                        <td class="num">${Number.isFinite(exp)
+                            ? esc(isoDay(exp)) : '—'}</td>
+                    </tr>`
+                }).join('') || `<tr><td colspan="5" class="d-dim">${emptyProposals(dao, props)}</td></tr>`}
+                </tbody>
+            </table>
+            </div>
+
+            ${canPick && shown.length ? `
+                <div class="d-actions">
+                    <button class="act-go" id="approveProps" type="button"
+                        ${busy || !approvable.length ? 'disabled' : ''}
+                        title="Signs the ones you have not already approved">
+                        Approve ${approvable.length || ''}</button>
+                    <button class="act-go" id="execProps" type="button"
+                        ${busy || !runnable.length ? 'disabled' : ''}
+                        title="Runs the ones that already have ${need} approvals">
+                        Execute ${runnable.length || ''}</button>
+                    ${/* Only with exactly one picked: copying is about a single
+                          proposal, and "copy these four" has no sensible meaning. */
+                      chosen.length === 1 ? `
+                        <button class="act-go is-quiet" id="copyProp" type="button" ${busy ? 'disabled' : ''}
+                            title="Open a new proposal prefilled with this one's actions">
+                            Copy proposal</button>` : ''}
+                    <span class="d-dim">${chosen.length} selected${
+                        chosen.length ? ` · ${approvable.length} to approve · ${runnable.length} at ${need}+` : ''}</span>
+                </div>` : ''}
+        </section>`
+
+    const openProps = (props ?? []).filter((p) => p.state === MSIG_OPEN && !isExpired(p)).length
+    const wp = hasWorkerProposals(dao) ? workerCache.get(dao.id) : null
+    const liveWork = wp ? wp.props.filter(wpIsLive).length : 0
+    const due = dao.nextElection
+
+    return `
+        <div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="detailsBack" type="button">← All DAOs</button>
+                <div class="d-title">
+                    <h2>${esc(dao.title)}</h2>
+                    <p class="panel-sub">${esc(dao.id)} · ${esc(dao.symbol)} ·
+                        ${dao.group === 'union' ? 'union' : 'syndicate'}</p>
+                </div>
+                ${due ? `<div class="d-clock">
+                    <span class="d-clock-k">Next election</span>
+                    <span class="election" data-due="${due}">${esc(fmtCountdown(due - Date.now()))}</span>
+                </div>` : ''}
+            </header>
+
+            <!-- The council and its candidates are one job; the proposals are
+                 another. Both at once is a wall, so only one is on screen. -->
+            <div class="switch d-switch" role="tablist">
+                <button class="switch-btn${detailsTab === 'council' ? ' is-on' : ''}"
+                        data-tab="council" role="tab" type="button">
+                    Council &amp; candidates <span class="count">${dao.council.length}</span>
+                </button>
+                <button class="switch-btn${detailsTab === 'proposals' ? ' is-on' : ''}"
+                        data-tab="proposals" role="tab" type="button">
+                    Proposals <span class="count">${props ? openProps : '…'}</span>
+                </button>
+                ${!hasWorkerProposals(dao) ? '' : `
+                    <button class="switch-btn${detailsTab === 'worker' ? ' is-on' : ''}"
+                            data-tab="worker" role="tab" type="button">
+                        Worker proposals <span class="count">${
+                            wp === undefined ? '…' : wp === null ? '!' : liveWork}</span>
+                    </button>`}
+            </div>
+
+            <p class="panel-note" id="detailsNote" hidden></p>
+
+            ${detailsTab === 'council' ? `
+                ${voteBlock}
+                <section class="d-block">
+                    <h3>Council <span class="d-dim">${dao.council.length} seated</span></h3>
+                    <table class="d-table">
+                        <thead><tr><th class="num">#</th><th>Custodian</th>
+                            <th class="num">Vote power</th><th class="num">Voters</th>
+                            <th class="num">Vote age</th></tr></thead>
+                        <tbody>${dao.council.map((c, i) => seatRow(dao, c, i + 1)).join('')}</tbody>
+                    </table>
+                </section>
+                ${candBlock}
+            ` : detailsTab === 'worker' ? buildWorkerBlock(dao) : propBlock}
+        </div>`
+}
+
+let detailsMessage = null
+function detailsNote(text, kind = '') {
+    detailsMessage = text ? { text, kind } : null
+    paintDetailsNote()
+}
+function paintDetailsNote() {
+    const el = $('detailsNote')
+    if (!el) return
+    el.textContent = detailsMessage?.text ?? ''
+    el.className = `panel-note${detailsMessage?.kind ? ` is-${detailsMessage.kind}` : ''}`
+    el.hidden = !detailsMessage
+}
+
+// Signing from the details view. Same discipline as the panel's submit: one
+// lock, one error path, one re-read.
+async function submitDetails(actions, describe, after) {
+    if (!session || busy) return
+    busy = true
+    renderDetails()
+    detailsNote(`${describe} — check your wallet…`, 'work')
+    try {
+        await session.transact({ actions }, { broadcast: true })
+        detailsNote(`${describe} sent — re-reading…`, 'ok')
+        await sleep(2500)
+        if (after) await after()
+        await loadPosition()
+        detailsNote(`${describe} done.`, 'ok')
+    } catch (err) {
+        if (isUserCancel(err)) detailsNote('Cancelled.')
+        else {
+            console.error(`${describe} failed:`, err)
+            detailsNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderDetails()
+    }
+}
+
+// The slider's label follows the thumb. Written straight into the output element
+// rather than through a re-render: rebuilding the section on every pixel of drag
+// would destroy the very input being dragged.
+detailsEl.addEventListener('input', (e) => {
+    if (e.target.id !== 'periodSlider') return
+    const out = $('periodOut')
+    const n = Number(e.target.value)
+    if (out) out.textContent = `${n} day${n === 1 ? '' : 's'}`
+})
+
+detailsEl.addEventListener('change', (e) => {
+    const dao = daoById(detailsId)
+    if (!dao) return
+
+    const cand = e.target.closest('[data-cand]')
+    if (cand) {
+        const name = cand.dataset.cand
+        if (cand.checked) {
+            // maxvotes is a hard limit in the contract; enforcing it here beats
+            // letting the wallet pop up for a transaction that cannot succeed.
+            if (pickedCandidates.size >= 2) {
+                cand.checked = false
+                detailsNote('You can vote for at most 2 candidates.', 'error')
+                return
+            }
+            pickedCandidates.add(name)
+        } else pickedCandidates.delete(name)
+        renderDetails()
+        return
+    }
+
+    if (e.target.id === 'wpFile') {
+        const file = e.target.files?.[0]
+        // Cleared so choosing the same file twice fires change again — after a
+        // failed upload, re-picking the same file is the obvious retry.
+        e.target.value = ''
+        return wpUpload(file)
+    }
+
+    const prop = e.target.closest('[data-prop]')
+    if (prop) {
+        if (prop.checked) pickedProposals.add(prop.dataset.prop)
+        else pickedProposals.delete(prop.dataset.prop)
+        renderDetails()
+    }
+})
+
+detailsEl.addEventListener('click', async (e) => {
+    // Leaving comes FIRST and depends on nothing. Behind the lookup below, a DAO
+    // that failed to load would have left the back button dead.
+    if (e.target.closest('#detailsBack')) return closeDetails()
+
+    // Allocator budget changes. The op buttons open the form; the form submits.
+    const allocOp = e.target.closest('[data-alloc-op]')
+    if (allocOp) {
+        allocForm = {
+            op: allocOp.dataset.allocOp,
+            to: allocOp.dataset.to ?? '',
+            amount: '',
+            days: 30,
+        }
+        detailsNote(null)
+        return renderDetails()
+    }
+    if (e.target.closest('#alCancel')) { allocForm = null; return renderDetails() }
+    if (e.target.closest('#alSubmit')) return submitAlloc(detailsId)
+
+    const dao = daoById(detailsId)
+    if (!dao) return
+
+    if (e.target.closest('#periodOpen'))   { periodFormOpen = true;  return renderDetails() }
+    if (e.target.closest('#periodCancel')) { periodFormOpen = false; return renderDetails() }
+    if (e.target.closest('#periodSubmit')) {
+        return actProposePeriod(dao, $('periodSlider')?.value)
+    }
+
+    const tab = e.target.closest('[data-tab]')
+    if (tab) {
+        detailsTab = tab.dataset.tab
+        return renderDetails()
+    }
+
+    if (e.target.closest('#propToggle')) {
+        propFilter = propFilter === 'active' ? 'executed' : 'active'
+        pickedProposals = new Set()
+        return renderDetails()
+    }
+
+    if (e.target.closest('#reVote')) {
+        const { keep, drop } = castableSlate(dao)
+        if (!keep.length) return
+        return submitDetails([voteAction(dao, keep)],
+            drop.length ? `Refresh vote without ${drop.map((d) => d.name).join(', ')}` : 'Refresh vote')
+    }
+
+    if (e.target.closest('#castVote')) {
+        return submitDetails([voteAction(dao, [...pickedCandidates])],
+            `Vote for ${[...pickedCandidates].join(', ')}`)
+    }
+
+    if (e.target.closest('#wpOpen')) {
+        const wp = workerCache.get(dao.id)
+        if (!wp) return
+        wpForm = wpBlank(wp)
+        detailsNote(null)
+        return renderDetails()
+    }
+    if (e.target.closest('#wpUploadBtn')) return detailsEl.querySelector('#wpFile')?.click()
+    if (e.target.closest('#wpCancel')) { wpForm = null; return renderDetails() }
+    if (e.target.closest('#wpSubmit')) return submitWorkerCreate(dao)
+
+    if (e.target.closest('#wpToggle')) {
+        wpFilter = wpFilter === 'live' ? 'all' : 'live'
+        return renderDetails()
+    }
+
+    const wpDo = e.target.closest('[data-wp-act]')
+    if (wpDo) return wpAct(dao, wpDo.dataset.wpAct, wpDo.dataset.wpId)
+
+    if (e.target.closest('#copyProp')) {
+        const shown = (proposalsCache.get(dao.id) ?? []).filter(propMatches)
+        const one = shown.filter((p) => pickedProposals.has(p.proposal_name))
+        if (one.length !== 1) return
+        return openCreate({ dao, from: one[0] })
+    }
+
+    const approve = e.target.closest('#approveProps')
+    const exec = e.target.closest('#execProps')
+    if (!approve && !exec) return
+
+    const props = proposalsCache.get(dao.id) ?? []
+    const seated = new Set(dao.custodians)
+    const amCustodian = !!session && seated.has(String(session.actor))
+    const chosen = props.filter((p) => pickedProposals.has(p.proposal_name))
+    if (!chosen.length) return
+
+    // msig.worlds approves against a permission level, which is the signer's own
+    // — the same one the transaction is authorised with.
+    const level = { actor: String(session.actor), permission: session.permissionLevel.permission
+        ? String(session.permissionLevel.permission) : 'active' }
+
+    if (approve) {
+        const votable = chosen.filter((p) => canApprove(p, amCustodian))
+        if (!votable.length) {
+            const already = chosen.filter(approvedByMe).length
+            return detailsNote(already === chosen.length
+                ? `You have already approved ${already === 1 ? 'that one' : 'all of those'}.`
+                : 'None of the selected proposals can be approved by this account — ' +
+                  'approving needs a seat on this council and a proposal that is still open.',
+                'error')
+        }
+        const actions = votable.map((p) => ({
+            account: MSIG_CONTRACT, name: 'approve', authorization: auth(),
+            data: { proposal_name: p.proposal_name, level, dac_id: dao.id },
+        }))
+        return submitDetails(actions, `Approve ${votable.length} proposal${votable.length === 1 ? '' : 's'}`,
+            () => refreshProposals(dao))
+    }
+
+    const runnable = chosen.filter((p) => canExecute(p, dao))
+    if (!runnable.length) {
+        const need = dao.approvalThreshold ?? 3
+        const short = chosen.filter((p) => p.state === MSIG_OPEN && approvalCount(p) < need)
+        return detailsNote(short.length
+            ? `Not enough approvals yet — ${short.length === 1 ? 'that one has' : 'those have'} ` +
+              `${short.map(approvalCount).join(', ')} of the ${need} needed.`
+            : 'None of the selected proposals can be executed — an executed, cancelled ' +
+              'or expired proposal cannot run.',
+            'error')
+    }
+    const actions = runnable.map((p) => ({
+        account: MSIG_CONTRACT, name: 'exec', authorization: auth(),
+        data: { proposal_name: p.proposal_name, executer: String(session.actor), dac_id: dao.id },
+    }))
+    return submitDetails(actions, `Execute ${runnable.length} proposal${runnable.length === 1 ? '' : 's'}`,
+        () => refreshProposals(dao))
+})
+
+async function refreshProposals(dao) {
+    proposalsCache.delete(dao.id)
+    pickedProposals = new Set()
+    await loadDetails(dao)
+}
+
+// ── Worker proposals (prop.worlds) ────────────────────────────────────────
+//
+// A different system from the council multisigs on msig.worlds, and the reason
+// it gets its own tab. A msig proposal is a transaction the council signs; a
+// worker proposal is a *job* — someone offers to do work for a fee, the council
+// votes on whether it is worth doing, the worker does it, and the council votes
+// again on whether it was done. The money moves through an escrow, not through
+// the proposal.
+//
+// Source: Alien-Worlds/eosdac-contracts, contracts/dacproposals. The directory
+// registers prop.worlds as account type PROPOSALS (6) for every DAO — but only
+// the six unions actually use it, and all six syndicate scopes hold zero rows.
+// That is why the tab is the unions' alone.
+//
+// The state machine, from dacproposals.hpp:
+//
+//   pendingappr ──votes──▶ apprvtes ──startwork──▶ inprogress
+//        │                                              │
+//        └── expiry ──▶ expired                    completework
+//                                                       ▼
+//   completed ◀── finalize ── apprfinvtes ◀──votes── pendingfin
+//                                  │                    │
+//                                  └─── dispute ──▶ indispute
+//
+// The two vote rounds are counted separately against different thresholds, and
+// `updpropvotes` moves the row into the `*vtes` state the moment its threshold
+// is met — so the stored state already answers "is there enough?", and the tally
+// below only has to say by how much.
+const WP_CONTRACT = 'prop.worlds'
+
+const WP_PENDING    = 'pendingappr'
+const WP_APPROVED   = 'apprvtes'
+const WP_WORKING    = 'inprogress'
+const WP_FINALIZING = 'pendingfin'
+const WP_FINAPPR    = 'apprfinvtes'
+const WP_EXPIRED    = 'expired'
+const WP_DISPUTED   = 'indispute'
+const WP_COMPLETED  = 'completed'
+const WP_BLOCKED    = 'blocked'
+
+// Internal vote names. `voteprop` and `votepropfin` take the PUBLIC name
+// (approve / deny / abstain) and translate; the propvotes table stores the
+// internal one. Both appear here because the actions send one and the tally
+// reads the other.
+const WP_VOTE_YES     = 'propapprove'
+const WP_VOTE_NO      = 'propdeny'
+const WP_VOTE_FIN_YES = 'finalapprove'
+const WP_VOTE_FIN_NO  = 'finaldeny'
+
+const WP_LABEL = {
+    [WP_PENDING]:    'voting',
+    [WP_APPROVED]:   'approved',
+    [WP_WORKING]:    'in progress',
+    [WP_FINALIZING]: 'finalizing',
+    [WP_FINAPPR]:    'ready to pay',
+    [WP_EXPIRED]:    'expired',
+    [WP_DISPUTED]:   'in dispute',
+    [WP_COMPLETED]:  'completed',
+    [WP_BLOCKED]:    'blocked',
+}
+
+// Five tones, by what the state asks of a reader: waiting on votes, cleared to
+// act, work under way, finished, or dead.
+const WP_TONE = {
+    [WP_PENDING]:    'wait',
+    [WP_APPROVED]:   'go',
+    [WP_WORKING]:    'work',
+    [WP_FINALIZING]: 'wait',
+    [WP_FINAPPR]:    'go',
+    [WP_EXPIRED]:    'dead',
+    [WP_DISPUTED]:   'bad',
+    [WP_COMPLETED]:  'done',
+    [WP_BLOCKED]:    'bad',
+}
+
+// Contract defaults from dacproposals.hpp, used only if the singleton cannot be
+// read. Every union today carries 3 / 2 / 30d / 7d / 120 TLM.
+const WP_CONFIG_FALLBACK = {
+    proposal_threshold: 3,
+    finalize_threshold: 2,
+    approval_duration: 2592000,
+    min_proposal_duration: 604800,
+}
+
+let workerCache = new Map()   // dao.id -> { props, votes, config, arbiters, ... } | null
+let wpFilter = 'live'         // live, or all
+let wpForm = null             // the new-proposal form, when open
+
+// Only the unions run worker proposals, so asking the other six for tables that
+// are always empty would be five wasted reads per details open.
+const hasWorkerProposals = (dao) => dao.group === 'union'
+
+const wpTime = (s) => Date.parse(`${s}Z`)
+
+// The stored state is not the whole truth in the approval round: `expiry` passes
+// silently and the row only flips to `expired` when someone next votes on it.
+// Eleven of the twelve non-completed proposals on chain today read `pendingappr`
+// or `apprvtes` while being long past their window.
+//
+// The finalize round has no expiry at all — `_voteprop` checks `has_not_expired`
+// only in the approval branch and `finalize` never checks it — so a proposal
+// waiting to be paid is NOT stale however old its `expiry` field looks.
+// The second way the stored state can be out of date: the `*vtes` states are a
+// verdict cached at the moment of the last vote, and count_votes ignores — and
+// erases — votes from accounts that have since left the council. So a proposal
+// can be recorded as having enough while a recount today says it does not.
+// eyekeunn's dngoggqgd is exactly this: stored `apprfinvtes`, and not one of the
+// custodians who voted for it still holds a seat.
+//
+// startwork and finalize both recount before they act, so the recount is what
+// actually governs. The badge follows it rather than the cached label, and says
+// so on hover.
+function wpEffectiveState(p, tally) {
+    const inApprovalRound = p.state === WP_PENDING || p.state === WP_APPROVED
+    if (inApprovalRound && wpTime(p.expiry) <= Date.now()) return WP_EXPIRED
+    if (tally && tally.yes < tally.need) {
+        if (p.state === WP_APPROVED) return WP_PENDING
+        if (p.state === WP_FINAPPR) return WP_FINALIZING
+    }
+    return p.state
+}
+
+const WP_LIVE = new Set([WP_PENDING, WP_APPROVED, WP_WORKING, WP_FINALIZING, WP_FINAPPR, WP_DISPUTED])
+const wpIsLive = (p) => WP_LIVE.has(wpEffectiveState(p))
+
+// Which round the row is in, or has just come through. Terminal states still
+// show a tally, because "completed, 2 of 2" is the record of how it passed.
+const wpRound = (p) =>
+    (p.state === WP_FINALIZING || p.state === WP_FINAPPR ||
+     p.state === WP_COMPLETED  || p.state === WP_DISPUTED) ? 'finalize' : 'approval'
+
+// Whether votes are still being taken, which is a narrower question than which
+// round it is in.
+function wpVotingOpen(p) {
+    const s = wpEffectiveState(p)
+    return s === WP_PENDING || s === WP_APPROVED || s === WP_FINALIZING || s === WP_FINAPPR
+}
+
+// A faithful port of dacproposals::count_votes. Three things add up to one
+// approval: a custodian who voted this way directly, plus every custodian who
+// delegated THIS proposal to them, plus every custodian who has not voted here
+// at all and has delegated this proposal's CATEGORY to them.
+//
+// Votes from accounts no longer seated are skipped — the contract goes further
+// and erases those rows as it counts, so skipping them is what the chain itself
+// would do on the next vote.
+//
+// No union has ever used delegation: every vote row on chain is direct and not
+// one carries a category_id. The weighting is implemented anyway, because a
+// tally that quietly ignored it would be wrong the first time someone used it.
+function wpCountVotes(dao, prop, wanted, allVotes) {
+    const seated = new Set(dao.custodians)
+    const delegatedHere = new Map()
+    const approvers = new Set()
+    const voted = new Set()
+
+    for (const v of allVotes) {
+        if (v.proposal_id !== prop.proposal_id || !seated.has(v.voter)) continue
+        voted.add(v.voter)
+        if (v.delegatee) delegatedHere.set(v.delegatee, (delegatedHere.get(v.delegatee) ?? 0) + 1)
+        else if (v.vote === wanted) approvers.add(v.voter)
+    }
+
+    const delegatedCategory = new Map()
+    for (const name of seated) {
+        if (voted.has(name)) continue
+        const row = allVotes.find((v) => v.voter === name && v.delegatee &&
+            v.category_id != null && Number(v.category_id) === Number(prop.category))
+        if (row) delegatedCategory.set(row.delegatee, (delegatedCategory.get(row.delegatee) ?? 0) + 1)
+    }
+
+    let count = 0
+    for (const name of approvers) {
+        count += 1 + (delegatedHere.get(name) ?? 0) + (delegatedCategory.get(name) ?? 0)
+    }
+    return count
+}
+
+function wpTally(dao, p, wp) {
+    const round = wpRound(p)
+    const yes = round === 'finalize' ? WP_VOTE_FIN_YES : WP_VOTE_YES
+    const no  = round === 'finalize' ? WP_VOTE_FIN_NO  : WP_VOTE_NO
+    return {
+        round,
+        yes:  wpCountVotes(dao, p, yes, wp.votes),
+        no:   wpCountVotes(dao, p, no,  wp.votes),
+        need: round === 'finalize' ? wp.config.finalize_threshold : wp.config.proposal_threshold,
+    }
+}
+
+// What this account has already said about this proposal, so a button can read
+// "approved" rather than offering a vote that would only overwrite itself.
+function wpMyVote(p, wp) {
+    if (!session) return null
+    const me = String(session.actor)
+    return wp.votes.find((v) => v.proposal_id === p.proposal_id && v.voter === me)?.vote ?? null
+}
+
+// `finalize` refuses until min_proposal_duration has passed — a week on every
+// union. It is the "necessary time" a finished job waits out before it can be
+// paid, and it runs from CREATION, not from completework.
+const wpPayableAt = (p, wp) => wpTime(p.created_at) + (wp.config.min_proposal_duration * 1000)
+
+// Where the proposal documents live. Uploads go through Alien Worlds' own pinning
+// endpoint and the WPS site links every CID at this gateway, so a document raised
+// from either site resolves from the same place.
+const IPFS_UPLOAD  = 'https://api.alienworlds.io/workerproposal/upload'
+const IPFS_GATEWAY = 'https://ipfs.alienworlds.io/ipfs/'
+
+// The proposal document. Workers put either an IPFS CID or a plain URL in
+// `content_hash` and both appear on chain today, so both are made clickable.
+function wpDocUrl(hash) {
+    const s = String(hash ?? '').trim()
+    if (/^https?:\/\//i.test(s)) return s
+    if (/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/.test(s)) return `${IPFS_GATEWAY}${s}`
+    return null
+}
+
+// Pins a file and puts its CID in the Document field. Same endpoint, same field
+// name and same response shape the WPS site uses, so a document uploaded here is
+// pinned exactly where one uploaded there would be.
+//
+// Content-Type is deliberately NOT set: the browser has to write it itself so it
+// can attach the multipart boundary, and naming it by hand produces a header with
+// no boundary that the server cannot parse.
+//
+// Nothing here re-renders. The form's fields are uncontrolled, and rebuilding the
+// section mid-upload would throw away whatever has been typed into the other six.
+async function wpUpload(file) {
+    const btn = detailsEl.querySelector('#wpUploadBtn')
+    const field = detailsEl.querySelector('#wpUrl')
+    if (!file || !btn || !field) return
+
+    const label = btn.textContent
+    btn.disabled = true
+    btn.textContent = 'Uploading…'
+    detailsNote(`Pinning ${file.name}…`, 'work')
+
+    const body = new FormData()
+    body.append('file', file)
+
+    try {
+        const res = await fetch(IPFS_UPLOAD, { method: 'POST', body })
+        const text = await res.text()
+
+        if (!res.ok) {
+            // 409 means the file is already pinned, which is a success wearing an
+            // error's clothes — the CID is in the message. Uploading the same
+            // file twice answers 200 with the same CID today, so this path is
+            // untested against the live service and is here for parity with the
+            // WPS client, which handles it.
+            const cid = res.status === 409 ? text.slice(text.indexOf('Qm'), text.indexOf(' is')) : ''
+            if (!cid) throw new Error(text.slice(0, 200) || `upload failed (${res.status})`)
+            field.value = cid
+            if (wpForm) wpForm.url = cid
+            btn.textContent = file.name
+            return detailsNote(`${file.name} was already pinned — using its CID.`, 'ok')
+        }
+
+        const cid = JSON.parse(text)?.result?.cid
+        if (!cid) throw new Error('the upload service returned no CID')
+
+        field.value = cid
+        if (wpForm) wpForm.url = cid
+        btn.textContent = file.name
+        detailsNote(`${file.name} pinned as ${cid}.`, 'ok')
+    } catch (err) {
+        console.error('IPFS upload failed:', err)
+        btn.textContent = label
+        detailsNote(`Could not upload ${file.name}: ${readableError(err)}`, 'error')
+    } finally {
+        btn.disabled = false
+    }
+}
+
+// ── Reading ───────────────────────────────────────────────────────────────
+
+function fetchWorker(dao) {
+    if (!hasWorkerProposals(dao)) return null
+
+    const actor = session ? String(session.actor) : null
+
+    // Half of what is cached here — membership, the fee deposit, which buttons
+    // are lit — is about the connected account, so signing in or out invalidates
+    // it. Stamping the cache with whose reads they were makes that automatic:
+    // there is no sign-in path that can forget to clear it, because the check is
+    // here rather than at the three call sites that change identity.
+    const held = workerCache.get(dao.id)
+    if (held !== undefined && (held?.actor ?? null) === actor) return null
+    const one = actor ? { lower_bound: actor, upper_bound: actor, limit: 1 } : null
+
+    return Promise.all([
+        getRows(WP_CONTRACT, dao.id, 'proposals', { limit: 500 }),
+        getRows(WP_CONTRACT, dao.id, 'propvotes', { limit: 1000 }),
+        postRows(WP_CONTRACT, dao.id, 'configs', { limit: 1 }).catch(() => []),
+        getRows(WP_CONTRACT, dao.id, 'arbwhitelist', { limit: 500 }).catch(() => []),
+        getRows(WP_CONTRACT, dao.id, 'recwl', { limit: 500 }).catch(() => []),
+        // Every action in this contract calls assertValidMember, which wants the
+        // account registered against the LATEST member terms, not merely
+        // registered. Reading it turns an unreadable wallet error into a
+        // sentence, before anything is signed.
+        !one ? null : getRows(dao.tokenContract, dao.id, 'members', one).catch(() => []),
+        !one ? null : getRows(dao.tokenContract, dao.id, 'memberterms', { limit: 100 }).catch(() => []),
+        // The fee is taken from a deposit balance the contract holds, not from
+        // the wallet, so creating a proposal may need a transfer first.
+        !one ? null : getRows(WP_CONTRACT, WP_CONTRACT, 'deposits', one).catch(() => []),
+    ])
+        .then(([props, votes, cfg, arbiters, receivers, member, terms, deposit]) => {
+            // The singleton stores its fields as a key/value list of variants,
+            // exactly like dacglobals — each value is [type, value].
+            const c = {}
+            for (const kv of cfg[0]?.data ?? []) c[kv.key] = kv.value?.[1]
+
+            const latest = (terms ?? []).reduce((n, t) => Math.max(n, Number(t.version) || 0), 0)
+            const agreed = Number(member?.[0]?.agreedtermsversion ?? 0)
+
+            workerCache.set(dao.id, {
+                actor,
+                props: props.sort((a, b) => wpTime(b.created_at) - wpTime(a.created_at)),
+                votes,
+                config: {
+                    proposal_threshold: Number(c.proposal_threshold) || WP_CONFIG_FALLBACK.proposal_threshold,
+                    finalize_threshold: Number(c.finalize_threshold) || WP_CONFIG_FALLBACK.finalize_threshold,
+                    approval_duration: Number(c.approval_duration) || WP_CONFIG_FALLBACK.approval_duration,
+                    min_proposal_duration: Number(c.min_proposal_duration) || 0,
+                    proposal_fee: c.proposal_fee ?? null,
+                },
+                // Rating 0 means listed but not active; createprop checks for
+                // rating > 0 on the arbiter, so a 0 is not offerable.
+                arbiters: arbiters.filter((a) => Number(a.rating) > 0).map((a) => a.arbiter).sort(),
+                // Presence alone is what createprop requires of the proposer —
+                // unlike the arbiter, the receiver's rating is not checked.
+                receivers: new Set(receivers.map((r) => r.receiver)),
+                // null when signed out: unknown, which is not the same as no.
+                member: !one ? null : (latest > 0 && agreed === latest),
+                agreedTerms: agreed,
+                latestTerms: latest,
+                deposit: deposit?.[0]?.deposit ?? null,
+            })
+        })
+        .catch((err) => { console.error('worker proposals:', err); workerCache.set(dao.id, null) })
+}
+
+async function refreshWorker(dao) {
+    workerCache.delete(dao.id)
+    await fetchWorker(dao)
+}
+
+// ── The list ──────────────────────────────────────────────────────────────
+
+// The state is the first thing anyone wants from one of these rows, so it is the
+// first column and it is drawn at the size of the decision it carries.
+function wpBadge(p, tally) {
+    const state = wpEffectiveState(p, tally)
+    const cached = `The chain still records this as "${WP_LABEL[p.state] ?? p.state}".`
+
+    let title = `State on chain: ${p.state}`
+    if (state === WP_EXPIRED && p.state !== WP_EXPIRED) {
+        title = `${cached} Its voting window closed ${isoDay(wpTime(p.expiry))}, and the row only ` +
+            'flips to expired when someone next votes on it.'
+    } else if (state !== p.state) {
+        title = `${cached} That was true when the last vote was cast, but a recount today finds only ` +
+            `${tally.yes} of the ${tally.need} it needs: approvals from custodians who have since lost ` +
+            'their seats do not count, and the contract recounts before it acts.'
+    }
+
+    return `<td class="wp-state">
+        <span class="wp-badge is-${WP_TONE[state] ?? 'wait'}" title="${esc(title)}">
+            <b>${esc(WP_LABEL[state] ?? state)}</b>
+            <i>${tally.round === 'finalize' ? 'finalize round' : 'approval round'}</i>
+        </span>
+    </td>`
+}
+
+// Same shape as the msig approvals badge, and for the same reason: how far along
+// the votes are is what the column gets scanned for.
+function wpVotesCell(p, tally) {
+    const enough = tally.yes >= tally.need
+    const title = `${tally.yes} of the ${tally.need} approvals this round needs` +
+        (tally.no ? `, and ${tally.no} against` : '')
+
+    if (!wpVotingOpen(p)) {
+        return `<td class="approvals is-past" title="${esc(title)}">${
+            tally.yes}<span class="app-need">/${tally.need}</span></td>`
+    }
+
+    const tone = enough ? 'is-enough' : tally.yes > 0 ? 'is-part' : 'is-none'
+    const pips = Array.from({ length: Math.max(tally.need, tally.yes) }, (_, i) =>
+        `<i class="${i < tally.yes ? 'on' : ''}"></i>`).join('')
+
+    return `
+    <td class="approvals ${tone}" title="${esc(title)}">
+        <span class="app-badge">
+            <span class="app-n">${tally.yes}<span class="app-need">/${tally.need}</span></span>
+            <span class="pips">${pips}</span>
+            <span class="app-tag">${enough ? 'ready' : `needs ${tally.need - tally.yes} more`}</span>
+        </span>
+    </td>`
+}
+
+const wpBtn = (act, id, label, blocked) =>
+    `<button class="act-mini wp-do${blocked ? '' : ' is-live'}" data-wp-act="${act}" data-wp-id="${esc(id)}"
+        ${blocked ? `disabled title="${esc(blocked)}"` : ''}>${esc(label)}</button>`
+
+// What this account may do to this row, right now. A button that is offered but
+// cannot fire carries the reason: a worker wanting to start needs to be told it
+// is one approval short, not left to guess at a wallet error.
+function wpRowActions(dao, p, wp, tally) {
+    if (!session) return ''
+    const me = String(session.actor)
+    const id = p.proposal_id
+    const state = wpEffectiveState(p)
+    const amCustodian = dao.custodians.includes(me)
+    const amWorker = p.proposer === me
+    const amArbiter = p.arbiter === me
+    const out = []
+
+    // Every action in the contract asserts membership first, so this blocks all
+    // of them rather than being repeated on each.
+    const terms = wp.member === false
+        ? `${me} has not agreed to this DAO's latest member terms (agreed version ${
+              wp.agreedTerms || 'none'}, current is ${wp.latestTerms}), which every action here requires.`
+        : null
+
+    if (amCustodian && (state === WP_PENDING || state === WP_APPROVED)) {
+        const mine = wpMyVote(p, wp)
+        out.push(wpBtn('approve', id, mine === WP_VOTE_YES ? 'approved' : 'approve',
+            terms ?? (mine === WP_VOTE_YES ? 'You have already approved this one.' : null)))
+        out.push(wpBtn('deny', id, mine === WP_VOTE_NO ? 'denied' : 'deny',
+            terms ?? (mine === WP_VOTE_NO ? 'You have already voted against this one.' : null)))
+    }
+
+    if (amCustodian && (state === WP_FINALIZING || state === WP_FINAPPR)) {
+        const mine = wpMyVote(p, wp)
+        out.push(wpBtn('finapprove', id, mine === WP_VOTE_FIN_YES ? 'work accepted' : 'accept work',
+            terms ?? (mine === WP_VOTE_FIN_YES ? 'You have already accepted this work.' : null)))
+        out.push(wpBtn('findeny', id, mine === WP_VOTE_FIN_NO ? 'work rejected' : 'reject work',
+            terms ?? (mine === WP_VOTE_FIN_NO ? 'You have already rejected this work.' : null)))
+    }
+
+    // startwork refuses without it, so the arbiter's agreement is a stage of its
+    // own rather than a detail on the row.
+    if (amArbiter && !p.arbiter_agreed && (state === WP_PENDING || state === WP_APPROVED)) {
+        out.push(wpBtn('arbagree', id, 'agree to arbitrate', terms))
+    }
+
+    if (amWorker && (state === WP_PENDING || state === WP_APPROVED)) {
+        out.push(wpBtn('startwork', id, 'start work',
+            terms
+            ?? (tally.yes < tally.need ? `Needs ${tally.need} approvals and has ${tally.yes}.` : null)
+            ?? (!p.arbiter_agreed
+                ? `${p.arbiter} has not agreed to arbitrate, which the contract requires before work starts.`
+                : null)))
+    }
+
+    if (amWorker && state === WP_WORKING) {
+        out.push(wpBtn('completework', id, 'mark complete', terms))
+    }
+
+    // finalize carries no require_auth — anyone may push a proposal that has
+    // cleared both gates over the line, and the money goes to the worker either
+    // way. That is why it is offered to everyone signed in rather than to the
+    // worker alone.
+    if (state === WP_FINALIZING || state === WP_FINAPPR) {
+        const payable = wpPayableAt(p, wp)
+        out.push(wpBtn('finalize', id, 'finalize and pay',
+            tally.yes < tally.need
+                ? `Needs ${tally.need} approvals to finalize and has ${tally.yes}.`
+                : Date.now() < payable
+                    ? `The contract holds every proposal for ${fmtDays(wp.config.min_proposal_duration)} from ` +
+                      `creation. This one can be finalized ${isoDay(payable)}.`
+                    : null))
+    }
+
+    return out.join('')
+}
+
+function wpRow(dao, p, wp) {
+    const tally = wpTally(dao, p, wp)
+    const doc = wpDocUrl(p.content_hash)
+
+    // Shown for a plain URL as well as an IPFS CID: both are what a worker
+    // attached as the proposal document, and `content_hash` holds either. A
+    // proposal with nothing attached simply has no button.
+    const docBtn = doc
+        ? `<a class="act-mini wp-do is-live wp-doc-btn" href="${esc(doc)}"
+              target="_blank" rel="noopener">view document</a>`
+        : ''
+    const created = wpTime(p.created_at)
+    const state = wpEffectiveState(p)
+
+    // Which clock matters depends on the stage: an open vote is racing its
+    // expiry, a finished job is waiting out its hold, and everything else is
+    // simply history.
+    let when = `created ${fmtAge(Date.now() - created)} ago`
+    if (state === WP_PENDING || state === WP_APPROVED) {
+        when = `voting ends in ${fmtDays((wpTime(p.expiry) - Date.now()) / 1000)}`
+    } else if (state === WP_FINALIZING || state === WP_FINAPPR) {
+        const left = wpPayableAt(p, wp) - Date.now()
+        when = left > 0 ? `payable in ${fmtDays(left / 1000)}` : 'past its hold'
+    }
+
+    return `
+    <tr>
+        ${wpBadge(p, tally)}
+        <td>
+            <b class="row-title">${esc(p.title)}</b>
+            <span class="row-meta">
+                <span class="who" title="The worker — who raised this and who gets paid">${esc(p.proposer)}</span>
+                ${WATCHED.has(p.proposer)
+                    ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                <span class="row-id">${esc(p.proposal_id)}</span>
+            </span>
+            <p class="wp-summary">${esc(p.summary)}</p>
+            <span class="row-meta">
+                <span class="d-dim">arbiter</span>
+                <span class="who">${esc(p.arbiter)}</span>
+                ${p.arbiter_agreed
+                    ? '<span class="pill is-completed" title="The arbiter has agreed to take this on">agreed</span>'
+                    : '<span class="pill is-expired" title="startwork is refused until the arbiter agrees">not agreed</span>'}
+            </span>
+        </td>
+        <td class="num wp-pay">
+            <b>${esc(fmtAmount(p.proposal_pay.quantity))}</b>
+            <i>${esc(assetCode(p.proposal_pay.quantity))}</i>
+            <span class="d-dim" title="Paid to the arbiter out of the same escrow">+${
+                esc(fmtAmount(p.arbiter_pay.quantity))} arb</span>
+        </td>
+        ${wpVotesCell(p, tally)}
+        <td class="num wp-when">
+            ${esc(when)}
+            <span class="d-dim" title="How long the work is expected to take. The escrow locks for twice it.">${
+                esc(fmtDays(p.job_duration))} job</span>
+            ${(() => {
+                const acts = docBtn + wpRowActions(dao, p, wp, tally)
+                return acts ? `<div class="wp-acts">${acts}</div>` : ''
+            })()}
+        </td>
+    </tr>`
+}
+
+// ── Raising one ───────────────────────────────────────────────────────────
+
+// The fee is not paid with the createprop transaction. It is drawn from a
+// deposit balance prop.worlds keeps per account, topped up by an ordinary
+// transfer — `receive` credits ANY transfer to the contract regardless of memo.
+// So a proposal from an account with no deposit is two actions, not one.
+function wpFeeShortfall(wp) {
+    const fee = wp.config.proposal_fee
+    if (!fee || assetUnits(fee.quantity) <= 0) return null
+    const have = wp.deposit && wp.deposit.contract === fee.contract ? assetUnits(wp.deposit.quantity) : 0
+    const short = assetUnits(fee.quantity) - have
+    if (short <= 0) return null
+    return {
+        contract: fee.contract,
+        quantity: unitsToAsset(short, assetPrecision(fee.quantity), assetCode(fee.quantity)),
+    }
+}
+
+const wpBlank = (wp) => ({
+    title: '',
+    summary: '',
+    url: '',
+    arbiter: wp.arbiters[0] ?? '',
+    pay: '',
+    arbPay: '',
+    days: 7,
+    category: 0,
+})
+
+// Uncontrolled fields, read back on submit — typing into a textarea must never
+// trigger a re-render that throws away the caret.
+function readWpForm() {
+    if (!wpForm) return null
+    const q = (sel) => detailsEl.querySelector(sel)
+    wpForm.title = q('#wpTitle')?.value ?? ''
+    wpForm.summary = q('#wpSummary')?.value ?? ''
+    wpForm.url = q('#wpUrl')?.value ?? ''
+    wpForm.arbiter = q('#wpArbiter')?.value ?? ''
+    wpForm.pay = q('#wpPay')?.value ?? ''
+    wpForm.arbPay = q('#wpArbPay')?.value ?? ''
+    wpForm.days = Number(q('#wpDays')?.value) || 7
+    wpForm.category = Number(q('#wpCategory')?.value) || 0
+    return wpForm
+}
+
+function wpFormHtml(dao, wp) {
+    const fee = wp.config.proposal_fee
+    const short = wpFeeShortfall(wp)
+    const f = wpForm
+    const sym = fee ? assetCode(fee.quantity) : TLM_SYMBOL
+    const me = session ? String(session.actor) : ''
+
+    // Everything createprop checks before it will accept the row. Stated up
+    // front, because each one is a plain refusal from the contract otherwise.
+    const blocks = []
+    if (!session) blocks.push('Connect a wallet to raise a proposal.')
+    else {
+        if (!wp.receivers.has(me)) {
+            blocks.push(`${me} is not on this DAO's receiver whitelist, which createprop requires of the ` +
+                'proposer. A custodian has to add you with addrecwl first.')
+        }
+        if (wp.member === false) {
+            blocks.push(`${me} has not agreed to the latest member terms (version ${wp.latestTerms}).`)
+        }
+        if (!wp.arbiters.length) blocks.push('This DAO has no active arbiter on its whitelist.')
+    }
+
+    return `
+    <div class="d-propose-form wp-form">
+        <div class="cp-grid">
+            <label class="cp-field">
+                <span>Title</span>
+                <input id="wpTitle" type="text" maxlength="255" value="${esc(f.title)}"
+                       placeholder="What the job is">
+            </label>
+            <label class="cp-field">
+                <span>Arbiter</span>
+                <select id="wpArbiter">
+                    ${wp.arbiters.map((a) => `<option value="${esc(a)}"${
+                        a === f.arbiter ? ' selected' : ''}>${esc(a)}</option>`).join('')
+                        || '<option value="">none available</option>'}
+                </select>
+            </label>
+        </div>
+
+        <label class="cp-field">
+            <span>Summary</span>
+            <textarea id="wpSummary" rows="3" maxlength="511"
+                      placeholder="A few lines the council will read in the list">${esc(f.summary)}</textarea>
+        </label>
+
+        <!-- A div rather than a label: two controls under one label makes a
+             click on the button activate the label and jump focus to the text
+             field instead. -->
+        <div class="cp-field">
+            <span>Document</span>
+            <div class="wp-doc">
+                <input id="wpUrl" type="text" value="${esc(f.url)}" spellcheck="false"
+                       placeholder="An IPFS CID, or a link to the full proposal">
+                <button class="act-mini wp-upload" id="wpUploadBtn" type="button"
+                        title="Pin a file to IPFS and fill the field with its CID">Upload</button>
+            </div>
+            <input id="wpFile" type="file" hidden>
+        </div>
+
+        <div class="cp-grid">
+            <label class="cp-field">
+                <span>Pay (${esc(sym)})</span>
+                <input id="wpPay" type="number" min="0" step="0.0001" value="${esc(f.pay)}"
+                       placeholder="130120">
+            </label>
+            <label class="cp-field">
+                <span>Arbiter pay (${esc(sym)})</span>
+                <input id="wpArbPay" type="number" min="0" step="0.0001" value="${esc(f.arbPay)}"
+                       placeholder="1000">
+            </label>
+            <label class="cp-field">
+                <span>Job length (days)</span>
+                <input id="wpDays" type="number" min="1" max="365" value="${f.days}">
+            </label>
+            <label class="cp-field">
+                <span>Category</span>
+                <input id="wpCategory" type="number" min="0" max="65535" value="${f.category}">
+            </label>
+        </div>
+
+        <p class="act-blurb">Paid from <code>${esc(dao.treasury ?? '—')}</code>, this DAO's
+            proposal funds, into escrow when work starts — and out to you when the council finalizes.
+            ${fee ? `Raising it costs <b>${esc(fee.quantity)}</b>${short
+                ? `, and this account's deposit is short, so <b>${esc(short.quantity)}</b> will be transferred
+                   to <code>${WP_CONTRACT}</code> in the same transaction.`
+                : ', already covered by this account\'s deposit with the contract.'}` : ''}</p>
+
+        ${blocks.map((b) => `<p class="act-blurb is-note">${esc(b)}</p>`).join('')}
+
+        <div class="d-actions">
+            <button class="act-go" id="wpSubmit" type="button"
+                    ${busy || blocks.length ? 'disabled' : ''}>Create worker proposal</button>
+            <button class="act-mini" id="wpCancel" type="button">cancel</button>
+        </div>
+    </div>`
+}
+
+async function submitWorkerCreate(dao) {
+    const wp = workerCache.get(dao.id)
+    const f = readWpForm()
+    if (!wp || !f || !session) return
+
+    const me = String(session.actor)
+    const fee = wp.config.proposal_fee
+    const sym = fee ? assetCode(fee.quantity) : TLM_SYMBOL
+    const prec = fee ? assetPrecision(fee.quantity) : 4
+    const contract = fee ? fee.contract : TLM_CONTRACT
+
+    // The contract's own bounds, checked here so a refusal costs nothing.
+    if (f.title.trim().length < 4) return detailsNote('The title has to be more than three characters.', 'error')
+    if (f.summary.trim().length < 4) return detailsNote('The summary has to be more than three characters.', 'error')
+    if (!f.arbiter) return detailsNote('Pick an arbiter.', 'error')
+    if (f.arbiter === me) return detailsNote('You cannot arbitrate your own proposal.', 'error')
+
+    const pay = toAsset(f.pay, prec, sym)
+    if (!pay) return detailsNote('Enter a pay amount above zero.', 'error')
+    // Not a contract rule, but startwork transfers the arbiter's pay to escrow
+    // as its own transfer, and a zero-quantity transfer is rejected — so a
+    // proposal created with nothing for the arbiter can never start.
+    const arbPay = toAsset(f.arbPay, prec, sym)
+    if (!arbPay) {
+        return detailsNote('The arbiter needs a pay amount above zero — startwork sends it as its own ' +
+            'transfer, and a transfer of zero is rejected.', 'error')
+    }
+
+    const actions = []
+    const short = wpFeeShortfall(wp)
+    if (short) {
+        actions.push({
+            account: short.contract, name: 'transfer', authorization: auth(),
+            data: { from: me, to: WP_CONTRACT, quantity: short.quantity, memo: `Proposal fee for ${dao.id}` },
+        })
+    }
+
+    actions.push({
+        account: WP_CONTRACT, name: 'createprop', authorization: auth(),
+        data: {
+            proposer: me,
+            title: f.title.trim(),
+            summary: f.summary.trim(),
+            arbiter: f.arbiter,
+            proposal_pay: { quantity: pay, contract },
+            arbiter_pay: { quantity: arbPay, contract },
+            content_hash: f.url.trim(),
+            id: proposalName(),
+            category: Math.max(0, Math.min(65535, Math.round(f.category))),
+            job_duration: Math.max(1, Math.round(f.days)) * 86400,
+            dac_id: dao.id,
+        },
+    })
+
+    wpForm = null
+    return submitDetails(actions, `Raise "${f.title.trim()}"`, () => refreshWorker(dao))
+}
+
+// ── The tab ───────────────────────────────────────────────────────────────
+
+function buildWorkerBlock(dao) {
+    const wp = workerCache.get(dao.id)
+
+    if (wp === undefined) {
+        return '<section class="d-block"><h3>Worker proposals <span class="d-dim">reading…</span></h3></section>'
+    }
+    if (wp === null) {
+        return `<section class="d-block">
+            <h3>Worker proposals <span class="d-dim">unavailable</span></h3>
+            <p class="d-line d-dim">${esc(WP_CONTRACT)} could not be read for ${esc(dao.id)}.</p>
+        </section>`
+    }
+
+    const shown = wpFilter === 'live' ? wp.props.filter(wpIsLive) : wp.props
+
+    return `
+    <section class="d-block">
+        <h3>Worker proposals
+            <span class="d-dim">${shown.length} of ${wp.props.length}</span>
+        </h3>
+
+        ${wpForm ? wpFormHtml(dao, wp) : `
+            <button class="card-btn" id="wpOpen" type="button">Raise a worker proposal</button>`}
+
+        <div class="d-filter">
+            <span class="${wpFilter === 'live' ? 'is-on' : ''}">Live</span>
+            <button class="toggle ${wpFilter === 'all' ? 'is-right' : ''}"
+                    id="wpToggle" type="button" role="switch"
+                    aria-checked="${wpFilter === 'all'}"><i></i></button>
+            <span class="${wpFilter === 'all' ? 'is-on' : ''}">All ${wp.props.length}</span>
+        </div>
+
+        <div class="d-scroll">
+        <table class="d-table wp-table">
+            <thead><tr>
+                <th>State</th><th>Proposal</th><th class="num">Pay</th>
+                <th class="num">Approvals</th><th class="num">Timing</th>
+            </tr></thead>
+            <tbody>
+            ${shown.map((p) => wpRow(dao, p, wp)).join('') || `
+                <tr><td colspan="5" class="d-dim">${wp.props.length
+                    ? `Nothing live — all ${wp.props.length} are finished or expired.`
+                    : 'No worker proposals have been raised here.'}</td></tr>`}
+            </tbody>
+        </table>
+        </div>
+    </section>`
+}
+
+async function wpAct(dao, act, id) {
+    const wp = workerCache.get(dao.id)
+    if (!wp || !session) return
+    const p = wp.props.find((x) => x.proposal_id === id)
+    if (!p) return
+
+    const me = String(session.actor)
+    const dac_id = dao.id
+    const one = (name, data) => [{ account: WP_CONTRACT, name, authorization: auth(), data }]
+    const after = () => refreshWorker(dao)
+
+    // The two vote actions want a SECOND authorization: the DAO's own account at
+    // its `one` permission, alongside the custodian's active. Every voteprop and
+    // votepropfin on chain carries both — ["1x1ci.wam@active","nar.unn.dac@one"]
+    // — and without it the contract refuses for missing that permission.
+    //
+    // No extra signature is involved. `one` is threshold 1 with every seated
+    // custodian's @active at weight 1, so the custodian's own key satisfies it;
+    // it is the DAO saying "a custodian asked for this", not a second signer.
+    //
+    // Nothing in the published dacproposals source explains it: master's
+    // _voteprop does require_auth(custodian) and nothing more, so the deployed
+    // build is not that source. The chain is what this follows.
+    //
+    // The other five actions take the actor's active alone, which chain history
+    // confirms for every one of them.
+    const voting = (name, data) => [{
+        account: WP_CONTRACT, name, data,
+        authorization: dao.owner
+            ? [...auth(), { actor: dao.owner, permission: 'one' }]
+            : auth(),
+    }]
+
+    switch (act) {
+    case 'approve':
+        return submitDetails(voting('voteprop', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
+            `Approve "${p.title}"`, after)
+    case 'deny':
+        return submitDetails(voting('voteprop', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
+            `Vote against "${p.title}"`, after)
+    case 'finapprove':
+        return submitDetails(voting('votepropfin', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
+            `Accept the work on "${p.title}"`, after)
+    case 'findeny':
+        return submitDetails(voting('votepropfin', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
+            `Reject the work on "${p.title}"`, after)
+    case 'arbagree':
+        return submitDetails(one('arbagree', { arbiter: me, proposal_id: id, dac_id }),
+            `Agree to arbitrate "${p.title}"`, after)
+    case 'startwork':
+        return submitDetails(one('startwork', { proposal_id: id, dac_id }),
+            `Start work on "${p.title}"`, after)
+    case 'completework':
+        return submitDetails(one('completework', { proposal_id: id, dac_id }),
+            `Mark "${p.title}" complete`, after)
+    case 'finalize':
+        return submitDetails(one('finalize', { proposal_id: id, dac_id }),
+            `Finalize "${p.title}"`, after)
+    default:
+        return
+    }
+}
+
+// ── MSIG groups: the point allocators ─────────────────────────────────────
+//
+// A separate system from the DAO councils, on ptpxy.worlds — the pointsproxy
+// contract, whose source is in Alien-Worlds/alienworlds-contracts-open-source
+// under contracts/pointsproxy.
+//
+//   allocators   scope = the contract   who allocates, and their budget
+//   allocations  scope = the allocator  who they allocate to, and how much
+//   pointsconfig scope = the RECIPIENT  that recipient's period and spend
+//
+// pointsconfig is keyed by the account receiving points, not by the pair, so
+// several allocators funding the same recipient all read the same config.
+// magordefense is funded by all four and shows identical figures under each.
+
+const POINTS_CONTRACT = 'ptpxy.worlds'
+
+let allocators = []
+let allocationsCache = new Map()   // allocator -> rows
+let pointsCache = new Map()        // recipient -> pointsconfig
+
+// Points are held at ten times their face value throughout this contract.
+const points = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.trunc(n / 10).toLocaleString('en-US') : '—'
+}
+
+// The same figures that are not scaled.
+const plain = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.trunc(n).toLocaleString('en-US') : '—'
+}
+
+// The `allocators` table is on a different footing from everything else here:
+// its figures cover a TEN day period. Multiplying by three puts an allocator's
+// budget on the same thirty-day basis the allocations beneath it run to, so the
+// two can be read against each other. It is NOT divided by ten — that scaling
+// belongs to the points figures, not to these.
+const shards = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.trunc(n * 3).toLocaleString('en-US') : '—'
+}
+
+// `period_duration` is documented as days and defaults to 30, but the contract's
+// own migrate() copies the OLD globals value — which was seconds, defaulting to
+// 30*24*60*60 — straight into it. So a row that has never been rewritten since
+// carries 2592000 where 30 is meant. ameet.worlds is one. Anything at a day or
+// more is read as seconds; anything smaller is already days.
+function durationDays(v) {
+    const n = Number(v)
+    if (!Number.isFinite(n) || n <= 0) return null
+    return n >= 86400 ? Math.round(n / 86400) : n
+}
+
+// Who has to sign for an allocator to act. These are ordinary account multisigs
+// rather than DAO councils, so the answer is the account's own `active`
+// permission: its member accounts and how many of them the threshold wants.
+//
+//   trilara.dac  3 of 5     khaurex.dac  4 of 6
+//   megalos.dac  4 of 6     synthar.dac  4 of 6 — and its members are the
+//                                        planet DACs themselves
+const authCache = new Map()
+
+async function allocatorAuth(name) {
+    if (authCache.has(name)) return authCache.get(name)
+    try {
+        const acct = await chainCall('get_account', { account_name: name })
+        const active = (acct.permissions ?? []).find((p) => p.perm_name === 'active')
+        const ra = active?.required_auth
+        const signers = ra
+            ? {
+                threshold: ra.threshold,
+                // Approval is requested from the member accounts, not from the
+                // allocator itself — they are the ones who can sign.
+                members: (ra.accounts ?? []).map((a) => ({
+                    actor: a.permission.actor,
+                    permission: a.permission.permission,
+                    weight: a.weight,
+                })),
+            }
+            : null
+        authCache.set(name, signers)
+        return signers
+    } catch (err) {
+        console.error(`Could not read the permissions of ${name}:`, err)
+        authCache.set(name, null)
+        return null
+    }
+}
+
+// Which of an allocator's signers are themselves DAOs. A DAO cannot press
+// approve — it acts only through its council — so each of these needs its own
+// msig.worlds proposal carrying the approval.
+//
+// Worked out from the directory rather than by naming synthar.dac: a signer is a
+// DAO if it owns one. Today that is synthar alone, whose six signers are the
+// planet DACs; trilara, megalos and khaurex are signed by ordinary accounts and
+// match nothing here. The rule follows the chain rather than a list of names.
+// Split by whether this account can actually raise the council proposal.
+// msig.worlds only takes one from a seated custodian of that DAC. The contract
+// is not open source, but every proposer on chain holds a seat on the council
+// they proposed to — bar one who has since lost theirs in an election.
+//
+// The councils you do not sit on are not yours to raise. They are still needed;
+// someone on each of them has to do it.
+function councilSigners(signers) {
+    if (!signers) return { mine: [], others: [] }
+    const byOwner = new Map(daos.map((d) => [d.owner, d]))
+    const me = session ? String(session.actor) : null
+    const all = signers.members.map((m) => byOwner.get(m.actor)).filter(Boolean)
+    return {
+        mine: all.filter((d) => me && d.custodians.includes(me)),
+        others: all.filter((d) => !me || !d.custodians.includes(me)),
+    }
+}
+
+// A reference to a recent irreversible block. eosio.msig proposals carry real
+// TAPOS — unlike msig.worlds, where every live proposal has zeroes — so this
+// matches what the working proposals on chain actually do.
+async function tapos() {
+    const info = await chainCall('get_info', {})
+    const num = info.last_irreversible_block_num
+    const block = await chainCall('get_block', { block_num_or_id: num })
+    // ref_block_prefix is the second 32-bit word of the block id, little endian.
+    const prefix = parseInt(String(block.id).slice(16, 24).match(/../g).reverse().join(''), 16)
+    return { ref_block_num: num & 0xffff, ref_block_prefix: prefix }
+}
+
+async function loadAllocators() {
+    try {
+        allocators = await getRows(POINTS_CONTRACT, POINTS_CONTRACT, 'allocators', { limit: 200 })
+    } catch (err) {
+        console.error('Could not read the allocators:', err)
+        allocators = []
+    }
+    $('countMsig').textContent = allocators.length || ''
+}
+
+// What every allocator sends a given recipient, per day. pointsconfig records
+// only the recipient's own totals — there is no per-funder breakdown anywhere on
+// chain — so attributing spend to one allocator means knowing what share of the
+// recipient's funding that allocator provides.
+function fundingShare(recipient, allocator) {
+    let total = 0
+    let mine = 0
+    for (const a of allocators) {
+        for (const r of allocationsCache.get(a.allocator) ?? []) {
+            if (r.account !== recipient) continue
+            const v = Number(r.allocated) || 0
+            total += v
+            if (a.allocator === allocator) mine = v
+        }
+    }
+    // Whether this allocator is the recipient's only funder matters: if it is,
+    // the whole period_budget is its own exactly, with nothing apportioned.
+    const funders = new Set()
+    for (const a of allocators) {
+        for (const r of allocationsCache.get(a.allocator) ?? []) {
+            if (r.account === recipient) funders.add(a.allocator)
+        }
+    }
+    return {
+        mine, total,
+        share: total > 0 ? mine / total : 0,
+        only: funders.size === 1 && funders.has(allocator),
+    }
+}
+
+async function loadAllocations(name) {
+    if (allocationsCache.has(name)) return
+    try {
+        allocationsCache.set(name, await getRows(POINTS_CONTRACT, name, 'allocations', { limit: 200 }))
+    } catch (err) {
+        console.error(`Could not read allocations for ${name}:`, err)
+        allocationsCache.set(name, null)
+    }
+}
+
+// One allocator's allocations, the config of every account it funds, and — so
+// the share can be worked out — every OTHER allocator's allocations too. That is
+// four small reads, and without them a recipient's spend cannot be attributed.
+async function loadAllocator(name) {
+    await mapLimit(allocators.map((a) => a.allocator), CONCURRENCY, loadAllocations)
+    const rows = allocationsCache.get(name)
+    if (!rows) return
+
+    const wanted = [...new Set(rows.map((r) => r.account))].filter((a) => !pointsCache.has(a))
+    await mapLimit(wanted, CONCURRENCY, async (account) => {
+        try {
+            const [cfg] = await getRows(POINTS_CONTRACT, account, 'pointsconfig', { limit: 1 })
+            pointsCache.set(account, cfg ?? null)
+        } catch (err) {
+            console.error(`Could not read pointsconfig for ${account}:`, err)
+            pointsCache.set(account, null)
+        }
+    })
+}
+
+function allocatorHtml(a) {
+    const budget = Number(a.budget)
+    const used = Number(a.allocated)
+    const pct = budget > 0 ? Math.min(100, (used / budget) * 100) : 0
+    const left = budget - used
+
+    return `
+    <article class="dao" data-alloc="${esc(a.allocator)}">
+        <div class="dao-top">
+            <h2>${esc(a.allocator)}</h2>
+        </div>
+        <p class="dao-id">point allocator</p>
+
+        <dl class="alloc-figs">
+            <div>
+                <dt>Budget</dt>
+                <dd>${esc(shards(a.budget))}</dd>
+            </div>
+            <div>
+                <dt>Allocated</dt>
+                <dd class="${used > budget ? 'is-over' : ''}">${esc(shards(a.allocated))}</dd>
+            </div>
+            <div>
+                <dt>Unallocated</dt>
+                <dd class="${left < 0 ? 'is-over' : ''}">${esc(shards(left))}</dd>
+            </div>
+        </dl>
+
+        <div class="alloc-bar" title="${pct.toFixed(1)}% of the budget allocated">
+            <span style="width:${pct}%"></span>
+        </div>
+        <p class="alloc-note">over 30 days</p>
+
+        <div class="dao-btns">
+            <button class="card-btn is-primary" data-allocdetails="${esc(a.allocator)}"
+                    type="button">Allocations</button>
+        </div>
+    </article>`
+}
+
+function buildAllocatorDetails(name) {
+    const a = allocators.find((x) => x.allocator === name)
+    const rows = allocationsCache.get(name)
+    // Anyone signed in may raise a proposal; only the allocator's own members can
+    // approve it, and the chain enforces that.
+    const canAllocate = !!session
+
+    const body = rows === null
+        ? '<p class="panel-empty">Could not read this allocator\'s allocations.</p>'
+        : !rows
+            ? '<p class="panel-empty">Reading…</p>'
+            : `
+        <div class="d-scroll is-tall">
+        <table class="d-table is-roomy">
+            <thead><tr>
+                <th>Recipient</th>
+                <th>Mode</th>
+                <th class="num">Period spent</th>
+                <th class="num">Period budget</th>
+                <th class="num">Period ends</th>
+                ${canAllocate ? '<th></th>' : ''}
+            </tr></thead>
+            <tbody>
+            ${rows.map((r) => {
+                const c = pointsCache.get(r.account)
+                if (!c) {
+                    return `<tr>
+                        <td><b class="row-dao">${esc(r.account)}</b></td>
+                        <td colspan="${canAllocate ? 5 : 4}" class="d-dim">${
+                            c === null ? 'no pointsconfig for this account' : 'reading…'}</td>
+                    </tr>`
+                }
+                const ends = Date.parse(`${c.period_end}Z`)
+                const lapsed = Number.isFinite(ends) && ends < Date.now()
+                const days = durationDays(c.period_duration) ?? 30
+                const { share, only } = fundingShare(r.account, name)
+
+                // `period_budget` is the authority on what a recipient may spend,
+                // NOT allocated × days.
+                //
+                // addbudget accumulates period_budget but OVERWRITES allocated:
+                //
+                //     a.allocated = allocation_budget_clamped;   // replaces
+                //     manager_settings.period_budget += budget;  // accumulates
+                //
+                // so an allocator that has topped a recipient up twice leaves
+                // `allocated` showing only the last call. theminergame is one:
+                // trilara funds it alone, allocated × 30 comes to 600,000, and
+                // the real period_budget is 1,200,000. Budgeting off `allocated`
+                // made a recipient look 124% spent when it had used 62%.
+                const myBudget = Number(c.period_budget) * share
+                const mySpent = Number(c.period_total) * share
+
+                // Both sides carry the same share, so it cancels: this is the
+                // recipient's true utilisation and cannot exceed 100% unless the
+                // contract has genuinely allowed an overspend.
+                const pct = myBudget > 0 ? (mySpent / myBudget) * 100 : 0
+                const sharePct = (share * 100).toFixed(share >= 0.1 ? 0 : 1)
+
+                // Built here rather than inline: the workings are long, and a
+                // template literal broken across lines to fit them was what
+                // produced a malformed one last time.
+                const spentTitle = only
+                    ? `${name} is the only funder, so all of ${r.account}'s `
+                      + `${points(c.period_total)} spend this period is its own — `
+                      + `${pct.toFixed(0)}% of the budget.`
+                    : `${sharePct}% of ${r.account}'s funding comes from ${name}, so that share of `
+                      + `its ${points(c.period_total)} spend is attributed here — `
+                      + `${pct.toFixed(0)}% of the budget.`
+
+                const budgetTitle = only
+                    ? `${r.account}'s whole period_budget, since ${name} is its only funder. `
+                      + `Read from the contract rather than derived from the allocation: addbudget `
+                      + `accumulates period_budget but overwrites allocated, so allocated x days `
+                      + `undercounts anyone topped up more than once.`
+                    : `${sharePct}% of ${r.account}'s ${points(c.period_budget)} period budget, `
+                      + `apportioned by funding share.`
+
+                return `<tr>
+                    <td><b class="row-dao">${esc(r.account)}</b></td>
+                    <td><span class="pill ${c.debug_mode ? 'is-debug' : 'is-live'}"
+                        title="debug_mode = ${c.debug_mode ? 1 : 0}">${
+                        c.debug_mode ? 'debug' : 'live'}</span></td>
+                    <td class="num" title="${esc(spentTitle)}">
+                        ${esc(points(mySpent))}
+                        <span class="spend-bar ${pct >= 100 ? 'is-full' : ''}">
+                            <span style="width:${pct}%"></span>
+                        </span>
+                        <span class="spend-pct">${pct.toFixed(0)}%</span>
+                    </td>
+                    <td class="num" title="${esc(budgetTitle)}">${esc(points(myBudget))}</td>
+                    <td class="num ${lapsed ? 'is-lapsed' : ''}"
+                        title="${days} day period, ending ${esc(isoDay(ends))}">
+                        ${esc(fmtWhen(ends))}</td>
+                    ${canAllocate ? `<td class="num alloc-actions">
+                        <button class="act-mini" data-alloc-op="add" data-to="${esc(r.account)}"
+                                type="button">increase</button>
+                        <button class="act-mini" data-alloc-op="sub" data-to="${esc(r.account)}"
+                                type="button">decrease</button>
+                    </td>` : ''}
+                </tr>`
+            }).join('') || `<tr><td colspan="${canAllocate ? 6 : 5}" class="d-dim">This allocator has no allocations.</td></tr>`}
+            </tbody>
+        </table>
+        </div>`
+
+    return `
+    <div class="d-inner">
+        <header class="d-head">
+            <button class="btn btn-ghost" id="detailsBack" type="button">← All groups</button>
+            <div class="d-title">
+                <h2>${esc(name)}</h2>
+                <p class="panel-sub">point allocator on ${POINTS_CONTRACT} ·
+                    budget ${esc(shards(a?.budget ?? 0))} ·
+                    allocated ${esc(shards(a?.allocated ?? 0))} · over 30 days</p>
+            </div>
+        </header>
+        <p class="panel-note" id="detailsNote" hidden></p>
+        <section class="d-block">
+            <h3>Allocations
+                <span class="d-dim">${rows ? `${rows.length} recipient${
+                    rows.length === 1 ? '' : 's'}` : ''}</span>
+            </h3>
+            ${canAllocate ? (allocForm ? allocFormHtml(name)
+                : '<div class="d-propose"><button class="card-btn" data-alloc-op="new" type="button">New allocation</button></div>') : ''}
+            ${body}
+        </section>
+    </div>`
+}
+
+// The three ways an allocator can move a budget, all requiring its own
+// authority, all therefore going through a multisig proposal.
+//
+//   setbudget    creates a NEW allocation. Refuses if a pointsconfig already
+//                exists for that account, so it cannot be used to change one.
+//   addbudget    increases an existing one, reusing the recipient's own n_days.
+//   withdrawbudg decreases; omitting the amount withdraws the whole period.
+//
+// `budget` throughout is the PERIOD total, which the contract divides by n_days
+// to get the per-day allocation it stores.
+const ALLOC_OPS = {
+    add: { action: 'addbudget', verb: 'Increase' },
+    sub: { action: 'withdrawbudg', verb: 'Decrease' },
+    new: { action: 'setbudget', verb: 'New allocation' },
+}
+
+let allocForm = null   // { op, to, amount, days }
+
+async function openAllocator(name) {
+    detailsId = name
+    detailsKind = 'allocator'
+    allocForm = null
+    closePanel()
+    closeTodo()
+    renderDetails()
+    await Promise.all([loadAllocator(name), allocatorAuth(name)])
+    if (detailsId === name) renderDetails()
+}
+
+function allocFormHtml(name) {
+    if (!allocForm) return ''
+    const op = ALLOC_OPS[allocForm.op]
+    const signers = authCache.get(name)
+    const { mine: councils, others: notMine } = councilSigners(signers)
+    const rows = allocationsCache.get(name) ?? []
+    const current = rows.find((r) => r.account === allocForm.to)
+    const cfg = current ? pointsCache.get(current.account) : null
+    const days = durationDays(cfg?.period_duration) ?? 30
+
+    return `
+    <div class="d-propose-form alloc-form">
+        <div class="act-head">
+            <span class="act-label">${esc(op.verb)}${allocForm.to ? ` · ${esc(allocForm.to)}` : ''}</span>
+            <span class="act-hint">${signers
+                ? `needs ${signers.threshold} of ${signers.members.length} signatures`
+                : 'reading who must sign…'}</span>
+        </div>
+
+        ${allocForm.op === 'new' ? `
+            <label class="cp-field">
+                <span>Recipient account</span>
+                <input id="alTo" type="text" value="${esc(allocForm.to)}"
+                       placeholder="theminergame" spellcheck="false">
+            </label>
+            <label class="cp-field">
+                <span>Period length in days (1–60)</span>
+                <input id="alDays" type="number" min="1" max="60" value="${allocForm.days}">
+            </label>` : ''}
+
+        <label class="cp-field">
+            <span>${allocForm.op === 'sub'
+                ? 'Amount to withdraw for the period'
+                : 'Amount to add for the period'}</span>
+            <input id="alAmount" type="text" inputmode="decimal" value="${esc(allocForm.amount)}"
+                   placeholder="0">
+        </label>
+
+        <p class="act-blurb">
+            Shown everywhere on this page at a tenth of the stored value, so this is
+            multiplied by ten before it is sent.
+            ${allocForm.op !== 'new' && current
+                ? `${esc(r0(current.account))} currently gets
+                   <b>${esc(points(Number(current.allocated) * days))}</b> per ${days}-day period.`
+                : ''}
+            ${allocForm.op === 'new'
+                ? 'setbudget only creates allocations — it is refused if this account already has one.'
+                : ''}
+        </p>
+
+        ${signers ? `<p class="act-blurb">Approval will be asked of
+            ${signers.members.map((m) => `<code>${esc(m.actor)}</code>`).join(', ')} —
+            <b>${signers.threshold}</b> of them must sign before it can run.</p>` : ''}
+        ${councils.length || notMine.length ? `<p class="act-blurb is-note">
+            ${councils.length + notMine.length} of those signers are DAOs and cannot approve directly —
+            each needs a proposal on its own council, and msig.worlds only accepts one from a
+            seated custodian.
+            ${councils.length ? `This raises ${councils.length} of them, on
+                ${councils.map((d) => `<code>${esc(d.title)}</code>`).join(', ')} —
+                ${councils.length + 1} proposals in one transaction.` : 'You sit on none of them.'}
+            ${notMine.length ? `<b>${notMine.map((d) => esc(d.title)).join(', ')}</b> you do not sit on,
+                so a custodian there has to raise that one.` : ''}</p>` : ''}
+
+        <div class="d-actions">
+            <button class="act-go" id="alSubmit" type="button" ${busy || !signers ? 'disabled' : ''}>
+                Create proposal</button>
+            <button class="act-mini" id="alCancel" type="button">cancel</button>
+        </div>
+    </div>`
+}
+
+// Just the account name; kept as a function so the template stays readable.
+const r0 = (s) => s
+
+async function submitAlloc(name) {
+    if (!session || busy || !allocForm) return
+    const op = ALLOC_OPS[allocForm.op]
+    const signers = authCache.get(name)
+    if (!signers) return detailsNote('Could not read who has to sign for this allocator.', 'error')
+
+    const to = (allocForm.op === 'new' ? $('alTo')?.value : allocForm.to)?.trim()
+    if (!to) return detailsNote('Name the recipient account.', 'error')
+
+    // Everything on this page is shown at a tenth of the stored value, so the
+    // figure typed here is scaled back up before it reaches the chain.
+    const shown = Number(String($('alAmount')?.value ?? '').replace(/,/g, ''))
+    if (!Number.isFinite(shown) || shown <= 0) return detailsNote('Enter an amount above zero.', 'error')
+    const budget = Math.round(shown * 10)
+
+    const days = allocForm.op === 'new' ? Math.round(Number($('alDays')?.value) || 30) : null
+    if (days !== null && (days < 1 || days > 60)) {
+        return detailsNote('The contract only accepts a period of 1 to 60 days.', 'error')
+    }
+
+    const data = allocForm.op === 'new'
+        ? { allocator: name, points_manager: to, budget, n_days: days, batch_process: true }
+        : allocForm.op === 'sub'
+            ? { allocator: name, points_manager: to, budget }
+            : { allocator: name, points_manager: to, budget }
+
+    busy = true
+    renderDetails()
+    detailsNote('Building the proposal…', 'work')
+
+    try {
+        const abi = await getAbi(POINTS_CONTRACT)
+        const inner = {
+            account: POINTS_CONTRACT,
+            name: op.action,
+            authorization: [{ actor: name, permission: 'active' }],
+            data: String(Serializer.encode({ abi, type: op.action, object: data })),
+        }
+        const ref = await tapos()
+        const actor = String(session.actor)
+        const outerName = proposalName()
+        const expiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19)
+
+        // eosio.msig, not msig.worlds: an allocator is a plain account multisig
+        // with no dac_id, and every one of these on chain has gone through the
+        // system contract.
+        const actions = [{
+            account: 'eosio.msig', name: 'propose', authorization: auth(),
+            data: {
+                proposer: actor,
+                proposal_name: outerName,
+                requested: signers.members.map((m) => ({ actor: m.actor, permission: m.permission })),
+                trx: {
+                    expiration: expiry,
+                    ...ref,
+                    max_net_usage_words: 0,
+                    max_cpu_usage_ms: 0,
+                    delay_sec: 0,
+                    context_free_actions: [],
+                    actions: [inner],
+                    transaction_extensions: [],
+                },
+            },
+        }]
+
+        // Some of an allocator's signers cannot simply press approve: they are
+        // DAOs, and a DAO acts only through its own council. synthar.dac is one
+        // — its six signers are the planet DACs themselves — so each of those
+        // needs a msig.worlds proposal of its own carrying the approval, for its
+        // custodians to pass in the usual way.
+        //
+        // Worked out from the directory rather than by naming synthar: a signer
+        // is a DAO if it owns one. The other three allocators have none, so they
+        // produce no extra proposals.
+        const { mine: councils, others: notMine } = councilSigners(signers)
+        if (councils.length) {
+            const msigAbi = await getAbi('eosio.msig')
+            const title = `${op.verb}: ${to} — ${shown.toLocaleString('en-US')}`
+
+            for (const dao of councils) {
+                const approve = {
+                    account: 'eosio.msig',
+                    name: 'approve',
+                    authorization: [{ actor: dao.owner, permission: 'active' }],
+                    data: String(Serializer.encode({
+                        abi: msigAbi, type: 'approve',
+                        object: {
+                            proposer: actor,
+                            proposal_name: outerName,
+                            level: { actor: dao.owner, permission: 'active' },
+                        },
+                    })),
+                }
+                actions.push({
+                    account: MSIG_CONTRACT, name: 'propose', authorization: auth(),
+                    data: {
+                        proposer: actor,
+                        proposal_name: proposalName(),
+                        requested: [{ actor: dao.owner, permission: 'active' }],
+                        dac_id: dao.id,
+                        metadata: [
+                            { key: 'title', value: `Approve ${name} allocation · ${title}` },
+                            {
+                                key: 'description',
+                                value: `Approves ${actor}/${outerName} on eosio.msig, which asks `
+                                    + `${name} to ${op.action} ${budget} for ${to}. `
+                                    + `${name} needs ${signers.threshold} of its `
+                                    + `${signers.members.length} signers, and ${dao.owner} is one of them.`,
+                            },
+                        ],
+                        // msig.worlds dispatches its inner actions itself, so
+                        // these carry no TAPOS — matching every live proposal on
+                        // that contract.
+                        trx: {
+                            expiration: expiry,
+                            ref_block_num: 0,
+                            ref_block_prefix: 0,
+                            max_net_usage_words: 0,
+                            max_cpu_usage_ms: 0,
+                            delay_sec: 0,
+                            context_free_actions: [],
+                            actions: [approve],
+                            transaction_extensions: [],
+                        },
+                    },
+                })
+            }
+        }
+
+        await session.transact({ actions }, { broadcast: true })
+
+        detailsNote(councils.length
+            ? `Proposal created, plus one on ${councils.map((d) => d.title).join(', ')} `
+              + `for those councils to approve it. ${signers.threshold} of `
+              + `${signers.members.length} signatures are needed`
+              + (notMine.length
+                  ? `, and ${notMine.map((d) => d.title).join(', ')} still needs a custodian of its own `
+                    + 'to raise the same proposal there.'
+                  : '.')
+            : `Proposal created — ${signers.threshold} of ${signers.members.length} must now sign it.`,
+            'ok')
+        allocForm = null
+        await sleep(2500)
+        allocationsCache.delete(name)
+        pointsCache.clear()
+        await loadAllocator(name)
+    } catch (err) {
+        if (isUserCancel(err)) detailsNote('Cancelled.')
+        else {
+            console.error('Allocation proposal failed:', err)
+            detailsNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderDetails()
+    }
+}
+
+// ── Create a proposal ─────────────────────────────────────────────────────
+//
+// The general form of what the setperiodlen button does for one fixed action:
+// name a council, describe the thing, list the actions, and raise it for the
+// council to approve.
+//
+// Copying an existing proposal is the same form, prefilled. That means going the
+// other way through the serializer — a proposal on chain is a packed transaction
+// whose actions carry their arguments as opaque bytes, so each one has to be
+// decoded against its own contract's ABI before it can be shown, let alone
+// edited.
+
+const createEl = $('create')
+let createOpen = false
+let createForm = null   // { daoId, title, description, days, actions: [{account, name, data}] }
+
+const blankAction = () => ({ account: '', name: '', data: '{}' })
+
+// A proposal's packed transaction, turned back into something a person can read
+// and edit. Each action's arguments need that action's own contract ABI, so this
+// is several network reads — but only on the copy path, and only once.
+async function decodeProposal(p) {
+    const trx = Serializer.decode({ type: Transaction, data: p.packed_transaction })
+    const out = []
+    for (const a of trx.actions ?? []) {
+        const account = String(a.account)
+        const name = String(a.name)
+        let data = '{}'
+        try {
+            const abi = await getAbi(account)
+            data = JSON.stringify(Serializer.objectify(
+                Serializer.decode({ abi, type: name, data: a.data })), null, 2)
+        } catch (err) {
+            // Better to hand over the raw bytes than to silently drop an action:
+            // the reader can still see what was there and decide.
+            console.error(`Could not decode ${account}::${name}:`, err)
+            data = `/* could not decode — raw bytes: ${String(a.data)} */`
+        }
+        out.push({ account, name, data })
+    }
+    return out
+}
+
+async function openCreate({ dao, from } = {}) {
+    createOpen = true
+    closePanel()
+    closeDetails()
+    closeTodo()
+    closeOverview()
+
+    createForm = {
+        daoId: dao?.id ?? daos[0]?.id ?? '',
+        title: from ? `Copy of ${msigTitle(from)}` : '',
+        description: from
+            ? (from.metadata ?? []).find((m) => m.key === 'description')?.value ?? ''
+            : '',
+        days: 7,
+        actions: [blankAction()],
+        decoding: !!from,
+    }
+    renderCreate()
+
+    if (from) {
+        try {
+            const actions = await decodeProposal(from)
+            if (createOpen && createForm) {
+                createForm.actions = actions.length ? actions : [blankAction()]
+                createForm.decoding = false
+                renderCreate()
+            }
+        } catch (err) {
+            console.error('Could not read the source proposal:', err)
+            if (createForm) createForm.decoding = false
+            renderCreate()
+            createNote(`Could not decode that proposal: ${readableError(err)}`, 'error')
+        }
+    }
+}
+
+function closeCreate() {
+    createOpen = false
+    createForm = null
+    createEl.hidden = true
+    document.body.classList.remove('is-details')
+    syncHash()
+}
+
+// Reads the form back out of the DOM. The fields are uncontrolled — typing into
+// a textarea must not trigger a re-render that throws away the caret — so this
+// is the one place the current values are gathered.
+function readCreateForm() {
+    if (!createForm) return null
+    const q = (sel) => createEl.querySelector(sel)
+    createForm.daoId = q('#cpDao')?.value ?? createForm.daoId
+    createForm.title = q('#cpTitle')?.value ?? ''
+    createForm.description = q('#cpDesc')?.value ?? ''
+    createForm.days = Number(q('#cpDays')?.value) || 7
+    createForm.actions = [...createEl.querySelectorAll('.cp-action')].map((row) => ({
+        account: row.querySelector('[data-f="account"]')?.value.trim() ?? '',
+        name: row.querySelector('[data-f="name"]')?.value.trim() ?? '',
+        data: row.querySelector('[data-f="data"]')?.value ?? '{}',
+    }))
+    return createForm
+}
+
+function renderCreate() {
+    if (!createOpen) return
+    let html
+    try {
+        html = buildCreate()
+    } catch (err) {
+        console.error('Could not render the create form:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="cpBack" type="button">← All DAOs</button>
+                <div class="d-title"><h2>New proposal</h2></div>
+            </header>
+            <p class="panel-note is-error">${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+    createEl.innerHTML = html
+    createEl.hidden = false
+    document.body.classList.add('is-details')
+    paintCreateNote()
+    syncHash()
+}
+
+function buildCreate() {
+    const f = createForm
+    const dao = daoById(f.daoId)
+
+    return `
+    <div class="d-inner">
+        <header class="d-head">
+            <button class="btn btn-ghost" id="cpBack" type="button">← All DAOs</button>
+            <div class="d-title">
+                <h2>New proposal</h2>
+                <p class="panel-sub">Raised for a council to approve. Nothing happens on chain
+                    until enough custodians sign it and someone executes it.</p>
+            </div>
+        </header>
+
+        <p class="panel-note" id="cpNote" hidden></p>
+
+        <section class="d-block">
+            <h3>Where</h3>
+            <div class="cp-grid">
+                <label class="cp-field">
+                    <span>Council</span>
+                    <select id="cpDao">
+                        ${daos.map((d) => `<option value="${esc(d.id)}"${
+                            d.id === f.daoId ? ' selected' : ''}>${esc(d.title)}</option>`).join('')}
+                    </select>
+                </label>
+                <label class="cp-field">
+                    <span>Approvals expire after</span>
+                    <input id="cpDays" type="number" min="1" max="90" value="${f.days}">
+                </label>
+            </div>
+            <p class="act-blurb">Approval will be requested from
+                <code>${esc(dao?.owner ?? '—')}@active</code>, and
+                ${dao ? `<b>${dao.approvalThreshold ?? 3}</b> custodian signatures` : 'the council'}
+                are needed before it can run.</p>
+        </section>
+
+        <section class="d-block">
+            <h3>What it says</h3>
+            <label class="cp-field">
+                <span>Title</span>
+                <input id="cpTitle" type="text" maxlength="120" value="${esc(f.title)}"
+                       placeholder="Shown in the proposals list">
+            </label>
+            <label class="cp-field">
+                <span>Description</span>
+                <textarea id="cpDesc" rows="4"
+                          placeholder="What this does and why">${esc(f.description)}</textarea>
+            </label>
+        </section>
+
+        <section class="d-block">
+            <h3>What it does
+                <span class="d-dim">${f.decoding ? 'decoding the original…' : `${f.actions.length} action${
+                    f.actions.length === 1 ? '' : 's'}`}</span>
+            </h3>
+            ${f.actions.map((a, i) => `
+                <div class="cp-action">
+                    <div class="cp-grid">
+                        <label class="cp-field">
+                            <span>Contract</span>
+                            <input data-f="account" type="text" value="${esc(a.account)}"
+                                   placeholder="dao.worlds" spellcheck="false">
+                        </label>
+                        <label class="cp-field">
+                            <span>Action</span>
+                            <input data-f="name" type="text" value="${esc(a.name)}"
+                                   placeholder="setperiodlen" spellcheck="false">
+                        </label>
+                        <button class="act-mini cp-drop" data-drop="${i}" type="button"
+                                ${f.actions.length === 1 ? 'disabled' : ''}>remove</button>
+                    </div>
+                    <label class="cp-field">
+                        <span>Arguments</span>
+                        <textarea data-f="data" rows="${Math.min(14, (a.data.match(/\n/g)?.length ?? 0) + 3)}"
+                                  spellcheck="false">${esc(a.data)}</textarea>
+                    </label>
+                </div>`).join('')}
+            <button class="act-mini" id="cpAdd" type="button">add another action</button>
+        </section>
+
+        <div class="d-actions">
+            <button class="act-go" id="cpSubmit" type="button" ${busy || f.decoding ? 'disabled' : ''}>
+                Create proposal</button>
+            <span class="d-dim">Arguments are JSON, serialized against each contract's own ABI.</span>
+        </div>
+    </div>`
+}
+
+let createMessage = null
+function createNote(text, kind = '') {
+    createMessage = text ? { text, kind } : null
+    paintCreateNote()
+}
+function paintCreateNote() {
+    const el = $('cpNote')
+    if (!el) return
+    el.textContent = createMessage?.text ?? ''
+    el.className = `panel-note${createMessage?.kind ? ` is-${createMessage.kind}` : ''}`
+    el.hidden = !createMessage
+}
+
+async function submitCreate() {
+    const f = readCreateForm()
+    if (!session || busy || !f) return
+
+    const dao = daoById(f.daoId)
+    if (!dao?.owner) return createNote('Pick a council with a registered owner account.', 'error')
+    if (!f.title.trim()) return createNote('Give it a title — it is what the council will see.', 'error')
+
+    const rows = f.actions.filter((a) => a.account && a.name)
+    if (!rows.length) return createNote('A proposal needs at least one action.', 'error')
+
+    // Serialize every action before sending any of it: a proposal that is half
+    // built is not worth putting in front of a wallet.
+    const inner = []
+    for (const a of rows) {
+        let args
+        try {
+            args = JSON.parse(a.data)
+        } catch (err) {
+            return createNote(`${a.account}::${a.name} — arguments are not valid JSON: ${err.message}`, 'error')
+        }
+        try {
+            const abi = await getAbi(a.account)
+            inner.push({
+                account: a.account,
+                name: a.name,
+                authorization: [{ actor: dao.owner, permission: 'active' }],
+                data: String(Serializer.encode({ abi, type: a.name, object: args })),
+            })
+        } catch (err) {
+            return createNote(`${a.account}::${a.name} — ${readableError(err)}`, 'error')
+        }
+    }
+
+    const days = Math.min(90, Math.max(1, Math.round(f.days)))
+    const expiry = new Date(Date.now() + days * 86400000).toISOString().slice(0, 19)
+    const actor = String(session.actor)
+
+    busy = true
+    renderCreate()
+    createNote('Creating the proposal — check your wallet…', 'work')
+
+    try {
+        await session.transact({
+            actions: [{
+                account: MSIG_CONTRACT, name: 'propose', authorization: auth(),
+                data: {
+                    proposer: actor,
+                    proposal_name: proposalName(),
+                    requested: [{ actor: dao.owner, permission: 'active' }],
+                    dac_id: dao.id,
+                    metadata: [
+                        { key: 'title', value: f.title.trim() },
+                        { key: 'description', value: f.description.trim() || '- No description -' },
+                    ],
+                    trx: {
+                        expiration: expiry,
+                        ref_block_num: 0,
+                        ref_block_prefix: 0,
+                        max_net_usage_words: 0,
+                        max_cpu_usage_ms: 0,
+                        delay_sec: 0,
+                        context_free_actions: [],
+                        actions: inner,
+                        transaction_extensions: [],
+                    },
+                },
+            }],
+        }, { broadcast: true })
+
+        createNote('Proposal created. Re-reading…', 'ok')
+        await sleep(2500)
+        proposalsCache.delete(dao.id)
+        await fetchProposals(dao)
+        createNote(`Proposal created in ${dao.title}.`, 'ok')
+    } catch (err) {
+        if (isUserCancel(err)) createNote('Cancelled.')
+        else {
+            console.error('Create failed:', err)
+            createNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderCreate()
+    }
+}
+
+createEl.addEventListener('click', (e) => {
+    if (e.target.closest('#cpBack')) return closeCreate()
+
+    if (e.target.closest('#cpAdd')) {
+        readCreateForm()
+        createForm.actions.push(blankAction())
+        return renderCreate()
+    }
+
+    const drop = e.target.closest('[data-drop]')
+    if (drop) {
+        readCreateForm()
+        createForm.actions.splice(Number(drop.dataset.drop), 1)
+        if (!createForm.actions.length) createForm.actions = [blankAction()]
+        return renderCreate()
+    }
+
+    if (e.target.closest('#cpSubmit')) return submitCreate()
+})
+
+// ── To do ─────────────────────────────────────────────────────────────────
+//
+// One list of everything open that this account can act on, gathered across
+// every council it sits on that the watched accounts also control. Both
+// conditions have to hold: a seat gives the ability to approve, and the MC
+// marker is what makes it this account's business.
+//
+// Only open, unexpired proposals appear. An expired one can never execute, so
+// it is not a to-do — it is history.
+
+const todoEl = $('todo')
+let todoOpen = false
+let todoPicked = new Set()   // "<dac_id>/<proposal_name>", unique across DAOs
+
+const todoKey = (dao, p) => `${dao.id}/${p.proposal_name}`
+
+// Both conditions, as the user framed them: MC-controlled AND you hold a seat.
+function todoDaos() {
+    if (!session) return []
+    const me = String(session.actor)
+    return daos.filter((d) => {
+        const mc = d.custodians.filter((n) => WATCHED.has(n)).length >= CONTROL_THRESHOLD
+        return mc && d.custodians.includes(me)
+    })
+}
+
+// Flattened to one list so a single select-all and a single transaction can
+// span councils. Each row keeps its DAO, because every action needs its dac_id.
+function todoRows() {
+    const out = []
+    for (const dao of todoDaos()) {
+        for (const p of proposalsCache.get(dao.id) ?? []) {
+            if (p.state === MSIG_OPEN && !isExpired(p)) out.push({ dao, p })
+        }
+    }
+    return out.sort((a, b) => msigExpiry(a.p.packed_transaction) - msigExpiry(b.p.packed_transaction))
+}
+
+async function openTodo() {
+    todoOpen = true
+    todoPicked = new Set()
+    closePanel()
+    closeDetails()
+    closeOverview()
+    renderTodo()
+
+    const wanted = todoDaos().map(fetchProposals).filter(Boolean)
+    if (wanted.length) {
+        startPhase(wanted.length * 2)
+        await Promise.all(wanted)
+        endPhase()
+    }
+    if (todoOpen) renderTodo()
+}
+
+function closeTodo() {
+    todoOpen = false
+    todoEl.hidden = true
+    document.body.classList.remove('is-details')
+    syncHash()
+}
+
+function renderTodo() {
+    if (!todoOpen) return
+    let html
+    try {
+        html = buildTodo()
+    } catch (err) {
+        console.error('Could not render the to-do list:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="todoBack" type="button">← All DAOs</button>
+                <div class="d-title"><h2>To do</h2></div>
+            </header>
+            <p class="panel-note is-error">This view could not be drawn: ${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+    todoEl.innerHTML = html
+    todoEl.hidden = false
+    document.body.classList.add('is-details')
+    syncHash()
+    paintTodoNote()
+}
+
+function buildTodo() {
+    const councils = todoDaos()
+    const rows = todoRows()
+    const loading = councils.some((d) => !proposalsCache.has(d.id))
+
+    const chosen = rows.filter(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+    const approvable = chosen.filter(({ dao, p }) => canApprove(p, dao.custodians.includes(String(session.actor))))
+    const runnable = chosen.filter(({ dao, p }) => canExecute(p, dao))
+    const allPicked = rows.length > 0 && chosen.length === rows.length
+
+    const body = !session
+        ? '<p class="panel-empty">Connect a wallet to see what is waiting on you.</p>'
+        : councils.length === 0
+            ? `<p class="panel-empty">No council here is both MC controlled and one you hold a seat on.
+               That pairing is what puts a proposal on this list.</p>`
+            : `
+        <div class="d-actions todo-bar">
+            <button class="act-mini" id="todoAll" type="button" ${rows.length ? '' : 'disabled'}>
+                ${allPicked ? 'clear selection' : `select all ${rows.length || ''}`}</button>
+            <button class="act-go" id="todoApprove" type="button"
+                ${busy || !approvable.length ? 'disabled' : ''}
+                title="Signs the ones you have not already approved">
+                Approve ${approvable.length || ''}</button>
+            <button class="act-go" id="todoExec" type="button"
+                ${busy || !runnable.length ? 'disabled' : ''}
+                title="Runs the ones that already have enough approvals">
+                Execute ${runnable.length || ''}</button>
+            ${chosen.length === 1 ? `
+                <button class="act-go is-quiet" id="todoCopy" type="button" ${busy ? 'disabled' : ''}
+                    title="Open a new proposal prefilled with this one's actions">
+                    Copy proposal</button>` : ''}
+            <span class="d-dim">${chosen.length} selected of ${rows.length}</span>
+        </div>
+
+        <div class="d-scroll is-tall">
+        <table class="d-table">
+            <thead><tr>
+                <th></th><th>DAO</th><th>Proposal</th>
+                <th class="num">Approvals</th><th class="num">You / expires</th>
+            </tr></thead>
+            <tbody>
+            ${rows.map(({ dao, p }) => {
+                const key = todoKey(dao, p)
+                const on = todoPicked.has(key)
+                const need = dao.approvalThreshold ?? 3
+                const mine = approvedByMe(p)
+                // Raised by one of the watched accounts. Worth knowing before
+                // signing: it says where the proposal came from, not whether it
+                // is good.
+                const byMc = WATCHED.has(p.proposer)
+                const title = msigTitle(p)
+                return `<tr class="${on ? 'is-picked' : ''}${mine ? ' is-done' : ''}">
+                    <td><input type="checkbox" data-todo="${esc(key)}" ${on ? 'checked' : ''}></td>
+                    <td><b class="row-dao">${esc(dao.title)}</b>
+                        <span class="row-id">${esc(dao.symbol)}</span></td>
+                    <td>
+                        <b class="row-title">${esc(title.length > 80 ? `${title.slice(0, 80)}…` : title)}</b>
+                        <span class="row-meta">
+                            <span class="who" title="Proposer">${esc(p.proposer)}</span>
+                            ${byMc ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                            <span class="row-id">${esc(p.proposal_name)}</span>
+                        </span>
+                    </td>
+                    ${approvalCell(p, need)}
+                    <td class="num">${mine
+                        ? '<span class="pill is-mine is-big" title="You have already approved this">approved</span>'
+                        : '<span class="pill is-todo is-big">needs you</span>'}
+                        <span class="row-id">expires ${esc(isoDay(msigExpiry(p.packed_transaction)))}</span></td>
+                </tr>`
+            }).join('') || `<tr><td colspan="5" class="d-dim">${
+                loading ? 'Reading proposals…'
+                        : 'Nothing open and unexpired across those councils.'}</td></tr>`}
+            </tbody>
+        </table>
+        </div>`
+
+    return `
+        <div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="todoBack" type="button">← All DAOs</button>
+                <div class="d-title">
+                    <h2>To do</h2>
+                    <p class="panel-sub">${councils.length} council${councils.length === 1 ? '' : 's'}
+                        you sit on that the watched accounts control${
+                        rows.length ? ` · ${rows.filter(({ p }) => !approvedByMe(p)).length} still need your approval` : ''}</p>
+                </div>
+            </header>
+            <p class="panel-note" id="todoNote" hidden></p>
+            ${body}
+        </div>`
+}
+
+let todoMessage = null
+function todoNote(text, kind = '') {
+    todoMessage = text ? { text, kind } : null
+    paintTodoNote()
+}
+function paintTodoNote() {
+    const el = $('todoNote')
+    if (!el) return
+    el.textContent = todoMessage?.text ?? ''
+    el.className = `panel-note${todoMessage?.kind ? ` is-${todoMessage.kind}` : ''}`
+    el.hidden = !todoMessage
+}
+
+// One transaction spanning several councils: every action carries its own
+// dac_id, and they are all signed by the same account, so they can ride
+// together.
+async function submitTodo(actions, describe, touched) {
+    if (!session || busy || !actions.length) return
+    busy = true
+    renderTodo()
+    todoNote(`${describe} — check your wallet…`, 'work')
+    try {
+        await session.transact({ actions }, { broadcast: true })
+        todoNote(`${describe} sent — re-reading…`, 'ok')
+        await sleep(2500)
+        for (const id of touched) proposalsCache.delete(id)
+        todoPicked = new Set()
+        const again = todoDaos().map(fetchProposals).filter(Boolean)
+        if (again.length) await Promise.all(again)
+        todoNote(`${describe} done.`, 'ok')
+    } catch (err) {
+        if (isUserCancel(err)) todoNote('Cancelled.')
+        else {
+            console.error(`${describe} failed:`, err)
+            todoNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderTodo()
+    }
+}
+
+todoEl.addEventListener('change', (e) => {
+    const box = e.target.closest('[data-todo]')
+    if (!box) return
+    if (box.checked) todoPicked.add(box.dataset.todo)
+    else todoPicked.delete(box.dataset.todo)
+    renderTodo()
+})
+
+todoEl.addEventListener('click', (e) => {
+    if (e.target.closest('#todoBack')) return closeTodo()
+
+    const rows = todoRows()
+
+    if (e.target.closest('#todoAll')) {
+        const all = rows.length > 0 && rows.every(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+        todoPicked = all ? new Set() : new Set(rows.map(({ dao, p }) => todoKey(dao, p)))
+        return renderTodo()
+    }
+
+    if (e.target.closest('#todoCopy')) {
+        const one = rows.filter(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+        if (one.length !== 1) return
+        return openCreate({ dao: one[0].dao, from: one[0].p })
+    }
+
+    const approve = e.target.closest('#todoApprove')
+    const exec = e.target.closest('#todoExec')
+    if (!approve && !exec) return
+
+    const me = String(session.actor)
+    const chosen = rows.filter(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+
+    if (approve) {
+        const votable = chosen.filter(({ dao, p }) => canApprove(p, dao.custodians.includes(me)))
+        if (!votable.length) return todoNote('Nothing selected still needs your approval.', 'error')
+        const level = {
+            actor: me,
+            permission: session.permissionLevel.permission
+                ? String(session.permissionLevel.permission) : 'active',
+        }
+        return submitTodo(
+            votable.map(({ dao, p }) => ({
+                account: MSIG_CONTRACT, name: 'approve', authorization: auth(),
+                data: { proposal_name: p.proposal_name, level, dac_id: dao.id },
+            })),
+            `Approve ${votable.length} proposal${votable.length === 1 ? '' : 's'}`,
+            [...new Set(votable.map(({ dao }) => dao.id))])
+    }
+
+    const runnable = chosen.filter(({ dao, p }) => canExecute(p, dao))
+    if (!runnable.length) return todoNote('None of the selected have enough approvals yet.', 'error')
+    return submitTodo(
+        runnable.map(({ dao, p }) => ({
+            account: MSIG_CONTRACT, name: 'exec', authorization: auth(),
+            data: { proposal_name: p.proposal_name, executer: me, dac_id: dao.id },
+        })),
+        `Execute ${runnable.length} proposal${runnable.length === 1 ? '' : 's'}`,
+        [...new Set(runnable.map(({ dao }) => dao.id))])
+})
+
+// ── Events ────────────────────────────────────────────────────────────────
+
+// Each card carries its own two buttons. The card itself is no longer a control:
+// clicking one used to slide a rail in from the edge, so a stray click anywhere
+// on a name or a figure moved the whole page.
+daosEl.addEventListener('click', (e) => {
+    const alloc = e.target.closest('[data-allocdetails]')
+    if (alloc) return openAllocator(alloc.dataset.allocdetails)
+
+    const details = e.target.closest('[data-details]')
+    if (details) return openDetails(details.dataset.details)
+
+    const actions = e.target.closest('[data-actions]')
+    const revote = e.target.closest('[data-revote]')
+    if (revote) {
+        const dao = daoById(revote.dataset.revote)
+        const { keep, drop } = dao ? castableSlate(dao) : { keep: [], drop: [] }
+        if (!session || busy || !keep.length) return
+        return submitCardVote(dao, keep, drop)
+    }
+
+    if (actions) return openPanel(actions.dataset.actions)
+})
+
+// One DAO's vote, refreshed from its card. Reports through the status line
+// rather than a panel note — neither overlay is open when this is pressed.
+async function submitCardVote(dao, keep, drop) {
+    busy = true
+    render()
+    setStatus(`Refreshing your vote in ${dao.title} — check your wallet…`)
+    try {
+        await session.transact({ actions: [voteAction(dao, keep)] }, { broadcast: true })
+        await sleep(2500)
+        await loadPosition()
+        setStatus(`Vote refreshed in ${dao.title}.${drop.length
+            ? ` Dropped ${drop.map((d) => d.name).join(', ')} — no longer standing.`
+            : ''}`)
+    } catch (err) {
+        if (isUserCancel(err)) setStatus('Vote refresh cancelled.')
+        else {
+            console.error('Vote refresh failed:', err)
+            setStatus(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        render()
+    }
+}
+
+// Re-reads everything without a page load, so a connected wallet survives it.
+async function refreshAll() {
+    const btn = $('refreshBtn')
+    if (btn.disabled) return
+    btn.disabled = true
+    try {
+        stakeConfigs = new Map()
+        if (await pickEndpoint()) {
+            allocationsCache = new Map()
+            pointsCache = new Map()
+            // The three details caches too — the button says everything, and a
+            // details view that kept serving proposals read ten minutes ago
+            // while the grid behind it was current would be the one stale thing
+            // on screen.
+            candidatesCache = new Map()
+            proposalsCache = new Map()
+            workerCache = new Map()
+            await Promise.all([loadDaos(), loadSwapTargets(), loadAllocators()])
+            await loadPosition()
+
+            // Clearing those caches empties an open details view, so anything
+            // standing has to be filled again rather than left saying "reading…"
+            // with nothing on its way.
+            const open = detailsKind === 'dao' && detailsId ? daoById(detailsId) : null
+            if (open) {
+                await loadDetails(open)
+                if (detailsId === open.id) renderDetails()
+            }
+        }
+    } finally {
+        btn.disabled = false
+    }
+}
+
+$('refreshBtn').addEventListener('click', refreshAll)
+$('refreshVotesBtn').addEventListener('click', refreshGroupVotes)
+$('todoBtn').addEventListener('click', openTodo)
+$('overviewBtn').addEventListener('click', () => openOverview(group))
+
+const GROUP_TABS = [['tabSyndicates', 'syndicate'], ['tabUnions', 'union'], ['tabMsig', 'msig']]
+
+function setGroup(value) {
+    const row = GROUP_TABS.find(([, v]) => v === value)
+    if (!row) return
+    group = value
+    for (const btn of document.querySelectorAll('.switch-btn')) {
+        const on = btn.id === row[0]
+        btn.classList.toggle('is-on', on)
+        btn.setAttribute('aria-selected', String(on))
+    }
+    render()
+}
+
+for (const [id, value] of GROUP_TABS) {
+    $(id).addEventListener('click', () => setGroup(value))
+}
+
+// ── The view, in the URL ──────────────────────────────────────────────────
+//
+// F5 used to land on the syndicate grid whatever you had been reading. Every
+// view here is just a position in state — which grid, which DAO, which of its
+// tabs — so that position is written into the hash and read back on load.
+//
+// replaceState rather than assigning to location.hash: assigning pushes a
+// history entry, and a details view opened and closed twice would then take four
+// presses of Back to leave the page.
+
+// Nothing is written while the restore is still being applied — the renders that
+// happen during loading would otherwise rewrite the hash to the grid before the
+// view it names has been opened.
+let restoringView = true
+
+const GROUP_SLUG = { syndicate: 'syndicates', union: 'unions', msig: 'msig' }
+const SLUG_GROUP = { syndicates: 'syndicate', unions: 'union', msig: 'msig' }
+
+// Read ONCE, at load, before the first render can overwrite it. Declared AFTER
+// the two maps: parseViewHash reads SLUG_GROUP, and a const is in its temporal
+// dead zone until its own line runs — calling the hoisted function any earlier
+// throws.
+const wantedView = parseViewHash(location.hash)
+
+function parseViewHash(raw) {
+    const parts = String(raw ?? '').replace(/^#/, '').split('/').filter(Boolean)
+        .map((p) => { try { return decodeURIComponent(p) } catch { return p } })
+    if (!parts.length) return null
+
+    const [head, second, third] = parts
+    if (head === 'todo') return { view: 'todo' }
+    // Its own head rather than a segment under a grid: "all" would be
+    // indistinguishable from a DAO id in that slot.
+    if (head === 'proposals') return { view: 'overview', group: SLUG_GROUP[second] ?? 'syndicate' }
+    if (head === 'create') return { view: 'create', id: second ?? null }
+
+    const group = SLUG_GROUP[head]
+    if (!group) return null
+    if (!second) return { view: 'grid', group }
+    // Which kind of thing the second segment names is decided by the grid it
+    // sits under: DAO ids live under the two council grids, allocator accounts
+    // under msig. Both are bare account-shaped names, so nothing about the text
+    // itself could tell them apart.
+    return group === 'msig'
+        ? { view: 'allocator', id: second }
+        : { view: 'dao', group, id: second, tab: third ?? null }
+}
+
+function viewHash() {
+    if (createOpen) return `#create${createForm?.daoId ? `/${createForm.daoId}` : ''}`
+    if (overviewOpen) return `#proposals/${GROUP_SLUG[overviewGroup] ?? 'syndicates'}`
+    if (todoOpen) return '#todo'
+
+    // An overlay names its own grid rather than whichever one happens to be
+    // behind it — the tab can be switched while a details view is open, and a
+    // hash that recorded that would reopen the wrong kind of thing.
+    if (detailsId && detailsKind === 'allocator') return `#msig/${detailsId}`
+    if (detailsId) {
+        const slug = GROUP_SLUG[daoById(detailsId)?.group] ?? GROUP_SLUG[group] ?? 'syndicates'
+        return `#${slug}/${detailsId}/${detailsTab}`
+    }
+    return `#${GROUP_SLUG[group] ?? 'syndicates'}`
+}
+
+// A pure function of state, called from every render and every close — so no
+// caller has to remember to keep the URL in step with what it just did.
+function syncHash() {
+    if (restoringView) return
+    const next = viewHash()
+    if (location.hash !== next) history.replaceState(null, '', next)
+}
+
+// Everything that does not need a wallet. The to-do list does, so it waits for
+// the session restore and is applied separately.
+function applyView(w) {
+    if (!w) return
+    if (w.view === 'grid') return setGroup(w.group)
+
+    if (w.view === 'dao') {
+        setGroup(w.group)
+        if (daoById(w.id)) openDetails(w.id, w.tab)
+        return
+    }
+    if (w.view === 'allocator') {
+        setGroup('msig')
+        if (allocators.some((a) => a.allocator === w.id)) openAllocator(w.id)
+        return
+    }
+    // Restored empty: the form's contents are gone with the reload whatever we
+    // do, and landing back on the page you were on with blank fields is clearer
+    // than being thrown back to the grid having lost the page as well.
+    if (w.view === 'create') return openCreate({ dao: daoById(w.id) ?? undefined })
+    if (w.view === 'overview') {
+        setGroup(w.group)
+        openOverview(w.group)
+    }
+}
+
+
+// ── Every proposal in a group, on one page ────────────────────────────────
+//
+// The per-DAO tabs answer "what is waiting on this council". This answers the
+// other question — what has been happening across the whole group, newest first
+// — which no per-DAO view can, because it spans twelve scopes.
+//
+// On the unions it merges in the worker proposals from prop.worlds. They are a
+// different contract and a different state machine, so they keep their own
+// badges rather than being flattened into msig's three states; what they share
+// is a date and a council, which is what the list is ordered and grouped by.
+//
+// **On the date.** A msig proposal carries no creation timestamp. The row has
+// `earliest_exec_time`, which msigworlds sets to null on propose and only fills
+// in once the approval threshold is met — so it is absent on everything that
+// never passed — and `modified_date`, which is written at creation and then
+// moved by every approval. `modified_date` is therefore the only timestamp every
+// row has, and it means "last activity", not "created". Worker proposals do
+// carry a real `created_at`, and use it. Each cell says which it is showing.
+const overviewEl = $('overview')
+let overviewOpen = false
+let overviewGroup = 'syndicate'
+let overviewKind = 'all'      // all, msig, worker
+
+function overviewDaos(g = overviewGroup) {
+    return daos.filter((d) => d.group === g)
+}
+
+// One shape for two contracts. Only the fields the list actually sorts, groups
+// and prints are unified — everything particular to a kind stays on `row`.
+function overviewRows() {
+    const out = []
+
+    for (const dao of overviewDaos()) {
+        for (const p of proposalsCache.get(dao.id) ?? []) {
+            out.push({
+                kind: 'msig',
+                dao,
+                id: p.proposal_name,
+                title: msigTitle(p),
+                proposer: p.proposer,
+                when: Date.parse(`${p.modified_date}Z`),
+                whenIs: 'last activity — msigworlds records no creation time',
+                row: p,
+            })
+        }
+
+        const wp = workerCache.get(dao.id)
+        for (const p of wp?.props ?? []) {
+            out.push({
+                kind: 'worker',
+                dao,
+                id: p.proposal_id,
+                title: p.title,
+                proposer: p.proposer,
+                when: wpTime(p.created_at),
+                whenIs: 'created',
+                row: p,
+                wp,
+            })
+        }
+    }
+
+    const wanted = overviewKind === 'all' ? null : overviewKind
+    return out
+        .filter((r) => !wanted || r.kind === wanted)
+        // Newest first. An unparseable date sorts last rather than to the top,
+        // which is where NaN would otherwise land it.
+        .sort((a, b) => (Number.isFinite(b.when) ? b.when : -Infinity) -
+                        (Number.isFinite(a.when) ? a.when : -Infinity))
+}
+
+async function openOverview(g = group) {
+    overviewOpen = true
+    overviewGroup = g === 'msig' ? 'syndicate' : g
+    overviewKind = 'all'
+    closePanel()
+    closeDetails()
+    closeTodo()
+    renderOverview()
+
+    // Both contracts, for every DAO in the group. Each fetch is a no-op when its
+    // cache is already warm, so reopening the view costs nothing.
+    const jobs = []
+    for (const dao of overviewDaos()) {
+        const a = fetchProposals(dao)
+        if (a) jobs.push(a)
+        const b = fetchWorker(dao)
+        if (b) jobs.push(b)
+    }
+    if (jobs.length) {
+        startPhase(jobs.length)
+        await Promise.all(jobs)
+        endPhase()
+    }
+    if (overviewOpen) renderOverview()
+}
+
+function closeOverview() {
+    overviewOpen = false
+    overviewEl.hidden = true
+    document.body.classList.remove('is-details')
+    syncHash()
+}
+
+function renderOverview() {
+    if (!overviewOpen) return
+    let html
+    try {
+        html = buildOverview()
+    } catch (err) {
+        console.error('Could not render the proposal overview:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="ovBack" type="button">← All DAOs</button>
+                <div class="d-title"><h2>All proposals</h2></div>
+            </header>
+            <p class="panel-note is-error">This view could not be drawn: ${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+    overviewEl.innerHTML = html
+    overviewEl.hidden = false
+    document.body.classList.add('is-details')
+    syncHash()
+}
+
+// The state cell, drawn in the vocabulary of whichever contract the row is from.
+function overviewState(r) {
+    if (r.kind === 'worker') {
+        const state = wpEffectiveState(r.row)
+        return `<span class="wp-badge is-${WP_TONE[state] ?? 'wait'} is-inline">
+            <b>${esc(WP_LABEL[state] ?? state)}</b></span>`
+    }
+    const p = r.row
+    const expired = p.state === MSIG_OPEN && isExpired(p)
+    const label = expired ? 'expired' : STATE_LABEL[p.state] ?? `state ${p.state}`
+    const tone = expired ? 'expired' : STATE_CLASS[p.state] ?? 'open'
+    return `<span class="pill is-${esc(tone)}">${esc(label)}</span>`
+}
+
+function overviewApprovals(r) {
+    if (r.kind === 'worker') {
+        const t = wpTally(r.dao, r.row, r.wp)
+        return `<td class="num" title="${esc(`${t.yes} of ${t.need} in the ${t.round} round`)}">${
+            t.yes}<span class="app-need">/${t.need}</span></td>`
+    }
+    const need = r.dao.approvalThreshold ?? 3
+    const got = approvalCount(r.row)
+    const who = approvalsOf(r.row).map((a) => a.level?.actor).filter(Boolean).join(', ')
+    return `<td class="num ${got >= need ? 'is-enough' : ''}" title="${
+        esc(who ? `signed by ${who}` : 'nobody has signed yet')}">${
+        got}<span class="app-need">/${need}</span></td>`
+}
+
+function buildOverview() {
+    const label = overviewGroup === 'syndicate' ? 'Syndicates' : 'Unions'
+    const inGroup = overviewDaos()
+    const reading = inGroup.filter((d) =>
+        !proposalsCache.has(d.id) || (hasWorkerProposals(d) && !workerCache.has(d.id))).length
+
+    const rows = overviewRows()
+    const counts = {
+        msig: rows.filter((r) => r.kind === 'msig').length,
+        worker: rows.filter((r) => r.kind === 'worker').length,
+    }
+    const unions = overviewGroup === 'union'
+
+    return `
+    <div class="d-inner">
+        <header class="d-head">
+            <button class="btn btn-ghost" id="ovBack" type="button">← All DAOs</button>
+            <div class="d-title">
+                <h2>${esc(label)} · all proposals</h2>
+                <p class="panel-sub">${rows.length} across ${inGroup.length} councils, newest first${
+                    reading ? ` · reading ${reading} more…` : ''}</p>
+            </div>
+            <div class="switch d-switch ov-switch" role="tablist">
+                <button class="switch-btn${overviewGroup === 'syndicate' ? ' is-on' : ''}"
+                        data-ov-group="syndicate" role="tab" type="button">Syndicates</button>
+                <button class="switch-btn${overviewGroup === 'union' ? ' is-on' : ''}"
+                        data-ov-group="union" role="tab" type="button">Unions</button>
+            </div>
+        </header>
+
+        ${unions ? `
+            <div class="switch d-switch" role="tablist">
+                <button class="switch-btn${overviewKind === 'all' ? ' is-on' : ''}"
+                        data-ov-kind="all" role="tab" type="button">
+                    Everything <span class="count">${counts.msig + counts.worker}</span></button>
+                <button class="switch-btn${overviewKind === 'msig' ? ' is-on' : ''}"
+                        data-ov-kind="msig" role="tab" type="button">
+                    Council <span class="count">${counts.msig}</span></button>
+                <button class="switch-btn${overviewKind === 'worker' ? ' is-on' : ''}"
+                        data-ov-kind="worker" role="tab" type="button">
+                    Worker <span class="count">${counts.worker}</span></button>
+            </div>` : ''}
+
+        <div class="d-scroll ov-scroll">
+        <table class="d-table ov-table">
+            <thead><tr>
+                <th class="num">Date</th><th>Council</th><th>Proposal</th>
+                <th>State</th><th class="num">Approvals</th>
+            </tr></thead>
+            <tbody>
+            ${rows.map((r) => `
+                <tr class="ov-row" data-ov-dao="${esc(r.dao.id)}" data-ov-tab="${
+                    r.kind === 'worker' ? 'worker' : 'proposals'}">
+                    <td class="num ov-when" title="${esc(r.whenIs)}">${
+                        Number.isFinite(r.when) ? esc(isoDay(r.when)) : '—'}
+                        <span class="d-dim">${Number.isFinite(r.when)
+                            ? esc(`${fmtAge(Date.now() - r.when)} ago`) : ''}</span></td>
+                    <td class="ov-dao">${esc(r.dao.title)}
+                        <span class="d-dim">${r.kind === 'worker' ? 'worker' : 'council'}</span></td>
+                    <td>
+                        <b class="row-title">${esc(r.title.length > 90
+                            ? `${r.title.slice(0, 90)}…` : r.title)}</b>
+                        <span class="row-meta">
+                            <span class="who">${esc(r.proposer)}</span>
+                            ${WATCHED.has(r.proposer)
+                                ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                            <span class="row-id">${esc(r.id)}</span>
+                        </span>
+                    </td>
+                    <td>${overviewState(r)}</td>
+                    ${overviewApprovals(r)}
+                </tr>`).join('') || `<tr><td colspan="5" class="d-dim">${
+                    reading ? 'Reading…' : 'No proposals found in this group.'}</td></tr>`}
+            </tbody>
+        </table>
+        </div>
+    </div>`
+}
+
+overviewEl.addEventListener('click', (e) => {
+    if (e.target.closest('#ovBack')) return closeOverview()
+
+    const g = e.target.closest('[data-ov-group]')
+    if (g) {
+        overviewGroup = g.dataset.ovGroup
+        overviewKind = 'all'
+        return openOverview(overviewGroup)
+    }
+
+    const k = e.target.closest('[data-ov-kind]')
+    if (k) {
+        overviewKind = k.dataset.ovKind
+        return renderOverview()
+    }
+
+    // A row is a way in, not a dead end: it opens that council on the tab the
+    // proposal actually lives in.
+    const row = e.target.closest('[data-ov-dao]')
+    if (row) {
+        closeOverview()
+        setGroup(overviewGroup)
+        return openDetails(row.dataset.ovDao, row.dataset.ovTab)
+    }
+})
+
+// ── Theme ─────────────────────────────────────────────────────────────────
+//
+// The attribute is already on <html> — an inline script in the head puts it
+// there before the first paint. This only has to keep the buttons in step with
+// it and write the viewer's choice down.
+//
+// "System" is a choice like the other two, so it is remembered as one: it takes
+// the attribute off and lets prefers-color-scheme decide.
+const THEME_KEY = 'daomanager.theme'
+
+function currentTheme() {
+    return document.documentElement.dataset.theme ?? 'system'
+}
+
+function setTheme(next) {
+    if (next === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = next
+    try { localStorage.setItem(THEME_KEY, next) } catch { /* private window */ }
+    paintThemeSwitch()
+}
+
+function paintThemeSwitch() {
+    const now = currentTheme()
+    for (const btn of document.querySelectorAll('[data-theme-set]')) {
+        btn.setAttribute('aria-pressed', String(btn.dataset.themeSet === now))
+    }
+}
+
+$('themeSwitch').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-theme-set]')
+    if (btn) setTheme(btn.dataset.themeSet)
+})
+
+paintThemeSwitch()
+
+setWalletChrome()
+
+// One interval for every clock on the page. Started before the first read so a
+// countdown painted by any render begins moving immediately.
+setInterval(tickCountdowns, 1000)
+
+// Named, so the retry button can run it again instead of asking for a reload.
+async function boot() {
+    if (!await pickEndpoint()) return
+
+    // The councils do not depend on who you are, so the restore runs alongside
+    // them rather than delaying the page behind a wallet.
+    const restoring = restoreSession()
+    const targets = loadSwapTargets()
+    const alloc = loadAllocators()
+    await loadDaos()
+    await targets
+    await alloc
+
+    // Everything the hash can name except the to-do list is openable now.
+    applyView(wantedView)
+
+    // The councils render as soon as they are read; if a session was restored
+    // alongside them, the holdings land in a second pass rather than holding
+    // the page back.
+    await restoring
+
+    // The to-do list is built from the councils this account sits on, so it
+    // could not be opened until the session came back.
+    if (wantedView?.view === 'todo' && session) openTodo()
+
+    // From here the URL follows the view. Done after the restore so the renders
+    // above cannot overwrite the hash with the grid they drew on the way past.
+    restoringView = false
+    syncHash()
+
+    await loadPosition()
+}
+
+boot()

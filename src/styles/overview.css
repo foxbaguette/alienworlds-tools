@@ -1,0 +1,331 @@
+/* Overview: headline tiles, then charts in a grid, then the table. */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--sp-3);
+}
+
+.tile {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  padding: var(--sp-4) var(--sp-5);
+}
+.tile__label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-2);
+}
+.tile__value {
+  font-size: var(--fs-2xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+.tile__change {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-2);
+}
+.tile__change.is-up {
+  color: var(--good);
+}
+.tile__change.is-down {
+  color: var(--critical);
+}
+.tile__against {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.tile__sub {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+.charts--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 1099px) {
+  .charts--3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 759px) {
+  .charts,
+  .charts--3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- daily chart ---------- */
+
+.dchart {
+  display: grid;
+  gap: var(--sp-2);
+}
+.dchart__plot {
+  position: relative;
+  width: 100%;
+  touch-action: pan-y;
+}
+.dchart__grid {
+  stroke: var(--grid);
+}
+.dchart__tick {
+  font-size: 11px;
+  fill: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.dchart__hover {
+  fill: var(--text);
+  opacity: 0.05;
+}
+.dchart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.dchart__legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dchart__swatch {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+.dchart__tip {
+  position: absolute;
+  top: 4px;
+  display: grid;
+  gap: 2px;
+  min-width: 120px;
+  padding: 8px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.dchart__tip strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.dchart__tip span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dchart__tip b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dchart__tip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* A phone: two tiles to a row, the figure a size smaller so it still fits. */
+@media (max-width: 519px) {
+  .tiles {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-2);
+  }
+  .tile {
+    padding: var(--sp-3);
+  }
+  .tile__value {
+    font-size: var(--fs-xl);
+  }
+}
+
+/* ---------- stats list ---------- */
+
+.stattable__group th {
+  padding-top: var(--sp-4);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--surface);
+  position: static;
+}
+.stattable tr.is-selected td {
+  background: var(--accent-soft);
+}
+.stattable tr.is-selected .linkish {
+  font-weight: 600;
+}
+.stattable .up {
+  color: var(--good);
+}
+.stattable .down {
+  color: var(--critical);
+}
+
+/* A row's name is the way into it: a button that reads as a link. */
+.linkish {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.linkish:hover {
+  text-decoration: underline;
+}
+
+/* ---------- choosing a player ---------- */
+
+.playerpick {
+  display: flex;
+}
+
+.ppick {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  max-width: 460px;
+}
+.ppick__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ppick--chosen {
+  max-width: none;
+  width: auto;
+  padding: 6px 6px 6px 14px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.ppick--chosen .btn {
+  min-height: 32px;
+}
+
+.ppick__who {
+  display: grid;
+  min-width: 0;
+  margin-right: var(--sp-2);
+  line-height: 1.3;
+}
+.ppick__who strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.ppick__who .mono {
+  font-size: var(--fs-xs);
+}
+
+.ppick__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+.ppick__head,
+.ppick__more {
+  padding: 4px var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.ppick__list {
+  list-style: none;
+}
+.ppick__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 7px var(--sp-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.ppick__list li.is-active {
+  background: var(--accent-soft);
+}
+.ppick__hint {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A tile that opens more detail: it is a button, and says so. */
+.tile--action {
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.tile--action:hover {
+  border-color: var(--accent);
+}
+.tile--action[aria-expanded='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.tile__action {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.recipients {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+}
+.recipients__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.recipients__sum {
+  margin: 2px 0 0;
+  font-size: var(--fs-sm);
+}
+.recipients__toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+.recipients__more {
+  justify-self: start;
+}
+.recipients td.is-down {
+  color: var(--critical);
+}

@@ -1,0 +1,566 @@
+/*
+ * Reward pools.
+ *
+ * The overview is a grid of pool cards, each a button into that pool; a pool
+ * is a stack of cards — totals, where the money went, the balance line, the
+ * hourly bars, who received it, the latest few.
+ */
+
+.pstats {
+  /* The four kinds of outflow, in the palette's fixed order. */
+  --kind-mine: var(--series-1);
+  --kind-landowner: var(--series-2);
+  --kind-escrow: var(--series-3);
+  --kind-claim: var(--series-4);
+}
+
+.pstats__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.pstats__loading,
+.pstats__chartwait {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-2);
+}
+.pstats__chartwait {
+  justify-content: center;
+  height: 260px;
+}
+
+/* ---------- totals ---------- */
+
+.pstats__totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--sp-3);
+}
+
+.ptotal {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.ptotal img {
+  grid-row: span 2;
+  width: 28px;
+  height: 28px;
+}
+.ptotal strong {
+  font-size: var(--fs-xl);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.ptotal span {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.ptotal small {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.ptotal:not(:has(img)) {
+  grid-template-columns: 1fr;
+}
+
+/* ---------- pool cards ---------- */
+
+.pstats__group {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.pstats__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: var(--sp-3);
+}
+
+.pcard {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.pcard:hover {
+  border-color: var(--accent);
+}
+
+.pcard__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.pcard__head img {
+  width: 22px;
+  height: 22px;
+}
+.pcard__head div {
+  display: grid;
+  min-width: 0;
+}
+.pcard__name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.pcard__id {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.pcard__paid {
+  display: grid;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.pcard__paid strong {
+  font-size: var(--fs-xl);
+  font-weight: 650;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.pcard__meta {
+  display: flex;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.pcard__spark {
+  display: grid;
+  align-items: center;
+  min-height: 48px;
+}
+.pcard__sparkwait {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.pcard__balance {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.pcard__balance strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pstats__foot,
+.pstats__note {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+/* ---------- panels ---------- */
+
+.pstats__panel {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.pstats__panelhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.pstats__axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+/* ---------- balance chart (LineChart) ---------- */
+
+.lchart {
+  position: relative;
+  width: 100%;
+  touch-action: pan-y;
+}
+.lchart svg {
+  display: block;
+}
+.lchart__grid {
+  stroke: var(--grid);
+}
+.lchart__tick {
+  font-size: 11px;
+  fill: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.lchart__cross {
+  stroke: var(--border-strong);
+  stroke-dasharray: 3 3;
+}
+.lchart__tip {
+  position: absolute;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  text-align: center;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.lchart__tip strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.barstrip {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.barstrip__bar {
+  flex: 1;
+  min-width: 0;
+  border-radius: 3px 3px 0 0;
+}
+
+/* ---------- where it went ---------- */
+
+.kindbar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  overflow: hidden;
+  background: var(--surface-sunk);
+  border-radius: var(--radius-full);
+}
+.kindbar__seg {
+  height: 100%;
+}
+.kindbar__seg--mine { background: var(--kind-mine); }
+.kindbar__seg--landowner { background: var(--kind-landowner); }
+.kindbar__seg--escrow { background: var(--kind-escrow); }
+.kindbar__seg--claim { background: var(--kind-claim); }
+
+.kinddot {
+  display: inline-block;
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.kinddot--mine { background: var(--kind-mine); }
+.kinddot--landowner { background: var(--kind-landowner); }
+.kinddot--escrow { background: var(--kind-escrow); }
+.kinddot--claim { background: var(--kind-claim); }
+.kinddot--claimed {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+
+.kindlist {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.kindlist li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.kindlist strong {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.kindlist__aside {
+  color: var(--text-3);
+}
+
+.kindlegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.kindlegend li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Text stays in text colours; the dot beside it carries the kind. */
+.kindtag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: var(--sp-2);
+  padding: 1px 7px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-2);
+  vertical-align: 1px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+}
+.kindtag::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--kind-mine);
+}
+.kindtag--landowner::before { background: var(--kind-landowner); }
+.kindtag--escrow::before { background: var(--kind-escrow); }
+.kindtag--claim::before { background: var(--kind-claim); }
+
+/* ---------- players ---------- */
+
+.ptable {
+  display: grid;
+}
+.ptable__row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1.8fr) 1fr 1.2fr 0.7fr 0.9fr;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: 9px var(--sp-3);
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--border);
+}
+.ptable__row:hover:not(.ptable__row--head) {
+  background: var(--surface-sunk);
+}
+.ptable__row--head {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.ptable__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ptable__rank {
+  color: var(--text-3);
+}
+.ptable__who {
+  display: grid;
+  min-width: 0;
+}
+.ptable__who strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.ptable__who .mono {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.ptable__share {
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ptable__sharebar {
+  height: 6px;
+  background: var(--surface-sunk);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.ptable__sharebar span {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+}
+.ptable .btn {
+  margin-top: var(--sp-3);
+}
+
+.plog {
+  display: grid;
+  list-style: none;
+}
+.plog li {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: var(--sp-3);
+  padding: 7px var(--sp-3);
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--border);
+}
+.plog li:last-child {
+  border-bottom: 0;
+}
+.plog .mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- phone ---------- */
+
+@media (max-width: 719px) {
+  .pstats__totals {
+    grid-template-columns: 1fr 1fr;
+  }
+  .ptotal {
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .ptotal strong {
+    font-size: var(--fs-lg);
+  }
+  .pstats__panel {
+    padding: var(--sp-4);
+  }
+  /* Rank, player, amount, share — payments and last time drop off. */
+  .ptable__row {
+    grid-template-columns: 26px minmax(0, 1fr) auto 60px;
+    gap: var(--sp-2);
+  }
+  .ptable__row > :nth-child(5),
+  .ptable__row > :nth-child(6) {
+    display: none;
+  }
+  .ptable__share {
+    grid-template-columns: 1fr;
+  }
+  .ptable__sharebar {
+    display: none;
+  }
+}
+
+/* ---------- players paid ---------- */
+
+.ptotal--link {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.ptotal--link:hover {
+  border-color: var(--accent);
+}
+.ptotal .ptotal__more {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.pstats__toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.input {
+  min-width: 240px;
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.input::placeholder {
+  color: var(--text-3);
+}
+
+/* Sortable headings are buttons, so they work from the keyboard too. */
+.table--sortable th {
+  padding: 0;
+}
+.table--sortable th button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 9px var(--sp-3);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: inherit;
+  text-align: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.table--sortable th.r button {
+  justify-content: flex-end;
+}
+.table--sortable th[aria-sort='ascending'],
+.table--sortable th[aria-sort='descending'] {
+  color: var(--text);
+}
+.table--sortable th button:hover {
+  color: var(--text);
+}
+.sortmark {
+  min-width: 10px;
+  font-size: 9px;
+}
+
+.pwho {
+  display: grid;
+  line-height: 1.3;
+}
+.pwho strong {
+  font-weight: 600;
+}
+.pwho span {
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 719px) {
+  .input {
+    min-width: 0;
+    width: 100%;
+  }
+}

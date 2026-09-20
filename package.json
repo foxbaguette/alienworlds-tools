@@ -1,0 +1,29 @@
+{
+  "name": "alienworlds-tools",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Stats for Alien Legends and tools for the Alien Worlds DAOs, read straight from the WAX chain.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vitest run && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest",
+    "collect": "vite build --ssr scripts/collect.ts --outDir .ssr --logLevel error && node .ssr/collect.js"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
+  }
+}

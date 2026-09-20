@@ -1,0 +1,112 @@
+/*
+ * ALE Stats design tokens.
+ *
+ * A work dashboard, not the game: neutral surfaces, one accent, and type
+ * sized to be read at a glance. Readability first — body text 15px, figures
+ * large and tabular, every colour checked against its surface.
+ *
+ * Series colours are the validated reference palette's first slots, in its
+ * fixed order (blue, orange, aqua, yellow), with separate steps chosen for
+ * the dark surface rather than an automatic flip.
+ *
+ * Dark mode follows the operating system unless the viewer has picked one:
+ * the toggle stamps data-theme on <html>, which wins both ways.
+ */
+
+:root {
+  color-scheme: light;
+
+  --bg: #f4f4f2;
+  --surface: #fcfcfb;
+  --surface-sunk: #f0efec;
+  --border: #e2e1dc;
+  --border-strong: #cfcec8;
+
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --text-3: #6f6e69;
+
+  --accent: #2a78d6;
+  --accent-soft: #e5effb;
+  --focus: #2a78d6;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+
+  --good: #0a7f0a;
+  --critical: #c53030;
+
+  --grid: #e9e8e4;
+  --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 1px 3px rgb(0 0 0 / 4%);
+
+  --font: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 22px;
+  --fs-2xl: 28px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-full: 9999px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    color-scheme: dark;
+    --bg: #121211;
+    --surface: #1a1a19;
+    --surface-sunk: #222220;
+    --border: #2f2f2c;
+    --border-strong: #42423e;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --text-3: #9d9c93;
+    --accent: #3987e5;
+    --accent-soft: #1d2a3b;
+    --focus: #5598e7;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --good: #3cb43c;
+    --critical: #e66767;
+    --grid: #262624;
+    --shadow: none;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #121211;
+  --surface: #1a1a19;
+  --surface-sunk: #222220;
+  --border: #2f2f2c;
+  --border-strong: #42423e;
+  --text: #ffffff;
+  --text-2: #c3c2b7;
+  --text-3: #9d9c93;
+  --accent: #3987e5;
+  --accent-soft: #1d2a3b;
+  --focus: #5598e7;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --good: #3cb43c;
+  --critical: #e66767;
+  --grid: #262624;
+  --shadow: none;
+}
