@@ -5,8 +5,10 @@ import {
   GROUPS,
   KIND_LABEL,
   KIND_TONE,
+  councilOf,
   ensureWeights,
   fetchActivity,
+  resolveElections,
   fmtDelay,
   fmtTokens,
   weightOf,
@@ -15,17 +17,31 @@ import {
   type Activity as Row,
   type Flip,
 } from '../chain/activity'
-import {
-  fetchStandings,
-  glanceAll,
-  type Standing,
-  type Standings as StandingsData,
-} from '../chain/standings'
+import { fetchStandings, type Standing, type Standings as StandingsData } from '../chain/standings'
+import { Countdown } from '../components/Countdown'
 import { McTag } from '../components/Tags'
 import { EXPLORER } from '../format'
-import { daoById, useDaos } from '../useDaos'
+import { daoById, refreshDaos, useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
-import type { Dao } from '../chain/daos'
+import { castableSlate, voteAction } from '../chain/votes'
+import { isCancel, readableError, type ChainAction } from '../chain/act'
+import { useVotes } from '../useVotes'
+import { useSession } from '../../wallet/session'
+import type { Dao, DaoGroup } from '../chain/daos'
+
+/**
+ * What to call a council: the planet, and nothing else.
+ *
+ * Every DAO here belongs to one of six planets and is either its syndicate or
+ * its union, so the titles run "Eyeke", "Eyeke Union", "Kavian"… — twelve
+ * entries where six words and a heading say the same thing. The group is the
+ * heading; this is the name under it.
+ */
+const planetOf = (d: Dao) => d.title.replace(/\s+Union$/i, '')
+const GROUPS_OF_DAO: { key: DaoGroup; label: string }[] = [
+  { key: 'syndicate', label: 'Syndicates' },
+  { key: 'union', label: 'Unions' },
+]
 
 /**
  * One feed for everything that moves a council: tokens changing hands, slates
@@ -40,10 +56,13 @@ import type { Dao } from '../chain/daos'
  * and the queue drains, so six transfers landing in one block read as six
  * things happening rather than as the page redrawing.
  *
- * Two days rather than an hour: real exchanges run at a few an hour and delay
- * changes at a few a MONTH, so a short window is an empty page.
+ * A week rather than an hour: exchanges run at a few an hour, elections at a
+ * few a week and delay changes at a few a MONTH, so a short window is an empty
+ * page. Only the transfer stream is busy enough to need paging for it.
  */
-const WINDOW_MS = 48 * 60 * 60 * 1000
+const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+/** Pages of the transfer stream on the opening sweep — about 500 a day. */
+const FIRST_PAGES = 5
 const POLL_MS = 8_000
 const OVERLAP_MS = 60_000
 const MIN_GAP_MS = 130
@@ -54,6 +73,7 @@ type Group = keyof typeof GROUPS
 const GROUP_LABEL: Record<Group, string> = {
   exchanges: 'Exchanges',
   votes: 'Votes',
+  elections: 'Elections',
   delays: 'Unstake delays',
   payouts: 'Reward payouts',
 }
@@ -67,17 +87,28 @@ export default function Activity() {
   /* ONE control for the page: it chooses which council the standings are for
      AND what the feed is filtered to. They were two, and switching twice to
      look at one council is not a thing anybody wants to do. */
-    const [symbol, setSymbol] = useState('all')
+  const [symbol, setSymbol] = useState('')
   /* Payouts off by default: they are most of the volume and none of the point. */
-  const [groups, setGroups] = useState<Set<Group>>(new Set(['exchanges', 'votes', 'delays']))
+  const [groups, setGroups] = useState<Set<Group>>(new Set(['exchanges', 'votes', 'elections', 'delays']))
   const [bigOnly, setBigOnly] = useState(false)
   const [, redraw] = useState(0)
+
+  /* This page is also where a vote is kept alive. Vote power halves every
+     thirty days of vote AGE, so a slate left alone quietly sinks down the
+     standings the page is showing — re-casting the same names resets that
+     clock, and the button for it belongs next to the ranking it moves. */
+  const { votes, refresh: refreshVotes } = useVotes(daos)
+  const { session } = useSession()
+  const [signing, setSigning] = useState(false)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
 
   const held = useRef(new Map<string, Row>())
   const queue = useRef<Row[]>([])
   const [queued, setQueued] = useState(0)
   const fresh = useRef(new Set<string>())
   const newest = useRef(0)
+  /** Elections already acted on, so one is not re-read every eight seconds. */
+  const seenElections = useRef(new Set<string>())
 
   const publish = () => {
     const cutoff = Date.now() - WINDOW_MS
@@ -93,7 +124,22 @@ export default function Activity() {
     const tick = async () => {
       try {
         const since = newest.current ? newest.current - OVERLAP_MS : Date.now() - WINDOW_MS
-        const got = await fetchActivity(since, newest.current ? 100 : 800)
+        const got = await fetchActivity(since, newest.current ? 100 : 1000, newest.current ? 1 : FIRST_PAGES)
+        /* An election says which DAC, not who won; that takes a second read.
+           Done before the rows are published so a gold row never appears with
+           its council missing and then fills in underneath the reader. */
+        await resolveElections(got)
+
+        /* An election makes the directory stale in the two ways this page
+           shows: the countdown it carries has just run out, and the seated
+           custodians are the previous period's. Re-read it, once per election
+           rather than once per poll — the row keys are what remember. */
+        const fresh = got.filter((e) => e.kind === 'election' && !seenElections.current.has(e.key))
+        if (fresh.length) {
+          for (const e of fresh) seenElections.current.add(e.key)
+          /* Not on the opening sweep: the directory was just loaded. */
+          if (newest.current) void refreshDaos()
+        }
         if (!alive) return
         setError(null)
         setLastAt(Date.now())
@@ -161,7 +207,67 @@ export default function Activity() {
     return out
   }, [daos])
 
-  const picked = symbol === 'all' ? null : (daos.find((d) => d.symbol === symbol) ?? null)
+  const picked = daos.find((d) => d.symbol === symbol) ?? null
+
+  /* The directory lands after the first render, so the page cannot open on a
+     council — it takes the first one there is as soon as there is one. There
+     is no everything option: one switch drives both halves of this page, and
+     standings for "all councils" is a different table answering a different
+     question. */
+  useEffect(() => {
+    if (!symbol && daos.length) {
+      setSymbol((daos.find((d) => d.group === 'syndicate') ?? daos[0]).symbol)
+    }
+  }, [daos, symbol])
+
+  /** The slate held here, trimmed of anyone who has stopped standing. */
+  const slate = picked ? castableSlate(picked, votes) : null
+  /** Who this wallet votes for, anywhere — enough to mark a name in the feed. */
+  const votedAnywhere = useMemo(() => {
+    const out = new Set<string>()
+    for (const v of votes.values()) for (const n of v.candidates) out.add(n)
+    return out
+  }, [votes])
+
+  /**
+   * Re-cast the slate held in the picked council.
+   *
+   * One council rather than the whole group, because this page is about one
+   * council — the group sweep lives on the Syndicates and Unions pages. Names
+   * who have withdrawn come off first: the contract refuses the whole
+   * transaction over one of them, and an empty slate is how `votecust`
+   * DELETES a vote, so nothing is sent when there is nothing left to keep.
+   */
+  const refreshVote = async () => {
+    if (!session || !picked || !slate?.keep.length || signing) return
+    setSigning(true)
+    setNote({ text: `Re-casting your ${picked.title} vote — check your wallet…` })
+    try {
+      const actions: ChainAction[] = [voteAction(session, picked, slate.keep)]
+      await session.transact({ actions }, { broadcast: true })
+      await new Promise((r) => setTimeout(r, 2500))
+      await refreshVotes()
+      await refreshDaos()
+      setNote({
+        text: [
+          `Re-cast your vote in ${picked.title}. Its age is back to zero, so it counts in full again.`,
+          slate.drop.length
+            ? `Dropped ${slate.drop.map((d) => d.name).join(' and ')} — ${slate.drop[0].why}.`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error('Vote refresh failed:', err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setSigning(false)
+    }
+  }
 
   /** The DAC a row is about, which a transfer only says through its symbol. */
   const daoOf = (r: Row): Dao | undefined =>
@@ -180,11 +286,14 @@ export default function Activity() {
          second read per row — and they are rare enough that it is not worth
          holding the feed up for. */
       if (dao && r.kind === 'vote' && power) flip = wouldFlip(dao, r.votes ?? [], power)
+      const council = r.council ?? councilOf(r.trx)
       const big =
         (r.amount != null && r.amount >= BIG_AMOUNT) || (r.kind === 'vote' && (power ?? 0) >= BIG_POWER)
-      return { r, dao, power, flip, big: big || !!flip }
+      /* An election is always worth seeing, whatever the filters say about
+         size — it is the thing every other row was leading up to. */
+      return { r, dao, power, flip, council, big: big || !!flip || r.kind === 'election' }
     })
-    .filter((e) => (symbol === 'all' || (e.dao?.symbol ?? e.r.symbol) === symbol) && (!bigOnly || e.big))
+    .filter((e) => (e.dao?.symbol ?? e.r.symbol) === symbol && (!bigOnly || e.big))
 
   const flips = enriched.filter((e) => e.flip).length
   const bigs = enriched.filter((e) => e.big).length
@@ -206,6 +315,11 @@ export default function Activity() {
           candidate
         </span>
       ) : null}
+      {votedAnywhere.has(name) ? (
+        <span className="tag tag--vote" title="You are voting for this candidate">
+          &#9733; your vote
+        </span>
+      ) : null}
       <McTag name={name} />
     </>
   )
@@ -216,10 +330,10 @@ export default function Activity() {
         <div>
           <h1 className="page__title">Live activity</h1>
           <p className="page__lead">
-            Everything that moves a council, over the last two days: tokens changing hands, slates being cast, and
-            unstake delays being changed. Vote power is stake times a delay multiplier, so all three are the same
-            subject. Exchanges over {BIG_AMOUNT.toLocaleString('en-US')} and votes over{' '}
-            {BIG_POWER.toLocaleString('en-US')} are marked.
+            Everything that moves a council, over the last week: elections, tokens changing hands, slates being
+            cast, and unstake delays being changed. Vote power is stake times a delay multiplier, so those three
+            are one subject — and an election is what they were all leading to. Exchanges over{' '}
+            {BIG_AMOUNT.toLocaleString('en-US')} and votes over {BIG_POWER.toLocaleString('en-US')} are marked.
           </p>
         </div>
         <div className="page__actions">
@@ -227,51 +341,86 @@ export default function Activity() {
           <button className="btn" type="button" onClick={() => setLive((v) => !v)}>
             {live ? 'Pause' : 'Resume'}
           </button>
+          {session && picked ? (
+            <button
+              className={`btn${slate?.drop.length ? ' btn--warn' : ''}`}
+              type="button"
+              onClick={() => void refreshVote()}
+              disabled={signing || !slate?.keep.length}
+              title={
+                slate?.keep.length
+                  ? [
+                      `Re-cast ${slate.keep.join(', ')} in ${picked.title} so the vote counts at full weight again.`,
+                      slate.drop.length
+                        ? `${slate.drop.map((d) => d.name).join(' and ')} would be dropped — ${slate.drop[0].why}.`
+                        : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')
+                  : slate?.slate.length
+                    ? `Every candidate you voted for in ${picked.title} has gone. That needs a new pick, not a refresh.`
+                    : `No vote cast in ${picked.title} yet`
+              }
+            >
+              {signing ? 'Signing…' : `Refresh vote · ${picked.symbol}`}
+            </button>
+          ) : null}
           <RefreshButton />
         </div>
       </header>
 
+      {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
+
       {/*
-        * Thirteen councils. On a wide screen that is a strip you can see all
-        * of; on a phone it was a sideways scroller with nothing to say it
-        * scrolled, so ten of the thirteen were simply invisible. The same
-        * choice is a dropdown there — which is what a phone does well, and
-        * what every app of this kind uses for a list this long. CSS picks
-        * one; they drive the same state.
+        * Twelve councils, which is two rows of six once they are grouped —
+        * every planet has a syndicate and a union, so the planet name is the
+        * only part that differs inside a row and the heading carries the rest.
+        * On a phone that is still a sideways scroller with nothing to say it
+        * scrolls, so the same choice is a grouped dropdown there, which is
+        * what a phone does well and what every app of this kind uses.
         */}
-      <div className="page__actions act-pick">
-        <div className="sections act-pick__strip" role="tablist">
-          <button type="button" role="tab" aria-selected={symbol === 'all'} onClick={() => setSymbol('all')}>
-            Every council
-          </button>
-          {daos.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              role="tab"
-              aria-selected={symbol === d.symbol}
-              title={d.title}
-              onClick={() => setSymbol(d.symbol)}
-            >
-              {d.symbol}
-            </button>
-          ))}
-        </div>
+      <div className="act-pick">
+        {GROUPS_OF_DAO.map(({ key, label }) => (
+          <div key={key} className="act-pick__row">
+            <span className="act-pick__label">{label}</span>
+            <div className="sections act-pick__strip" role="tablist" aria-label={label}>
+              {daos
+                .filter((d) => d.group === key)
+                .map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={symbol === d.symbol}
+                    title={`${d.title} · ${d.symbol}`}
+                    onClick={() => setSymbol(d.symbol)}
+                  >
+                    {planetOf(d)}
+                  </button>
+                ))}
+            </div>
+          </div>
+        ))}
 
         <label className="act-pick__select">
           <span className="sr-only">Council</span>
           <select value={symbol} onChange={(e) => setSymbol(e.target.value)}>
-            <option value="all">Every council</option>
-            {daos.map((d) => (
-              <option key={d.id} value={d.symbol}>
-                {d.title} · {d.symbol}
-              </option>
+            {GROUPS_OF_DAO.map(({ key, label }) => (
+              <optgroup key={key} label={label}>
+                {daos
+                  .filter((d) => d.group === key)
+                  .map((d) => (
+                    <option key={d.id} value={d.symbol}>
+                      {planetOf(d)} · {d.symbol}
+                    </option>
+                  ))}
+              </optgroup>
             ))}
           </select>
         </label>
       </div>
 
-      <Standings daos={daos} dao={picked} onPick={setSymbol} />
+      <Standings daos={daos} dao={picked} votedFor={new Set(slate?.slate ?? [])} />
 
       <section className="section">
         <div className="page__actions">
@@ -298,7 +447,7 @@ export default function Activity() {
         </h2>
 
         <ul className="feed">
-          {enriched.map(({ r, dao, power, flip, big }) => (
+          {enriched.map(({ r, dao, power, flip, council, big }) => (
             <li
               key={r.key}
               className={
@@ -313,7 +462,23 @@ export default function Activity() {
                 <Account name={r.actor} />
               </span>
               <span className="feed__what">
-                {r.kind === 'vote' ? (
+                {r.kind === 'election' ? (
+                  <>
+                    <b className="xch-election">Election in {dao?.title ?? r.dacId}</b>
+                    {council?.length ? (
+                      <span className="xch-council">
+                        <i>New council</i>
+                        {council.map((n) => (
+                          <span key={n}>
+                            <Account name={n} />
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className="dao-dim"> — reading who was seated…</span>
+                    )}
+                  </>
+                ) : r.kind === 'vote' ? (
                   <>
                     {/* A vote with nothing staked behind it is legal and
                         counts for nothing, which is worth saying outright
@@ -358,7 +523,9 @@ export default function Activity() {
                     Without this vote, {flip.in} would take {flip.out}&rsquo;s seat
                   </i>
                 ) : null}
-                {r.memo ? <i className="xch-memo">{r.memo}</i> : null}
+                {/* An election's memo is the scheduler's greeting, the same
+                    sentence every time. */}
+                {r.memo && r.kind !== 'election' ? <i className="xch-memo">{r.memo}</i> : null}
               </span>
             </li>
           ))}
@@ -369,7 +536,7 @@ export default function Activity() {
                   ? 'The history indexers are not answering.'
                   : !rows.length
                     ? 'Reading…'
-                    : 'Nothing matches those filters in the last two days.'}
+                    : 'Nothing matches those filters in the last week.'}
               </span>
             </li>
           ) : null}
@@ -382,21 +549,28 @@ export default function Activity() {
 /**
  * Who would take the seats if a period ran now.
  *
- * Follows the page's council rather than holding a selector of its own. With
- * one picked it costs a handful of reads — balances, stakes, delays — and shows
- * them; with none picked it shows every council instead, which costs nothing at
- * all, because the ranks arrive with the directory and the seating order is a
- * sort of what is already in hand.
+ * Follows the page's council rather than holding a selector of its own, and
+ * costs a handful of reads — balances, stakes, delays — for the one that is
+ * picked.
+ *
+ * Five seats and the first miss by default, which is the whole question of an
+ * election. Everyone else is read at the same time and kept behind a toggle:
+ * the rest of the field matters perhaps once a period, and putting thirty
+ * rows above the feed to serve that would bury the feed.
  */
-function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick: (symbol: string) => void }) {
+function Standings({ daos, dao, votedFor }: { daos: Dao[]; dao: Dao | null; votedFor: Set<string> }) {
   const [data, setData] = useState<StandingsData | null>(null)
   const [reading, setReading] = useState(false)
+  const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
     if (!dao) return setData(null)
     let alive = true
     setReading(true)
     setData(null)
+    /* A different council is a different field; it should not open expanded
+       because the last one was. */
+    setShowAll(false)
     void fetchStandings(dao)
       .then((s) => {
         if (!alive) return
@@ -412,14 +586,23 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
     }
   }, [dao?.id, dao?.candidates.length])
 
-  if (!daos.length) return null
-  if (!dao) return <AllCouncils daos={daos} onPick={onPick} />
+  if (!daos.length || !dao) return null
+
+  const rest = data?.rest ?? []
 
   return (
     <section className="section">
-      <h2 className="dao-h2">
-        Would be elected <span className="dao-dim">{dao.title}</span>
-      </h2>
+      <div className="page__actions">
+        <h2 className="dao-h2">
+          Would be elected <span className="dao-dim">{dao.title}</span>
+        </h2>
+        {/* What the standings above are a prediction FOR. It keeps its own
+            second-by-second clock; the date behind it comes back from the
+            directory, which an election re-reads. */}
+        <span className="stand-when">
+          Next election <Countdown due={dao.nextElection} periodLength={dao.periodLength} />
+        </span>
+      </div>
 
       <div className="dao-tablewrap cardwrap">
         <table className="dao-table stand-table cardtable">
@@ -435,11 +618,30 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
           </thead>
           <tbody>
             {(data?.elected ?? []).map((c, i) => (
-              <StandingRow key={c.name} c={c} place={i + 1} dao={dao} />
+              <StandingRow key={c.name} c={c} place={i + 1} dao={dao} votedFor={votedFor} />
             ))}
             {data?.next ? (
-              <StandingRow c={data.next} place={data.seats + 1} dao={dao} missed margin={data.margin} />
+              <StandingRow
+                c={data.next}
+                place={data.seats + 1}
+                dao={dao}
+                votedFor={votedFor}
+                missed
+                margin={data.margin}
+              />
             ) : null}
+            {showAll
+              ? rest.map((c, i) => (
+                  <StandingRow
+                    key={c.name}
+                    c={c}
+                    place={(data?.seats ?? 5) + 2 + i}
+                    dao={dao}
+                    votedFor={votedFor}
+                    missed
+                  />
+                ))
+              : null}
             {!data ? (
               <tr>
                 <td colSpan={6} className="dao-dim">
@@ -450,6 +652,14 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
           </tbody>
         </table>
       </div>
+
+      {rest.length ? (
+        <button className="btn stand-more" type="button" onClick={() => setShowAll((v) => !v)}>
+          {showAll
+            ? 'Show the seats only'
+            : `Show the other ${rest.length} candidate${rest.length === 1 ? '' : 's'}`}
+        </button>
+      ) : null}
 
       {data ? (
         <p className="dao-dim">
@@ -468,95 +678,19 @@ function Standings({ daos, dao, onPick }: { daos: Dao[]; dao: Dao | null; onPick
   )
 }
 
-/**
- * Every council at once, when none is picked.
- *
- * The question it answers is which one to look INTO: a council whose last seat
- * is held by a hair is where the next vote matters, and a council whose
- * standing no longer matches its custodians is already mid-change. Both come
- * out of the directory, so this costs no reads and a row opens the detail.
- */
-function AllCouncils({ daos, onPick }: { daos: Dao[]; onPick: (symbol: string) => void }) {
-  const rows = useMemo(() => glanceAll(daos), [daos])
-
-  return (
-    <section className="section">
-      <h2 className="dao-h2">
-        Would be elected <span className="dao-dim">every council — pick one above for the detail</span>
-      </h2>
-
-      <div className="dao-tablewrap cardwrap">
-        <table className="dao-table stand-table cardtable">
-          <thead>
-            <tr>
-              <th>Council</th>
-              <th className="num">Seats</th>
-              <th>Would be elected</th>
-              <th className="num">Last seat holds by</th>
-              <th>Changes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((g) => (
-              <tr key={g.dao.id} className="is-clickable" onClick={() => onPick(g.dao.symbol)}>
-                <td className="cardtable__head">
-                  <b className="dao-rowtitle">{g.dao.title}</b>
-                  <span className="dao-rowmeta">
-                    <span className="dao-rowid">{g.dao.symbol}</span>
-                  </span>
-                </td>
-                <td className="num" data-label="Seats">
-                  {g.seats}
-                </td>
-                <td className="stand-names" data-label="Would be elected">
-                  {g.elected.map((n) => (
-                    <span key={n} className={g.incoming.includes(n) ? 'is-incoming' : undefined}>
-                      {n}
-                      <McTag name={n} />
-                    </span>
-                  ))}
-                </td>
-                <td
-                  className="num"
-                  data-label="Last seat holds by"
-                  title={g.next ? `${g.next} is next in line` : 'Nobody else is standing'}
-                >
-                  {g.next ? fmtTokens(g.margin) : <span className="dao-dim">unopposed</span>}
-                  {g.next ? <span className="dao-dim">over {g.next}</span> : null}
-                </td>
-                <td data-label="Changes">
-                  {g.incoming.length || g.leaving.length ? (
-                    <span className="tag tag--bad" title={`${g.leaving.join(', ')} out, ${g.incoming.join(', ')} in`}>
-                      {g.incoming.length} would change
-                    </span>
-                  ) : (
-                    <span className="dao-dim">settled</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <p className="dao-dim">
-        Ordered as the directory lists them. <b>Last seat holds by</b> is the vote power between the final seat
-        and the first candidate who would miss it — the smaller it is, the less it takes to change the council.
-      </p>
-    </section>
-  )
-}
-
 function StandingRow({
   c,
   place,
   dao,
+  votedFor,
   missed,
   margin,
 }: {
   c: Standing
   place: number
   dao: Dao
+  /** The connected wallet's slate here, so its own picks stand out. */
+  votedFor: Set<string>
   missed?: boolean
   margin?: number
 }) {
@@ -571,13 +705,18 @@ function StandingRow({
           {c.name}
         </a>
         <McTag name={c.name} />
+        {votedFor.has(c.name) ? (
+          <span className="tag tag--vote" title="You are voting for this candidate">
+            &#9733; your vote
+          </span>
+        ) : null}
         {!missed && !c.seated ? (
           <span className="tag tag--in" title="Not on the council today — would take a seat">
             incoming
           </span>
         ) : null}
-        {missed ? (
-          <span className="tag tag--bad" title={`${fmtTokens(margin ?? 0)} short of the last seat`}>
+        {missed && margin != null ? (
+          <span className="tag tag--bad" title={`${fmtTokens(margin)} short of the last seat`}>
             first miss
           </span>
         ) : null}

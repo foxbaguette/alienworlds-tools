@@ -13,6 +13,7 @@ import type { Dao } from './daos'
  *   token.worlds::transfer   the token changing hands
  *   dao.worlds::votecust     a slate being cast or re-cast
  *   token.worlds::staketime  the unstake delay, which is a vote MULTIPLIER
+ *   dao.worlds::newperiod    the election those votes were building towards
  *
  * That last one is why they belong together. Vote power is not the stake: it is
  * the stake times a multiplier that runs from 1 at the minimum delay to
@@ -35,7 +36,15 @@ const PAYERS = new Set(['theminergame', 'rewards.mc', 'rewards.ale'])
 /** Alcor and Taco both name themselves, and every swap carries a `swap…` memo. */
 const isDex = (account: string) => /alcor|taco|swap/i.test(account)
 
-export type ActivityKind = 'bought' | 'sold' | 'swapped' | 'sent' | 'payout' | 'vote' | 'staketime'
+export type ActivityKind =
+  | 'bought'
+  | 'sold'
+  | 'swapped'
+  | 'sent'
+  | 'payout'
+  | 'vote'
+  | 'staketime'
+  | 'election'
 
 export const KIND_LABEL: Record<ActivityKind, string> = {
   bought: 'bought with TLM',
@@ -45,6 +54,7 @@ export const KIND_LABEL: Record<ActivityKind, string> = {
   payout: 'reward payout',
   vote: 'voted',
   staketime: 'changed their unstake delay',
+  election: 'held an election',
 }
 
 export const KIND_TONE: Record<ActivityKind, string> = {
@@ -55,6 +65,9 @@ export const KIND_TONE: Record<ActivityKind, string> = {
   payout: 'done',
   vote: 'go',
   staketime: 'work',
+  /* Its own colour. Everything else on this feed is somebody moving towards a
+     council; this is the council actually changing. */
+  election: 'gold',
 }
 
 /** The three groups the filter offers, and which kinds are in each. */
@@ -62,6 +75,7 @@ export const GROUPS = {
   exchanges: ['bought', 'sold', 'swapped', 'sent'] as ActivityKind[],
   votes: ['vote'] as ActivityKind[],
   delays: ['staketime'] as ActivityKind[],
+  elections: ['election'] as ActivityKind[],
   payouts: ['payout'] as ActivityKind[],
 }
 
@@ -88,8 +102,19 @@ export interface Activity {
   amount?: number
   /** Seconds, for a staketime change. */
   delay?: number
+  /** The transaction, kept so an election can be looked up. */
+  trx?: string
   /** Who was voted for. */
   votes?: string[]
+  /**
+   * The council an election seated, once it has been looked up.
+   *
+   * `newperiod` carries only a message and a dac_id — who won is not in it.
+   * But the same transaction rewrites the DAO's own permissions with exactly
+   * the new custodian set, so the answer is one `get_transaction` away. See
+   * `resolveElections`.
+   */
+  council?: string[]
   memo?: string
 }
 
@@ -113,21 +138,44 @@ function classifyTransfer(from: string, to: string, memo: string): ActivityKind 
 const codeOfSymbol = (s: unknown) => String(s ?? '').split(',')[1] ?? ''
 
 /**
- * One sweep of all three sources.
+ * The transfer stream, paged.
  *
- * Fired together rather than in turn: they are independent, and the indexers
- * are the slow part.
+ * It is the only busy one — about five hundred a day against a handful of
+ * votes — so a week of it does not fit in the thousand rows an indexer hands
+ * over at once. The others never need a second page.
+ *
+ * Capped rather than crawled: past about ten thousand rows `skip` stops
+ * working on these servers, and a feed that takes a minute to open is not one
+ * anybody waits for.
  */
-export async function fetchActivity(since: number, limit = 400): Promise<Activity[]> {
-  const after = iso(since)
-  const [transfers, votes, delays] = await Promise.all([
-    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+async function transferPages(after: string, limit: number, pages: number): Promise<RawAction[]> {
+  const out: RawAction[] = []
+  for (let page = 0; page < pages; page++) {
+    const res = await historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
       'act.account': TOKEN_CONTRACT,
       'act.name': 'transfer',
       after,
       limit,
+      skip: page * limit,
       sort: 'desc',
-    }).catch(() => ({ actions: [] })),
+    }).catch(() => ({ actions: [] as RawAction[] }))
+    const got = res.actions ?? []
+    out.push(...got)
+    if (got.length < limit) break
+  }
+  return out
+}
+
+/**
+ * One sweep of all four sources.
+ *
+ * Fired together rather than in turn: they are independent, and the indexers
+ * are the slow part.
+ */
+export async function fetchActivity(since: number, limit = 400, pages = 1): Promise<Activity[]> {
+  const after = iso(since)
+  const [transfers, votes, delays, elections] = await Promise.all([
+    transferPages(after, limit, pages).then((actions) => ({ actions })),
     historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
       'act.account': DAO_CONTRACT,
       'act.name': 'votecust',
@@ -138,6 +186,15 @@ export async function fetchActivity(since: number, limit = 400): Promise<Activit
     historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
       'act.account': TOKEN_CONTRACT,
       'act.name': 'staketime',
+      after,
+      limit: 200,
+      sort: 'desc',
+    }).catch(() => ({ actions: [] })),
+    /* An election is rare and it is the point of everything else on the feed,
+       so it gets its own read rather than being hunted for in the noise. */
+    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+      'act.account': DAO_CONTRACT,
+      'act.name': 'newperiod',
       after,
       limit: 200,
       sort: 'desc',
@@ -197,8 +254,79 @@ export async function fetchActivity(since: number, limit = 400): Promise<Activit
     })
   }
 
+  for (const a of elections.actions ?? []) {
+    const d = a.act.data as { dac_id?: string; message?: string }
+    const at = Date.parse(`${a.timestamp}Z`)
+    if (!Number.isFinite(at) || !d.dac_id) continue
+    out.push({
+      key: `${a.trx_id}:period:${d.dac_id}`,
+      at,
+      kind: 'election',
+      /* The scheduler runs it; nobody in particular held it. */
+      actor: 'newperiodctl',
+      symbol: '',
+      dacId: String(d.dac_id),
+      council: councils.get(a.trx_id),
+      memo: String(d.message ?? ''),
+      trx: a.trx_id,
+    })
+  }
+
   return out.sort((x, y) => y.at - x.at)
 }
+
+/* ---------- who an election seated ---------- */
+
+/**
+ * The council a `newperiod` produced.
+ *
+ * The action itself says only which DAC and a greeting. But seating a council
+ * means rewriting the DAO account's own permissions, and those `updateauth`
+ * actions ride in the SAME transaction carrying the new custodians by name —
+ * so one read of the transaction answers it exactly, with no guessing from
+ * what the candidate table happens to say now.
+ *
+ * Cached by transaction, because an election never changes after the fact and
+ * the feed re-reads its window every eight seconds.
+ */
+const councils = new Map<string, string[]>()
+
+interface TrxReply {
+  actions?: { act: { account: string; name: string; data: Record<string, unknown> } }[]
+}
+
+export async function resolveElections(rows: Activity[]): Promise<boolean> {
+  const wanted = [...new Set(rows.filter((r) => r.kind === 'election' && r.trx && !councils.has(r.trx)).map((r) => r.trx!))]
+  if (!wanted.length) return false
+
+  await Promise.all(
+    wanted.map(async (id) => {
+      try {
+        const trx = await historyGet<TrxReply>('/v2/history/get_transaction', { id })
+        /* `high` is the council permission proper — the other three are the
+           same people at lower thresholds, so any of them would do. */
+        const auth = (trx.actions ?? []).find(
+          (a) => a.act.account === 'eosio' && a.act.name === 'updateauth' && a.act.data.permission === 'high',
+        )
+        const accounts = (auth?.act.data.auth as { accounts?: { permission?: { actor?: string } }[] })?.accounts
+        const names = (accounts ?? [])
+          .map((x) => String(x.permission?.actor ?? ''))
+          /* The permission also carries msig.worlds, which is how the council's
+             own multisig acts as the DAO. It is not a custodian. */
+          .filter((n) => n && !n.endsWith('.worlds'))
+        councils.set(id, names)
+      } catch (err) {
+        console.error(`council for ${id}:`, err)
+        /* Remembered as unknown, so the feed stops asking. */
+        councils.set(id, [])
+      }
+    }),
+  )
+  return true
+}
+
+/** Fills in the councils already looked up, for rows read before they were. */
+export const councilOf = (trx: string | undefined) => (trx ? councils.get(trx) : undefined)
 
 /* ---------- vote power ---------- */
 

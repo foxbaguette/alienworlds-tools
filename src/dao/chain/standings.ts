@@ -47,6 +47,14 @@ export interface Standings {
   elected: Standing[]
   /** The next one down — who takes a seat if anything moves. */
   next: Standing | null
+  /**
+   * Everybody below that, in the same order.
+   *
+   * Read at the same time and held back rather than dropped: the seats plus
+   * the first miss is the question, but "who else is standing" is a real
+   * second question and it would be silly to pay for the read twice.
+   */
+  rest: Standing[]
   /** How many seats there are. */
   seats: number
   /** The gap between the last seat and the first miss, in vote power. */
@@ -62,52 +70,6 @@ export interface Standings {
  */
 export const multiplierFor = (delay: number, maxDelay: number, timeMultiplier: number) =>
   maxDelay > 0 ? 1 + (timeMultiplier * delay) / maxDelay : 1
-
-/** One council at a glance, for the view that shows all of them. */
-export interface Glance {
-  dao: Dao
-  seats: number
-  /** In the order they would be filled. */
-  elected: string[]
-  /** The first candidate who would miss out. */
-  next: string | null
-  /** Vote power between the last seat and that first miss. */
-  margin: number
-  /** Would take a seat today without holding one. */
-  incoming: string[]
-  /** Holds a seat today and would lose it. */
-  leaving: string[]
-}
-
-/**
- * Every council, without a single read.
- *
- * The candidates and their ranks arrive with the directory, and the seating
- * order is a sort of what is already in hand — so the overview costs nothing,
- * and only looking INTO one council pays for the balances and delays.
- */
-export function glanceAll(daos: Dao[], now = Date.now()): Glance[] {
-  return daos.map((dao) => {
-    const seats = dao.council.length || 5
-    const ranked = dao.candidates
-      .filter((c) => c.is_active)
-      .map((c) => ({ name: c.candidate_name, power: decayedPower(c.rank, dao.precision, now) }))
-      .sort((a, b) => b.power - a.power)
-
-    const elected = ranked.slice(0, seats)
-    const next = ranked[seats] ?? null
-    const names = elected.map((c) => c.name)
-    return {
-      dao,
-      seats,
-      elected: names,
-      next: next?.name ?? null,
-      margin: next && elected.length ? elected[elected.length - 1].power - next.power : 0,
-      incoming: names.filter((n) => !dao.custodians.includes(n)),
-      leaving: dao.custodians.filter((n) => !names.includes(n)),
-    }
-  })
-}
 
 export async function fetchStandings(dao: Dao): Promise<Standings> {
   const seats = dao.council.length || 5
@@ -181,6 +143,7 @@ export async function fetchStandings(dao: Dao): Promise<Standings> {
   return {
     elected,
     next,
+    rest: rows.slice(seats + 1),
     seats,
     margin: next && elected.length ? elected[elected.length - 1].power - next.power : 0,
   }

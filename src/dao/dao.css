@@ -1396,3 +1396,111 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   .dao-table tr.is-missed td { opacity: 1; }
   .dao-table tr.is-missed { border-top: 1px dashed var(--border-strong); }
 }
+
+/* ── An election ─────────────────────────────────────────────────────────── */
+/*
+ * Gold, and the only gold on the site.
+ *
+ * Every other row on this feed is somebody moving TOWARDS a council — buying,
+ * voting, lengthening a delay. This is the council actually changing, which
+ * happens a few times a week and is the thing all of that was for. It gets a
+ * colour nothing else uses, a filled band rather than an edge, and the new
+ * custodians by name.
+ */
+:root {
+  --gold: #8a6100;
+  --gold-soft: #fdf3dc;
+  --gold-edge: #d9a521;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --gold: #f0c257;
+    --gold-soft: #33280d;
+    --gold-edge: #a67c1a;
+  }
+}
+:root[data-theme='dark'] {
+  --gold: #f0c257;
+  --gold-soft: #33280d;
+  --gold-edge: #a67c1a;
+}
+
+.feed__row.is-gold {
+  background: var(--gold-soft);
+  border-left-color: var(--gold-edge);
+  border-left-width: 3px;
+}
+.feed__row.is-gold .feed__time { color: var(--gold); }
+
+.xch-election {
+  color: var(--gold);
+  font-weight: 700;
+}
+
+/* The council it seated. A label and then the names, wrapping — five accounts
+   with their tags do not fit on one line of a phone. */
+.xch-council {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-3);
+  margin-top: var(--sp-1);
+}
+.xch-council i {
+  flex: 0 0 100%;
+  font-style: normal;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* What the standings are a prediction for. */
+.stand-when {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+/* ── The council picker, grouped ─────────────────────────────────────────── */
+/*
+ * Twelve councils is two rows of six: every planet has a syndicate and a
+ * union, so the planet is the only part that differs inside a row and the
+ * heading beside it carries the rest. Flat, they were twelve near-identical
+ * ticker symbols in one strip, which is a list you read rather than a control
+ * you use.
+ *
+ * The rows are the DESKTOP half of the picker. A phone gets the grouped
+ * dropdown below instead, so the whole row — label included — goes away there.
+ */
+.act-pick__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.act-pick__row + .act-pick__row { margin-top: var(--sp-2); }
+
+.act-pick__label {
+  flex: 0 0 5rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* The candidates below the cut, on request. Quiet: it is a way of asking a
+   second question, not one of the page's own actions. */
+.stand-more {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+@media (max-width: 640px) {
+  .act-pick__row { display: none; }
+  .stand-more { width: 100%; }
+}
