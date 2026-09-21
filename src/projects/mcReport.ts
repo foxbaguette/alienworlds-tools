@@ -1,5 +1,6 @@
 import { historySliced, historyTime } from '@/chain/history'
 import { cached, getAllRows } from '@/chain/rpc'
+import { AW_COLLECTION, collectionsOf } from '@/chain/collections'
 
 /**
  * What Mission Control's monthly report needs beyond its collected days
@@ -59,6 +60,8 @@ export async function fetchMinesByMode(from: number, until: number): Promise<Rec
     (a) => historyTime(a.timestamp),
     (a) => a.global_sequence,
     8,
+    undefined,
+    true,
   )
   const out = { same: 0, land: 0, loan: 0 } as Record<McMode, number>
   for (const r of rows) {
@@ -100,11 +103,16 @@ export async function fetchNftFlow(account: string, memo: string, from: number, 
     (a) => historyTime(a.timestamp),
     (a) => a.global_sequence,
     4,
+    undefined,
+    true,
   )
+  /* Only Alien Worlds NFTs, like the owned count these flows are measured against. */
+  const cols = await collectionsOf(rows.flatMap((r) => (r.act.data.asset_ids ?? []).map(String)))
   const flow: NftFlow = { in: 0, out: 0, joins: 0 }
   for (const r of rows) {
     const d = r.act.data
-    const n = (d.asset_ids ?? []).length
+    const n = (d.asset_ids ?? []).filter((id) => cols.get(String(id)) === AW_COLLECTION).length
+    if (!n) continue
     if (d.to === account && String(d.memo ?? '').startsWith(memo)) {
       flow.in += n
       flow.joins++
@@ -116,7 +124,7 @@ export async function fetchNftFlow(account: string, memo: string, from: number, 
 /** Alien Worlds NFTs an account owns right now. */
 export async function fetchOwnedAw(account: string): Promise<number> {
   const rows = await getAllRows<{ collection_name: string }>({ code: 'atomicassets', scope: account, table: 'assets' })
-  return rows.filter((r) => r.collection_name === 'alien.worlds').length
+  return rows.filter((r) => r.collection_name === AW_COLLECTION).length
 }
 
 export interface McReportDay {

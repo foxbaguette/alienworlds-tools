@@ -1,5 +1,6 @@
 import { historySliced, historyTime } from '@/chain/history'
 import { cached } from '@/chain/rpc'
+import { countAw } from '@/chain/collections'
 
 /**
  * `nfts.ale` — the game's register of NFTs in use.
@@ -24,7 +25,7 @@ interface UseAction {
   act: { data: { asset_ids?: (string | number)[] } }
 }
 
-/** Distinct NFTs named in `usenfts` between two moments. */
+/** Distinct Alien Worlds NFTs named in `usenfts` between two moments. */
 export async function fetchNftsUsed(from: number, until: number): Promise<number> {
   const actions = await historySliced<UseAction>(
     '/v2/history/get_actions',
@@ -35,10 +36,12 @@ export async function fetchNftsUsed(from: number, until: number): Promise<number
     (a) => historyTime(a.timestamp),
     (a) => a.global_sequence,
     8,
+    undefined,
+    true,
   )
   const ids = new Set<string>()
   for (const a of actions) for (const id of a.act.data.asset_ids ?? []) ids.add(String(id))
-  return ids.size
+  return countAw(ids)
 }
 
 export interface NftsDay {

@@ -74,6 +74,7 @@ const REPORTS: Record<string, ReportDef> = {
       { title: 'TLM rewarded for adventures', group: 'rewards', pick: net('TLM'), unit: 'TLM' },
       /* Every adventure is paid for before it is played. */
       { title: 'Adventures played', group: 'game', pick: (d) => metricOf(d, ['arkhive.lore::payadventure']) },
+      { title: 'NFTs rewarded for adventures', group: 'nfts', pick: (d) => d.nfts, unit: 'NFTs' },
     ],
   },
 }
@@ -97,6 +98,10 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
   const sumOf = (list: ProjectDay[], pick: (d: ProjectDay) => number) => list.reduce((n, d) => n + pick(d), 0)
 
   /* Wallets seen for the first time each day, and so every wallet seen by then. */
+  /* An NFT section with nothing in it is left out: only Alien Worlds NFTs are
+     counted, and a project sending other collections' NFTs has none. */
+  const subjects = report.subjects.filter((s) => s.group !== 'nfts' || sumOf(days ?? [], s.pick) > 0)
+
   const firstSeen = useMemo(() => firstSeenByDay(days ?? []), [days])
   const seen = running(dates.map((d) => firstSeen[d] ?? 0))
   const newInMonth = sumOf(inMonth, (d) => firstSeen[d.date] ?? 0)
@@ -122,10 +127,10 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
         ]}
       />
 
-      {report.subjects.map((s, i) => (
+      {subjects.map((s, i) => (
         <Block
           key={s.title}
-          head={i === 0 || report.subjects[i - 1].group !== s.group}
+          head={i === 0 || subjects[i - 1].group !== s.group}
           group={s.group}
           title={s.title}
           figures={[

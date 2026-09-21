@@ -72,6 +72,7 @@ export default function AwReport() {
       {flow('New players', 'players', (d) => d.newPlayers, 'accounts accepting the terms of use')}
 
       {flow('TLM mined and claimed', 'rewards', (d) => d.tlm, 'TLM', true)}
+      {flow('Shards mined', 'rewards', (d) => d.shards ?? 0, 'Shards')}
 
       {flow('Mines', 'game', (d) => d.mines, 'mining actions', true)}
       {flow('Claims of mined TLM', 'game', (d) => d.claims, 'claims')}

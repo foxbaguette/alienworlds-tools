@@ -41,7 +41,7 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
-import { fetchAwDay, type AwDailyFile } from '../src/aw/queries'
+import { fetchAwDay, fetchShardsMined, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
   fetchMinesByMode,
@@ -356,6 +356,18 @@ async function aw(): Promise<void> {
   const have = new Set(file.days.map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
   const dates = dateRange(HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d))
+
+  /* Days collected before Shards were measured get just that figure added,
+     rather than the whole day read again. */
+  const shardless = file.days.filter((d) => d.shards === undefined && !dates.includes(d.date))
+  if (shardless.length) console.log(`aw: adding Shards mined to ${shardless.length} day(s)`)
+  for (const d of shardless) {
+    const from = dayStart(d.date)
+    d.shards = Math.round((await fetchShardsMined(from, from + DAY_MS)) * 10) / 10
+    save(FILE, file)
+    console.log(`  ${d.date}  ${Math.round(d.shards).toLocaleString('en-US').padStart(9)} shards`)
+  }
+
   if (!dates.length) return console.log('aw: up to date')
   console.log(`aw: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
 
@@ -363,6 +375,7 @@ async function aw(): Promise<void> {
     const t0 = Date.now()
     const from = dayStart(date)
     const day = await fetchAwDay(from, from + DAY_MS)
+    const shards = await fetchShardsMined(from, from + DAY_MS)
     for (const w of day.claimers) if (!firstDay[w] || firstDay[w] > date) firstDay[w] = date
     const month = date.slice(0, 7)
     months[month] = [...new Set([...(months[month] ?? []), ...day.claimers])].sort()
@@ -372,6 +385,7 @@ async function aw(): Promise<void> {
     by.set(date, {
       date,
       mines: day.mines,
+      shards: Math.round(shards * 10) / 10,
       newPlayers: day.newPlayers,
       claims: day.claims,
       tlm: Math.round(day.tlm * 10_000) / 10_000,
@@ -390,7 +404,7 @@ async function aw(): Promise<void> {
     console.log(
       `  ${date}  ${String(day.mines).padStart(8)} mines  ${String(day.claims).padStart(5)} claims  ` +
         `${Math.round(day.tlm).toLocaleString('en-US').padStart(8)} TLM  ${String(day.claimers.length).padStart(5)} miners  ` +
-        `${day.newPlayers} new  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+        `${day.newPlayers} new  ${Math.round(shards).toLocaleString('en-US')} shards  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
     )
   }
 

@@ -186,7 +186,7 @@ export const PROJECTS: ProjectDef[] = [
     lead: 'The Arkhive.Lore adventures (arkhive.lore): players deposit TLM, pay for adventures from it, and are rewarded for completing them.',
     contracts: ['arkhive.lore'],
     payers: ['arkhive.lore'],
-    paidNote: 'Paid out is the TLM rewarded for completing adventures. Deposits players withdraw again are left out.',
+    paidNote: 'Paid out is the TLM and NFTs rewarded for completing adventures. Deposits players withdraw again are left out.',
     activeFrom: 'signers',
     /*
        Checked against a day of its transfers: everything it sends a player is
@@ -195,6 +195,8 @@ export const PROJECTS: ProjectDef[] = [
        take back, not fees, so they are not netted off the rewards.
     */
     rewardMemos: [/Rewards for completing adventure/i],
+    /* Adventures also pay out NFTs, sent with the same memo as the TLM. */
+    nftRewards: true,
     /* The contract signs payadventure itself, naming the player. */
     actorFields: { 'arkhive.lore::payadventure': 'account' },
     categories: [{ key: 'adventure', label: 'Adventure rewards', memo: /Rewards for completing adventure/i }],

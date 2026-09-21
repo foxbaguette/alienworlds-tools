@@ -17,6 +17,13 @@ import { cached } from '@/chain/rpc'
  *
  * New players are the accounts accepting the terms of use
  * (`federation::agreeterms`), which every new account does once.
+ *
+ * SHARDS MINED. Every Shard reaches a player through
+ * `uspts.worlds::addpoints` — about 70,000 credits a day, including each
+ * mine's luck. But uspts.worlds also passes on everything projects issue
+ * through `ptpxy.worlds` (Mission Control, Naron, Planetary Defense…), so
+ * what mining produced is the first less the second. Both count in tenths of
+ * a Shard.
  */
 
 async function countOf(params: Record<string, string>, from: number, until: number): Promise<number> {
@@ -34,6 +41,36 @@ interface Claim {
   global_sequence: number
   timestamp: string
   act: { data: { from?: string; to?: string; amount?: number; quantity?: string; memo?: string } }
+}
+
+interface PointsAction {
+  global_sequence: number
+  timestamp: string
+  act: { data: { points?: number | string } }
+}
+
+/** Points credited by one contract's addpoints between two moments. */
+async function pointsAdded(account: string, from: number, until: number): Promise<number> {
+  const rows = await historySliced<PointsAction>(
+    '/v2/history/get_actions',
+    { 'act.account': account, 'act.name': 'addpoints' },
+    from,
+    until,
+    (page) => (page as { actions?: PointsAction[] }).actions ?? [],
+    (a) => historyTime(a.timestamp),
+    (a) => a.global_sequence,
+    8,
+    undefined,
+    true,
+  )
+  return rows.reduce((n, r) => n + (Number(r.act.data.points) || 0), 0)
+}
+
+/** Shards produced by mining: everything credited, less what projects issued. */
+export async function fetchShardsMined(from: number, until: number): Promise<number> {
+  const all = await pointsAdded('uspts.worlds', from, until)
+  const projects = await pointsAdded('ptpxy.worlds', from, until)
+  return (all - projects) / 10
 }
 
 export interface AwDayRaw {
@@ -59,6 +96,8 @@ export async function fetchAwDay(from: number, until: number): Promise<AwDayRaw>
       (a) => historyTime(a.timestamp),
       (a) => a.global_sequence,
       4,
+      undefined,
+      true,
     ),
   ])
   const who = new Set<string>()
@@ -77,6 +116,8 @@ export async function fetchAwDay(from: number, until: number): Promise<AwDayRaw>
 export interface AwDay {
   date: string
   mines: number
+  /** Shards credited through mining — see fetchShardsMined. */
+  shards?: number
   newPlayers: number
   claims: number
   tlm: number

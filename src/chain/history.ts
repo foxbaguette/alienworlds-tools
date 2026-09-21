@@ -63,17 +63,22 @@ const benchedUntil = new Map<string, number>()
  * fails, the whole pass is repeated after a growing pause — five passes — before
  * giving up, because under a heavy crawl most failures are momentary.
  */
-export async function historyGet<T>(path: string, params: Record<string, string | number>): Promise<T> {
+export async function historyGet<T>(
+  path: string,
+  params: Record<string, string | number>,
+  /** Ask only this server — for a crawl that must not mix servers' answers. */
+  pinned?: string,
+): Promise<T> {
   const query = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
   ).toString()
   let lastError: unknown
   for (let round = 0; round < ROUNDS; round++) {
     for (let attempt = 0; attempt < HISTORY_ENDPOINTS.length; attempt++) {
-      const base = HISTORY_ENDPOINTS[next % HISTORY_ENDPOINTS.length]
+      const base = pinned ?? HISTORY_ENDPOINTS[next % HISTORY_ENDPOINTS.length]
       next++
       /* Benched servers are skipped — unless it is the last round and nothing else is left. */
-      if ((benchedUntil.get(base) ?? 0) > Date.now() && round < ROUNDS - 1) continue
+      if (!pinned && (benchedUntil.get(base) ?? 0) > Date.now() && round < ROUNDS - 1) continue
       try {
         const res = await fetch(`${base}${path}?${query}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
         if (!res.ok) throw new Error(`${base} answered ${res.status}`)
@@ -119,6 +124,14 @@ export function progressMeter(onFraction: (fraction: number) => void): Progress 
   }
 }
 
+/**
+ * A crawl that came back with fewer rows than its window holds.
+ *
+ * Only thrown when the caller asks for exactness — the collectors, which
+ * would otherwise save a short day as if it were whole.
+ */
+export class ShortReadError extends Error {}
+
 export async function historyCrawl<R>(
   path: string,
   params: Record<string, string | number>,
@@ -129,21 +142,86 @@ export async function historyCrawl<R>(
   key: (row: R) => string | number,
   maxPages = 40,
   onProgress?: Progress,
+  /** Retry a short read, then throw ShortReadError rather than return it. */
+  exact = false,
 ): Promise<R[]> {
+  /*
+    First as usual, spread over the servers. If that comes back short, the
+    servers disagree — one is missing rows another has — so each retry is held
+    to a single server, whose total and rows then describe the same history.
+  */
+  const tries = exact ? 1 + HISTORY_ENDPOINTS.length : 1
+  let last = ''
+  let most = 0
+  for (let attempt = 0; attempt < tries; attempt++) {
+    const pinned = attempt ? HISTORY_ENDPOINTS[attempt - 1] : undefined
+    try {
+      const { rows, total } = await crawlOnce(path, params, from, until, pick, timeOf, key, maxPages, onProgress, pinned)
+      /* Held to the largest total any server gave: one that has dropped the
+         day reports a smaller window and would otherwise look complete. */
+      if (total !== null) most = Math.max(most, total)
+      if (!exact || total === null || rows.length >= most) return rows
+      last = `read ${rows.length} of ${most} rows`
+    } catch (err) {
+      /* A pinned server that fails is one of several to try, not the end. */
+      if (!pinned) throw err
+      last = err instanceof Error ? err.message : String(err)
+    }
+  }
+  throw new ShortReadError(`${path} ${JSON.stringify(params)}: ${last}`)
+}
+
+/*
+  One pass over a window.
+
+  It pages until the window's exact total is reached — the servers count it
+  when asked (`track=true`) — rather than until a short page. A short page
+  is not the end on every server: some cap pages below what was asked, and
+  stopping there cut whole days short without a word. Where no exact total
+  is given, a short page still ends it, as before.
+*/
+async function crawlOnce<R>(
+  path: string,
+  params: Record<string, string | number>,
+  from: number,
+  until: number,
+  pick: (page: unknown) => R[],
+  timeOf: (row: R) => number,
+  key: (row: R) => string | number,
+  maxPages: number,
+  onProgress?: Progress,
+  pinned?: string,
+): Promise<{ rows: R[]; total: number | null }> {
   const seen = new Set<string | number>()
   const out: R[] = []
   let cursor = from
+  let total: number | null = null
+  /*
+    Rows past the start of the page, for the one case paging by time cannot
+    pass: more than a page of rows sharing one timestamp — a batch action that
+    credits thousands of accounts in one block. Starting the next page at that
+    timestamp returns the same page again, so it steps through by count
+    instead until it is out the other side.
+  */
+  let skip = 0
+  let empties = 0
+  let firstEmpties = 0
   for (let page = 0; page < maxPages; page++) {
-    const body = await historyGet<{ total?: { value?: number } }>(path, {
+    const body = await historyGet<{ total?: { value?: number; relation?: string } }>(path, {
       ...params,
       after: iso(cursor),
       before: iso(until),
       sort: 'asc',
       limit: HISTORY_PAGE,
-    })
+      ...(skip ? { skip } : {}),
+      ...(page === 0 ? { track: 'true' } : {}),
+    }, pinned)
     const rows = pick(body)
     /* The first page says how many rows the window holds. */
-    if (page === 0) onProgress?.(0, Number(body.total?.value ?? rows.length))
+    if (page === 0) {
+      if (body.total?.relation === 'eq' && Number.isFinite(Number(body.total.value))) total = Number(body.total.value)
+      onProgress?.(0, Number(body.total?.value ?? rows.length))
+    }
     let fresh = 0
     for (const r of rows) {
       const k = key(r)
@@ -153,11 +231,34 @@ export async function historyCrawl<R>(
       fresh++
     }
     onProgress?.(fresh, 0)
-    if (rows.length < HISTORY_PAGE || fresh === 0) break
-    cursor = timeOf(rows[rows.length - 1])
+    if (!rows.length) {
+      /* The same on the first page would read as an empty window — believed
+         only once every server has said so. */
+      if (!pinned && page === 0 && firstEmpties++ < HISTORY_ENDPOINTS.length - 1) {
+        page--
+        continue
+      }
+      /* A server that no longer holds the day answers with nothing rather
+         than an error. Short of the known total, that is a server to skip —
+         the next request goes to another — not the end of the window. */
+      if (!pinned && total !== null && out.length < total && empties++ < HISTORY_ENDPOINTS.length) continue
+      break
+    }
+    empties = 0
+    if (total !== null ? out.length >= total : rows.length < HISTORY_PAGE) break
+    const last = timeOf(rows[rows.length - 1])
+    if (fresh === 0 || (last === cursor && rows.length >= HISTORY_PAGE)) {
+      /* Stuck on one timestamp: step through it by count. Without an exact
+         total to aim for, there is no telling what is left, so stop. */
+      if (total === null) break
+      skip += HISTORY_PAGE
+    } else {
+      cursor = last
+      skip = 0
+    }
     await sleep(PAGE_GAP_MS)
   }
-  return out
+  return { rows: out, total }
 }
 
 /**
@@ -179,6 +280,8 @@ export async function historySliced<R>(
   key: (row: R) => string | number,
   slices = 6,
   onProgress?: Progress,
+  /** See historyCrawl: fail rather than return a short read. */
+  exact = false,
 ): Promise<R[]> {
   const OVERLAP_MS = 1_000
   const step = (until - from) / slices
@@ -194,6 +297,7 @@ export async function historySliced<R>(
         key,
         200,
         onProgress,
+        exact,
       ),
     ),
   )

@@ -204,9 +204,6 @@ export default function ProjectOverview({ projectKey }: { projectKey: string }) 
                 change: cmp(paid(s), paid(s, before)),
                 sub: net(s) ?? `${tokens(paid(s) / Math.max(1, shown.length))} a day on average`,
               })),
-              ...(showNfts
-                ? [{ label: 'NFTs sent', value: whole(nfts(shown)), change: cmp(nfts(shown), nfts(before)) }]
-                : []),
             ]}
             extraCharts={others.slice(0, 1).map((s) => {
               const f = flows(s)
@@ -262,6 +259,35 @@ export default function ProjectOverview({ projectKey }: { projectKey: string }) 
                     />
                   </ChartCard>
                 ))}
+              </div>
+            </section>
+          )}
+
+          {/* NFTs are not tokens, so they get their own section rather than a
+              tile among the tokens paid out. Alien Worlds NFTs only. */}
+          {showNfts && (
+            <section className="section">
+              <div className="section__head">
+                <h2 className="section__title">NFTs</h2>
+                <span className="section__note">Alien Worlds NFTs sent to players as rewards</span>
+              </div>
+              <div className="tiles">
+                <StatTile
+                  label="NFTs sent"
+                  value={whole(nfts(shown))}
+                  change={cmp(nfts(shown), nfts(before))}
+                  sub={`${whole(nfts(shown) / Math.max(1, shown.length))} a day on average`}
+                />
+              </div>
+              <div className="card card--pad">
+                <div className="card__head">
+                  <h3 className="card__title">NFTs sent per day</h3>
+                </div>
+                <DailyChart
+                  dates={dates}
+                  series={[{ key: 'nfts', label: 'NFTs', color: 'var(--series-1)', values: shown.map((d) => d.nfts) }]}
+                  label="Alien Worlds NFTs sent to players per day"
+                />
               </div>
             </section>
           )}

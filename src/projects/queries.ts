@@ -1,4 +1,5 @@
 import { historySliced, historyTime } from '@/chain/history'
+import { AW_COLLECTION, collectionsOf } from '@/chain/collections'
 import { cached, getAllRows } from '@/chain/rpc'
 import type { ProjectDef } from './defs'
 import {
@@ -26,6 +27,9 @@ function crawl<D>(params: Record<string, string>, from: number, until: number, s
     (a) => historyTime(a['@timestamp']),
     (a) => a.global_sequence,
     slices,
+    undefined,
+    /* Collected days are saved for good: a short read must fail, not be kept. */
+    true,
   )
 }
 
@@ -97,7 +101,8 @@ export async function fetchProjectDay(def: ProjectDef, date: string): Promise<Pr
     })
 
   const seen = new Set<number>()
-  const payouts: PayoutSeen[] = []
+  const payouts: (PayoutSeen & { ids?: string[] })[] = []
+  const nftIds: string[] = []
   const stakes: StakeSeen[] = []
   def.payers.forEach((payer, i) => {
     for (const a of paid[i]) {
@@ -110,12 +115,15 @@ export async function fetchProjectDay(def: ProjectDef, date: string): Promise<Pr
       } else if (a.act.account === 'atomicassets') {
         if (d.from !== payer) continue
         seen.add(a.global_sequence)
+        const ids = (d.asset_ids ?? []).map(String)
+        nftIds.push(...ids)
         payouts.push({
           to: String(d.to),
           symbol: 'NFT',
           amount: 0,
           memo: String(d.memo ?? ''),
-          nfts: (d.asset_ids ?? []).length,
+          nfts: ids.length,
+          ids,
         })
       } else {
         const symbol = d.symbol ?? String(d.quantity ?? '').split(' ')[1] ?? '?'
@@ -133,7 +141,17 @@ export async function fetchProjectDay(def: ProjectDef, date: string): Promise<Pr
     }
   })
 
-  return summariseProjectDay(def, date, actions, payouts, stakes)
+  /* Only Alien Worlds NFTs count, whatever else a project sends. */
+  if (nftIds.length) {
+    const cols = await collectionsOf(nftIds)
+    for (const p of payouts) {
+      if (!p.ids) continue
+      p.nfts = p.ids.filter((id) => cols.get(id) === AW_COLLECTION).length
+    }
+  }
+  const counted = payouts.filter((p) => !p.ids || (p.nfts ?? 0) > 0).map(({ ids: _ids, ...p }) => p)
+
+  return summariseProjectDay(def, date, actions, counted, stakes)
 }
 
 export function fetchProjectFile(key: string): Promise<ProjectFile> {
