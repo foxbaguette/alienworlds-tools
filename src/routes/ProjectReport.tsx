@@ -22,6 +22,11 @@ interface Subject {
 
 interface ReportDef {
   title: string
+  /**
+   * The records hold the project's whole life — it began after the earliest
+   * day the history servers keep — so its totals really are all time.
+   */
+  allTime?: boolean
   /** Who counts as a player, in the figures' small print. */
   players: string
   subjects: Subject[]
@@ -61,6 +66,16 @@ const REPORTS: Record<string, ReportDef> = {
       { title: 'NFTs sent as rewards', group: 'nfts', pick: (d) => d.nfts, unit: 'NFTs' },
     ],
   },
+  arkhive: {
+    title: 'Arkhive - gHubs report',
+    allTime: true,
+    players: 'players',
+    subjects: [
+      { title: 'TLM rewarded for adventures', group: 'rewards', pick: net('TLM'), unit: 'TLM' },
+      /* Every adventure is paid for before it is played. */
+      { title: 'Adventures played', group: 'game', pick: (d) => metricOf(d, ['arkhive.lore::payadventure']) },
+    ],
+  },
 }
 
 export default function ProjectReport({ projectKey }: { projectKey: string }) {
@@ -77,8 +92,8 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
   const { upTo, inMonth, dates, monthDates, name, within } = v
 
   const recordsFrom = `${shortDay(def.since)} ${def.since.slice(0, 4)}`
-  const SINCE = `Since ${recordsFrom}`
-  const sinceTitle = `since ${shortDay(def.since)}`
+  const SINCE = report.allTime ? 'All time' : `Since ${recordsFrom}`
+  const sinceTitle = report.allTime ? 'since launch' : `since ${shortDay(def.since)}`
   const sumOf = (list: ProjectDay[], pick: (d: ProjectDay) => number) => list.reduce((n, d) => n + pick(d), 0)
 
   /* Wallets seen for the first time each day, and so every wallet seen by then. */
@@ -103,7 +118,7 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
         charts={[
           { title: `Per day, ${sinceTitle}`, dates, values: upTo.map((d) => d.active) },
           { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => d.active) },
-          { title: `Seen so far, ${sinceTitle}`, dates, values: seen },
+          { title: report.allTime ? 'Seen so far' : `Seen so far, ${sinceTitle}`, dates, values: seen },
         ]}
       />
 

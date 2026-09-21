@@ -40,7 +40,8 @@ import { compressDay, HIDDEN_POOLS, poolTable, type PoolDailyFile, type PoolDay 
 import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
-import { PROJECTS } from '../src/projects/defs'
+import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
+import { fetchAwDay, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
   fetchMinesByMode,
@@ -327,12 +328,89 @@ async function mcReport(): Promise<void> {
   save(FILE, file)
 }
 
+/**
+ * Alien Worlds itself: mines, claims of mined TLM and who claimed, and new
+ * players, from the earliest day the history servers still hold.
+ *
+ * Who claimed is kept in a state file beside the report's, so a month and
+ * "new" can be counted without shipping every day's wallet list to the page.
+ * It is committed every night, so it is kept lean: the wallets first seen
+ * each day, grouped by that day (a hundred thousand of them, each written
+ * once), and the wallet lists of the current and previous month only — all
+ * the nightly re-read of yesterday can ever touch. Older months keep just
+ * their count, in the report's own file.
+ */
+async function aw(): Promise<void> {
+  const FILE = 'public/data/aw-daily.json'
+  const STATE = 'public/data/aw-claimers.json'
+  const file = load<AwDailyFile>(FILE, { generatedAt: '', days: [], months: {} })
+  const saved = load<{ firstSeen: Record<string, string[]>; months: Record<string, string[]> }>(STATE, {
+    firstSeen: {},
+    months: {},
+  })
+  const firstDay: Record<string, string> = {}
+  for (const [date, ws] of Object.entries(saved.firstSeen)) for (const w of ws) firstDay[w] = date
+  const months = saved.months
+  const counts = { ...file.months }
+  const yesterday = dayOf(Date.now() - DAY_MS)
+  const have = new Set(file.days.map((d) => d.date))
+  const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
+  const dates = dateRange(HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d))
+  if (!dates.length) return console.log('aw: up to date')
+  console.log(`aw: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+
+  for (const date of dates) {
+    const t0 = Date.now()
+    const from = dayStart(date)
+    const day = await fetchAwDay(from, from + DAY_MS)
+    for (const w of day.claimers) if (!firstDay[w] || firstDay[w] > date) firstDay[w] = date
+    const month = date.slice(0, 7)
+    months[month] = [...new Set([...(months[month] ?? []), ...day.claimers])].sort()
+    counts[month] = months[month].length
+
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, {
+      date,
+      mines: day.mines,
+      newPlayers: day.newPlayers,
+      claims: day.claims,
+      tlm: Math.round(day.tlm * 10_000) / 10_000,
+      miners: day.claimers.length,
+      firstSeen: 0,
+    })
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    /* First sightings are recounted over every day each time: a wallet's
+       first day can only move earlier, never later. */
+    const first: Record<string, number> = {}
+    for (const d of Object.values(firstDay)) first[d] = (first[d] ?? 0) + 1
+    for (const d of file.days) d.firstSeen = first[d.date] ?? 0
+    file.months = counts
+    file.generatedAt = new Date().toISOString()
+    save(FILE, file)
+    console.log(
+      `  ${date}  ${String(day.mines).padStart(8)} mines  ${String(day.claims).padStart(5)} claims  ` +
+        `${Math.round(day.tlm).toLocaleString('en-US').padStart(8)} TLM  ${String(day.claimers.length).padStart(5)} miners  ` +
+        `${day.newPlayers} new  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    )
+  }
+
+  const grouped: Record<string, string[]> = {}
+  for (const [w, d] of Object.entries(firstDay)) (grouped[d] ??= []).push(w)
+  for (const d of Object.keys(grouped)) grouped[d].sort()
+  const keep = Object.keys(months).sort().slice(-2)
+  save(STATE, {
+    firstSeen: Object.fromEntries(Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b))),
+    months: Object.fromEntries(keep.map((m) => [m, months[m]])),
+  })
+}
+
 void (async () => {
   if (!only || only === 'activity') await activity()
   if (!only || only === 'pools') await pools()
   if (!only || only === 'farm') await farm()
   if (!only || only === 'nfts') await nftRows()
   if (!only || only === 'mcreport') await mcReport()
+  if (!only || only === 'aw') await aw()
   if (!only || only === 'projects') await projects()
   if (only === 'landclaims') await landClaims()
 })()

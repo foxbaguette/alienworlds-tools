@@ -1,7 +1,7 @@
 import { PROJECTS } from './projects/defs'
 
 /** Projects with a monthly report of their own, at /<key>/ghubs. */
-const REPORTS = new Set(['mc', 'pd', 'naron'])
+const REPORTS = new Set(['mc', 'pd', 'naron', 'arkhive'])
 
 /**
  * The site's top level.
@@ -72,6 +72,8 @@ export const SECTIONS: Section[] = [
           { to: '/ghubs', label: 'gHubs report' },
         ],
       },
+      /* Alien Worlds itself has no overview page — only its report. */
+      { label: 'Alien Worlds', tools: [{ to: '/aw/ghubs', label: 'gHubs report' }] },
       ...PROJECTS.map((p) => ({
         label: p.name,
         tools: [

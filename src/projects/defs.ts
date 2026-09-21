@@ -180,6 +180,31 @@ export const PROJECTS: ProjectDef[] = [
     ],
     since: HISTORY_FLOOR,
   },
+  {
+    key: 'arkhive',
+    name: 'Arkhive',
+    lead: 'The Arkhive.Lore adventures (arkhive.lore): players deposit TLM, pay for adventures from it, and are rewarded for completing them.',
+    contracts: ['arkhive.lore'],
+    payers: ['arkhive.lore'],
+    paidNote: 'Paid out is the TLM rewarded for completing adventures. Deposits players withdraw again are left out.',
+    activeFrom: 'signers',
+    /*
+       Checked against a day of its transfers: everything it sends a player is
+       a reward ("Rewards for completing adventure …") or a withdrawal of
+       their own deposit, which is not. Deposits are balances a player can
+       take back, not fees, so they are not netted off the rewards.
+    */
+    rewardMemos: [/Rewards for completing adventure/i],
+    /* The contract signs payadventure itself, naming the player. */
+    actorFields: { 'arkhive.lore::payadventure': 'account' },
+    categories: [{ key: 'adventure', label: 'Adventure rewards', memo: /Rewards for completing adventure/i }],
+    metrics: [
+      { key: 'adventures', label: 'Adventures paid for', actions: ['arkhive.lore::payadventure'] },
+      { key: 'withdraw', label: 'Withdrawals', actions: ['arkhive.lore::withdraw'] },
+    ],
+    /* The contract's first day: everything it has ever done is in its records. */
+    since: '2026-07-14',
+  },
 ]
 
 export function projectByKey(key: string): ProjectDef | undefined {
