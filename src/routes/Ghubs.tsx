@@ -29,17 +29,23 @@ interface Metric {
   /** Where the value comes from: a stat, or the day's active-player count. */
   stat?: string
   unit?: string
-  color: string
 }
 
 const METRICS: Metric[] = [
-  { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM', color: 'var(--series-1)' },
-  { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards', color: 'var(--series-3)' },
-  { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played', color: 'var(--series-2)' },
-  { key: 'arenas', title: 'Arenas played', stat: 'arenas_played', color: 'var(--series-4)' },
-  { key: 'quests', title: 'Quests completed', stat: 'quests_completed', color: 'var(--series-1)' },
-  { key: 'recruits', title: 'Fighters recruited', stat: 'recruits', color: 'var(--series-2)' },
+  { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM' },
+  { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards' },
+  { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played' },
+  { key: 'arenas', title: 'Arenas played', stat: 'arenas_played' },
+  { key: 'quests', title: 'Quests completed', stat: 'quests_completed' },
+  { key: 'recruits', title: 'Fighters recruited', stat: 'recruits' },
 ]
+
+/**
+ * One colour for every graph. Each graph shows one quantity under its own
+ * heading, so a colour would have nothing to tell apart — and a different
+ * one per section invites the reader to look for a meaning that is not there.
+ */
+const LINE = 'var(--series-1)'
 
 const whole = (v: number) => formatNumber(Math.round(v))
 const monthOf = (date: string) => date.slice(0, 7)
@@ -163,7 +169,6 @@ export default function Ghubs() {
                 sub: `active players${signedUp !== null ? ` · ${whole(signedUp)} signed up` : ''}`,
               },
             ]}
-            color="var(--series-1)"
             charts={[
               { title: 'Active players per day, since launch', dates, values: upTo.map((d) => d.active) },
               { title: `Active players per day, ${name}`, dates: monthDates, values: inMonth.map((d) => d.active) },
@@ -179,7 +184,6 @@ export default function Ghubs() {
                 { label: 'All time', value: whole(sum(upTo, m.stat!)), sub: m.unit },
                 { label: within, value: whole(sum(inMonth, m.stat!)), sub: m.unit },
               ]}
-              color={m.color}
               charts={[
                 { title: 'Per day, since launch', dates, values: upTo.map((d) => statValue(d.stats, m.stat!)) },
                 { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat!)) },
@@ -192,7 +196,6 @@ export default function Ghubs() {
             <Block
               title="NFTs staked on the farm"
               figures={stockFigures(staked, lastDay ? `Staked on ${longDate(lastDay)}` : 'Staked', FARM, within)}
-              color="var(--series-3)"
               charts={[
                 { title: 'End of each day, since launch', dates, values: staked.values },
                 { title: `End of each day, ${name}`, dates: monthDates, values: staked.inMonth },
@@ -204,7 +207,6 @@ export default function Ghubs() {
             <Block
               title="Unique NFTs used for other purposes per day"
               figures={stockFigures(nftRows, lastDay ? `On ${longDate(lastDay)}` : 'Last day', `unique NFTs, ${NFTS}`, within)}
-              color="var(--series-4)"
               charts={[
                 { title: 'Per day, since launch', dates, values: nftRows.values },
                 { title: `Per day, ${name}`, dates: monthDates, values: nftRows.inMonth },
@@ -270,12 +272,10 @@ function Block({
   title,
   figures,
   charts,
-  color,
 }: {
   title: string
   figures: { label: string; value: string; sub?: string }[]
   charts: { title: string; dates: string[]; values: number[] }[]
-  color: string
 }) {
   return (
     <section className="section rpt__block">
@@ -299,7 +299,7 @@ function Block({
                 fill
                 height={160}
                 dates={c.dates}
-                series={[{ key: 'v', label: title, color, values: c.values }]}
+                series={[{ key: 'v', label: title, color: LINE, values: c.values }]}
                 label={`${title}: ${c.title}`}
               />
             </div>
