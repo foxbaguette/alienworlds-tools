@@ -3,6 +3,8 @@ import { fetchDailyFile, fetchPlayers, type PlayersSnapshot } from '@/activity/q
 import { LAUNCH, dayStart, statValue, summariseRange, type DaySummary } from '@/activity/rules'
 import { DailyChart, longDate } from '@/components/DailyChart'
 import { formatNumber } from '@/format'
+import { FARM, fetchFarmDaily, type FarmDay } from '@/farm/queries'
+import { NFTS, fetchNftsDaily, type NftsDay } from '@/nfts/queries'
 
 /**
  * The gHubs report — Alien Legends by the month, laid out to be printed.
@@ -48,9 +50,13 @@ export default function Ghubs() {
   const [days, setDays] = useState<DaySummary[] | null>(null)
   const [snap, setSnap] = useState<PlayersSnapshot | null>(null)
   const [month, setMonth] = useState<string>('')
+  const [farm, setFarm] = useState<FarmDay[]>([])
+  const [nftDays, setNftDays] = useState<NftsDay[]>([])
 
   useEffect(() => {
     fetchDailyFile().then((f) => setDays(f.days))
+    fetchFarmDaily().then((f) => setFarm(f.days))
+    fetchNftsDaily().then((f) => setNftDays(f.days))
     fetchPlayers()
       .then(setSnap)
       .catch(() => {})
@@ -85,6 +91,17 @@ export default function Ghubs() {
       snap ? dates.map((d) => snap.players.filter((p) => p.signup < dayStart(d) + 86_400_000).length) : dates.map(() => 0),
     [snap, dates.join()],
   )
+
+  /*
+     NFTs staked on the farm are a stock, not a flow: what matters is how many
+     are staked, and how that moved, not a sum of daily figures. So the pair is
+     "staked on the last day" and "change over the month", and there is no
+     running total. A day the collector missed carries the one before it.
+  */
+  const farmBy = useMemo(() => new Map(farm.map((d) => [d.date, Object.values(d.nfts).reduce((n, v) => n + v, 0)])), [farm])
+  const nftsBy = useMemo(() => new Map(nftDays.map((d) => [d.date, d.rows])), [nftDays])
+  const staked = stockOf(farmBy, dates, monthDates.length)
+  const nftRows = stockOf(nftsBy, dates, monthDates.length)
 
   /* Print light whatever the screen shows: a dark page is a page of ink, and
      most printers drop the backgrounds anyway, leaving white text on white. */
@@ -176,17 +193,82 @@ export default function Ghubs() {
             />
           ))}
 
+          {farm.length ? (
+            <Block
+              title="NFTs staked on the farm"
+              figures={stockFigures(staked, lastDay ? `Staked on ${longDate(lastDay)}` : 'Staked', FARM, within)}
+              color="var(--series-3)"
+              charts={[
+                { title: 'End of each day, since launch', dates, values: staked.values },
+                { title: `End of each day, ${name}`, dates: monthDates, values: staked.inMonth },
+              ]}
+            />
+          ) : null}
+
+          {nftDays.length ? (
+            <Block
+              title={`Rows in the ${NFTS} NFT table`}
+              figures={stockFigures(nftRows, lastDay ? `Rows on ${longDate(lastDay)}` : 'Rows', 'NFTs used in the day', within)}
+              color="var(--series-4)"
+              charts={[
+                { title: 'End of each day, since launch', dates, values: nftRows.values },
+                { title: `End of each day, ${name}`, dates: monthDates, values: nftRows.inMonth },
+              ]}
+            />
+          ) : null}
+
           <p className="section__note rpt__foot">
             Read from the WAX chain: daily totals from the game&rsquo;s stat-change log, players from its player
             table. &ldquo;Active&rdquo; counts a player who did something themselves that day — being credited a
             landowner&rsquo;s cut does not count. Each player counts once however many days they played. Paid out
-            is what players were credited: mines, landowner cuts, quests and the Candle. Generated{' '}
+            is what players were credited: mines, landowner cuts, quests and the Candle. NFTs staked are the counts
+            farm.ale keeps for each NFT type, as they stood at the end of each day. nfts.ale keeps a row for each NFT
+            used in the last 24 hours, so its rows at the end of a day are the distinct NFTs used that day. Generated{' '}
             {new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC.
           </p>
         </>
       )}
     </div>
   )
+}
+
+/**
+ * A quantity that stands at a level — NFTs staked, rows in a table — rather
+ * than one that adds up. The day's figure where there is one, the day before's
+ * where the collector missed it; and the month measured from the close of the
+ * day before it began, or from its own first day for the month of launch.
+ */
+interface Stock {
+  values: number[]
+  inMonth: number[]
+  start: number
+  end: number
+}
+
+function stockOf(byDate: Map<string, number>, dates: string[], monthDays: number): Stock {
+  let last = 0
+  const values = dates.map((d) => (last = byDate.get(d) ?? last))
+  const inMonth = values.slice(values.length - monthDays)
+  const before = values.length - monthDays - 1
+  return {
+    values,
+    inMonth,
+    start: before >= 0 ? values[before] : (inMonth[0] ?? 0),
+    end: values[values.length - 1] ?? 0,
+  }
+}
+
+/** Where it stood at the end, and how far it moved over the month. */
+function stockFigures(s: Stock, endLabel: string, endSub: string, within: string) {
+  const change = s.end - s.start
+  return [
+    { label: endLabel, value: whole(s.end), sub: endSub },
+    {
+      label: `Change ${within.charAt(0).toLowerCase()}${within.slice(1)}`,
+      value: `${change > 0 ? '+' : change < 0 ? '−' : ''}${whole(Math.abs(change))}`,
+      sub: `from ${whole(s.start)}`,
+    },
+  ]
 }
 
 /** Each day's value added to everything before it. */

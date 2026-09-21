@@ -39,6 +39,7 @@ import { fetchBalanceAt, fetchClaimedPayouts, fetchPoolActivity, fetchReserveAt 
 import { compressDay, HIDDEN_POOLS, poolTable, type PoolDailyFile, type PoolDay } from '../src/poolstats/rules'
 import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
+import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS } from '../src/projects/defs'
 import { fetchProjectDay } from '../src/projects/queries'
 import type { ProjectFile } from '../src/projects/rules'
@@ -240,10 +241,35 @@ async function farm(): Promise<void> {
   }
 }
 
+/**
+ * Rows in nfts.ale's assets table at the end of each day — which, since the
+ * table keeps a row per NFT used in the last 24 hours, is the distinct NFTs
+ * named in that day's usenfts calls. About eight thousand calls a day.
+ */
+async function nftRows(): Promise<void> {
+  const FILE = 'public/data/nfts-daily.json'
+  const file = load<NftsDailyFile>(FILE, { generatedAt: '', days: [] })
+  const dates = todo(file.days)
+  if (!dates.length) return console.log('nfts: up to date')
+  console.log(`nfts: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+  for (const date of dates) {
+    const t0 = Date.now()
+    const from = dayStart(date)
+    const rows = await fetchNftsUsed(from, from + DAY_MS)
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, { date, rows })
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    file.generatedAt = new Date().toISOString()
+    save(FILE, file)
+    console.log(`  ${date}  ${String(rows).padStart(6)} rows  ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+  }
+}
+
 void (async () => {
   if (!only || only === 'activity') await activity()
   if (!only || only === 'pools') await pools()
   if (!only || only === 'farm') await farm()
+  if (!only || only === 'nfts') await nftRows()
   if (!only || only === 'projects') await projects()
   if (only === 'landclaims') await landClaims()
 })()
