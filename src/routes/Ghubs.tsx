@@ -207,24 +207,18 @@ export default function Ghubs() {
 
           {nftDays.length ? (
             <Block
-              title={`Rows in the ${NFTS} NFT table`}
-              figures={stockFigures(nftRows, lastDay ? `Rows on ${longDate(lastDay)}` : 'Rows', 'NFTs used in the day', within)}
+              title="Unique NFTs used for other purposes per day"
+              figures={stockFigures(nftRows, lastDay ? `On ${longDate(lastDay)}` : 'Last day', `unique NFTs, ${NFTS}`, within)}
               color="var(--series-4)"
               charts={[
-                { title: 'End of each day, since launch', dates, values: nftRows.values },
-                { title: `End of each day, ${name}`, dates: monthDates, values: nftRows.inMonth },
+                { title: 'Per day, since launch', dates, values: nftRows.values },
+                { title: `Per day, ${name}`, dates: monthDates, values: nftRows.inMonth },
               ]}
             />
           ) : null}
 
           <p className="section__note rpt__foot">
-            Read from the WAX chain: daily totals from the game&rsquo;s stat-change log, players from its player
-            table. &ldquo;Active&rdquo; counts a player who did something themselves that day — being credited a
-            landowner&rsquo;s cut does not count. Each player counts once however many days they played. Paid out
-            is what players were credited: mines, landowner cuts, quests and the Candle. NFTs staked are the counts
-            farm.ale keeps for each NFT type, as they stood at the end of each day. nfts.ale keeps a row for each NFT
-            used in the last 24 hours, so its rows at the end of a day are the distinct NFTs used that day. Generated{' '}
-            {new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC.
+            Generated {new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC.
           </p>
         </>
       )}
