@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import type { NavGroup } from '../sections'
-import { hasWorkerProposals } from './chain/worker'
 import { peekDaos, subscribeDaos } from './useDaos'
 import { peekAllocators, subscribeAllocators } from './useAllocators'
 import { useTodoCounts } from './useTodo'
@@ -9,8 +8,10 @@ import { useTodoCounts } from './useTodo'
  * The DAO Manager's menu, built from the directory rather than written out.
  *
  * Every council is reachable from the sidebar as an indented entry under its
- * group, so getting to Neri is one click from anywhere. Open one and its own
- * pages appear below, as a group named after it.
+ * group, so getting to Neri is one click from anywhere. A council's own pages
+ * — proposals, worker proposals, council — are tabs on the council itself and
+ * are NOT repeated here: the same three links twice on one screen is a menu
+ * that grows every time you open something, for nothing it did not already do.
  *
  * Each entry carries a count of what is waiting on the connected account — and
  * only when there is something, so an absent badge means "nothing to do" rather
@@ -90,23 +91,6 @@ export function useDaoNav(pathname: string): NavGroup[] {
       ],
     },
   ]
-
-  /* Whichever DAO is open gets its own pages below. The id in the path is the
-     only thing this can go on before the directory lands, so the group is
-     labelled with it until the title is known. */
-  const m = /^\/daos\/([^/]+)/.exec(pathname)
-  const id = m?.[1]
-  if (id && !['syndicates', 'unions', 'proposals', 'candidates', 'activity'].includes(id)) {
-    const dao = daos.find((d) => d.id === id)
-    groups.push({
-      label: dao?.title ?? id,
-      tools: [
-        { to: `/daos/${id}/proposals`, label: 'Proposals' },
-        ...(dao && hasWorkerProposals(dao) ? [{ to: `/daos/${id}/worker`, label: 'Worker proposals' }] : []),
-        { to: `/daos/${id}/council`, label: 'Council & candidates' },
-      ],
-    })
-  }
 
   return groups
 }
