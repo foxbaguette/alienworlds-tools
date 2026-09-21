@@ -152,7 +152,10 @@ export async function historyCrawl<R>(
   */
   const tries = exact ? 1 + HISTORY_ENDPOINTS.length : 1
   let last = ''
-  let most = 0
+  /* The target, for an exact crawl: the largest count any server gives. A
+     server holding only part of the window counts only that part, and a
+     crawl measured against it would stop early and call itself complete. */
+  let most = exact ? await largestCount(path, params, from, until) : 0
   for (let attempt = 0; attempt < tries; attempt++) {
     const pinned = attempt ? HISTORY_ENDPOINTS[attempt - 1] : undefined
     try {
@@ -169,6 +172,36 @@ export async function historyCrawl<R>(
     }
   }
   throw new ShortReadError(`${path} ${JSON.stringify(params)}: ${last}`)
+}
+
+/**
+ * How many rows a window holds, asked of every server, the largest kept.
+ *
+ * A server that has dropped a day counts what it still holds — often nothing
+ * — without an error. None counts rows that do not exist, so the largest is
+ * right. 0 when no server gives an exact count.
+ */
+export async function largestCount(
+  path: string,
+  params: Record<string, string | number>,
+  from: number,
+  until: number,
+): Promise<number> {
+  const answers = await Promise.allSettled(
+    HISTORY_ENDPOINTS.map((server) =>
+      historyGet<{ total?: { value?: number; relation?: string } }>(
+        path,
+        { ...params, after: iso(from), before: iso(until), limit: 1, track: 'true' },
+        server,
+      ),
+    ),
+  )
+  let most = 0
+  for (const a of answers) {
+    if (a.status !== 'fulfilled' || a.value.total?.relation !== 'eq') continue
+    most = Math.max(most, Number(a.value.total.value) || 0)
+  }
+  return most
 }
 
 /*

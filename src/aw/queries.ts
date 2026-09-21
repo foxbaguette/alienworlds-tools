@@ -1,4 +1,4 @@
-import { historyGet, historySliced, historyTime, iso } from '@/chain/history'
+import { historySliced, historyTime, largestCount } from '@/chain/history'
 import { cached } from '@/chain/rpc'
 
 /**
@@ -26,16 +26,13 @@ import { cached } from '@/chain/rpc'
  * a Shard.
  */
 
-async function countOf(params: Record<string, string>, from: number, until: number): Promise<number> {
-  const page = await historyGet<{ total?: { value?: number } }>('/v2/history/get_actions', {
-    ...params,
-    after: iso(from),
-    before: iso(until),
-    limit: 1,
-    track: 'true',
-  })
-  return Number(page.total?.value ?? 0)
-}
+/**
+ * An exact count — the largest any server gives. A server that has dropped a
+ * day counts what it still holds, often nothing, so the first answer can be a
+ * confident 0 for a day of four million mines. See largestCount.
+ */
+const countOf = (params: Record<string, string>, from: number, until: number) =>
+  largestCount('/v2/history/get_actions', params, from, until)
 
 interface Claim {
   global_sequence: number

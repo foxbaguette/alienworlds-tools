@@ -66,6 +66,17 @@ const REPORTS: Record<string, ReportDef> = {
       { title: 'NFTs sent as rewards', group: 'nfts', pick: (d) => d.nfts, unit: 'NFTs' },
     ],
   },
+  th: {
+    title: 'Treasure Hunt - gHubs report',
+    players: 'winners',
+    subjects: [
+      { title: 'TLM paid out to winners', group: 'rewards', pick: net('TLM'), unit: 'TLM' },
+      { title: 'Shards paid out to winners', group: 'rewards', pick: net('Shards'), unit: 'Shards' },
+      /* A hunt is rewarded once, when its treasure is found. */
+      { title: 'Treasure hunts rewarded', group: 'game', pick: (d) => metricOf(d, ['planetaworld::distributere']) },
+      { title: 'Rewards won', group: 'game', pick: kind('treasure', 'TLM'), unit: 'winning places' },
+    ],
+  },
   arkhive: {
     title: 'Arkhive - gHubs report',
     allTime: true,

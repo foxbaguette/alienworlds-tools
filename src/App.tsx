@@ -184,6 +184,7 @@ function Shell() {
           <Route path="/pd/ghubs" element={<ProjectReport key="pd" projectKey="pd" />} />
           <Route path="/naron/ghubs" element={<ProjectReport key="naron" projectKey="naron" />} />
           <Route path="/arkhive/ghubs" element={<ProjectReport key="arkhive" projectKey="arkhive" />} />
+          <Route path="/th/ghubs" element={<ProjectReport key="th" projectKey="th" />} />
           <Route path="/aw/ghubs" element={<AwReport />} />
           <Route path="/daos/syndicates" element={<Councils group="syndicate" />} />
           <Route path="/daos/unions" element={<Councils group="union" />} />

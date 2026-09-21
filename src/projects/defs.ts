@@ -207,6 +207,27 @@ export const PROJECTS: ProjectDef[] = [
     /* The contract's first day: everything it has ever done is in its records. */
     since: '2026-07-14',
   },
+  {
+    key: 'th',
+    name: 'Treasure Hunt',
+    lead: 'The Treasure Hunt (planetaworld): treasures hidden on lands, their rewards shared among the players who find them.',
+    contracts: ['planetaworld'],
+    payers: ['planetaworld'],
+    paidNote: 'Paid out is the TLM and Shards shared among each treasure hunt\u2019s winners.',
+    /* Winners are named by the hunt's operators; players sign nothing here. */
+    activeFrom: 'recipients',
+    /*
+       Checked against its distributions: each winner gets "Treasure reward:
+       <hunt>" in TLM and the same hunt's Shards through ptpxy.worlds. Funds it
+       is sent to hold rewards come in, and are not rewards.
+    */
+    rewardMemos: [/Treasure reward/i],
+    categories: [{ key: 'treasure', label: 'Treasure rewards', memo: /Treasure reward/i }],
+    metrics: [
+      { key: 'hunts', label: 'Treasure hunts rewarded', actions: ['planetaworld::distributere'] },
+    ],
+    since: HISTORY_FLOOR,
+  },
 ]
 
 export function projectByKey(key: string): ProjectDef | undefined {
