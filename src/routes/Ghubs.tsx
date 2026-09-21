@@ -35,6 +35,7 @@ interface Metric {
 const METRICS: Metric[] = [
   { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM', group: 'rewards' },
   { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards', group: 'rewards' },
+  { key: 'wax', title: 'WAX paid out to players', stat: 'wax_earned', unit: 'WAX', group: 'rewards' },
   { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played', group: 'game' },
   { key: 'arenas', title: 'Arenas played', stat: 'arenas_played', group: 'game' },
   { key: 'quests', title: 'Quests completed', stat: 'quests_completed', group: 'game' },
