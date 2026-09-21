@@ -9,6 +9,8 @@
  * the thousand-odd `claimbudget`s in the history is `<planet>.dac@active`,
  * executed through msig.worlds — which is what `proposeAction` requests.
  */
+import { Name, Serializer, Transaction } from '@wharfkit/session'
+import { MSIG_OPEN, isExpired, type MsigProposal } from './proposals'
 import type { Dao } from './daos'
 
 /*
@@ -53,3 +55,35 @@ export const claimBudgetAction = (dao: Dao) => ({
  */
 export const claimedThisPeriod = (dao: Dao) =>
   dao.lastClaimBudget != null && dao.lastPeriod != null && dao.lastClaimBudget >= dao.lastPeriod
+
+/**
+ * A claim for this DAO that has been proposed and not yet run.
+ *
+ * Open, inside its expiry, and carrying `claimbudget` for THIS dac_id —
+ * read straight off the packed transaction, which needs no ABI: the action's
+ * account and name are in the envelope, and its only argument is a name.
+ * Without this, a council that has already raised the claim is told it "can
+ * execute as soon as it has its signatures", and raises a second one.
+ */
+export function pendingClaim(dao: Dao, proposals: MsigProposal[] | null | undefined): MsigProposal | null {
+  const contract = dao.custodianContract ?? 'dao.worlds'
+  for (const p of proposals ?? []) {
+    if (p.state !== MSIG_OPEN || isExpired(p)) continue
+    try {
+      const trx = Serializer.decode({ type: Transaction, data: p.packed_transaction })
+      const hit = trx.actions.some((a) => {
+        if (String(a.account) !== contract || String(a.name) !== 'claimbudget') return false
+        try {
+          return String(Serializer.decode({ type: Name, data: a.data })) === dao.id
+        } catch {
+          /* Undecodable argument: still a claimbudget in this DAO's own list. */
+          return true
+        }
+      })
+      if (hit) return p
+    } catch (err) {
+      console.error(`Could not read proposal ${p.proposal_name}:`, err)
+    }
+  }
+  return null
+}

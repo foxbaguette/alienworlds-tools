@@ -36,6 +36,7 @@ import {
   claimBudgetAction,
   claimedThisPeriod,
   hasBudget,
+  pendingClaim,
   periodFloorDays,
   setPeriodAction,
 } from '../chain/period'
@@ -472,8 +473,11 @@ function PeriodForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
   const floor = periodFloorDays(dao)
   const current = dao.periodLength ? Math.round(dao.periodLength / 86_400) : null
   const [days, setDays] = useState(String(current ?? 7))
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
+  /* null until typed in: the suggested text is written INTO the fields and
+     follows the number of days, and only stops following once somebody has
+     put their own words there. */
+  const [title, setTitle] = useState<string | null>(null)
+  const [description, setDescription] = useState<string | null>(null)
 
   const n = Math.round(Number(days))
   const bad = !days.trim() || !Number.isFinite(n) || n < floor || n > PERIOD_MAX_DAYS
@@ -506,14 +510,14 @@ function PeriodForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
           <span className="ale-field__name">
             Title<i>what the council sees in its list</i>
           </span>
-          <input type="text" value={title} placeholder={fallbackTitle} onChange={(e) => setTitle(e.target.value)} />
+          <input type="text" value={title ?? fallbackTitle} onChange={(e) => setTitle(e.target.value)} />
         </label>
       </div>
       <label className="ale-field">
         <span className="ale-field__name">
-          Why<i>optional — the case for the change</i>
+          Why<i>what the council reads when it opens it</i>
         </span>
-        <textarea rows={3} value={description} placeholder={fallbackWhy} onChange={(e) => setDescription(e.target.value)} />
+        <textarea rows={3} value={description ?? fallbackWhy} onChange={(e) => setDescription(e.target.value)} />
       </label>
 
       <div className="page__actions">
@@ -521,7 +525,9 @@ function PeriodForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
           className="btn btn--go"
           type="button"
           disabled={busy || bad || unchanged}
-          onClick={() => void onPropose(setPeriodAction(dao, n), title.trim() || fallbackTitle, description.trim() || fallbackWhy)}
+          onClick={() =>
+            void onPropose(setPeriodAction(dao, n), (title ?? '').trim() || fallbackTitle, (description ?? '').trim() || fallbackWhy)
+          }
         >
           {busy ? 'Signing…' : `Propose to ${dao.title}`}
         </button>
@@ -542,6 +548,10 @@ function PeriodForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
  */
 function BudgetForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolean; onCancel: () => void; onPropose: Raise }) {
   const already = claimedThisPeriod(dao)
+  /* The Proposals tab this form sits on has already read the list. */
+  const pending = pendingClaim(dao, proposalsOf(dao.id))
+  const got = pending ? approvalCount(pending) : 0
+  const need = dao.approvalThreshold
   const when = (ms: number | null) => {
     if (ms == null) return 'never'
     const age = Date.now() - ms
@@ -561,8 +571,23 @@ function BudgetForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
           ? `Already drawn this term. Every syndicate claims once between elections, so this would only execute after the next one${
               dao.nextElection ? `, on ${isoDay(dao.nextElection)}` : ''
             } — the proposal stays open ${PROPOSAL_DAYS} days.`
-          : 'Not drawn yet this term, so it can execute as soon as it has its signatures.'}
+          : pending
+            ? 'Not drawn yet this term — but a claim is already on its way.'
+            : 'Not drawn yet this term, so it can execute as soon as it has its signatures.'}
       </p>
+      {/* The claim already raised, if there is one. A second would be a
+          second thing for the council to sign that can never run once the
+          first has, so this says where the first one stands instead. */}
+      {pending ? (
+        <p className="dao-note">
+          <b>&ldquo;{msigTitle(pending)}&rdquo;</b> was proposed by {pending.proposer} and is open —{' '}
+          {got >= need
+            ? `it has its ${need} signatures and only needs executing.`
+            : `${got} of ${need} signatures so far.`}{' '}
+          Expires {isoDay(msigExpiry(pending.packed_transaction))}. Sign or run it in the list below rather than raising
+          another.
+        </p>
+      ) : null}
 
       <div className="page__actions">
         <button className="btn btn--go" type="button" disabled={busy} onClick={() => void onPropose(claimBudgetAction(dao), title, description)}>
