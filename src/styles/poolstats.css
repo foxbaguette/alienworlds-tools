@@ -568,3 +568,19 @@
 /* The source pool holds two piles: what it has released and what it is still
    holding back. The card shows both on one line. */
 .pcard__reserve { color: var(--text-3); }
+
+/* A second series in the readout, in its own line under the first. */
+.lchart__tip .lchart__tip2 { font-weight: 500; color: var(--text-2); }
+
+/* What each line is, when there is more than one. */
+.lchart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.lchart__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.lchart__legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; }
+.lchart__legend i.is-dashed { height: 0; background: none; border-top: 2px dashed; border-radius: 0; }

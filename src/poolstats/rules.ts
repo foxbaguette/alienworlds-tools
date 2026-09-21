@@ -557,6 +557,13 @@ export interface PoolDay {
   rows: PoolRow[]
   /** Each pool's balance at the end of the day, in whole tokens. */
   close: Record<string, number>
+  /**
+   * The parent pool's reserve at the end of the day, in whole TLM. Only the
+   * parent: its reserve is the one worth a line — it is where everything
+   * else is released from — and the sub-pools' would be a read each a day
+   * for numbers nobody has asked to see.
+   */
+  reserve?: Record<string, number>
 }
 
 export interface PoolDailyFile {

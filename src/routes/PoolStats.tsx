@@ -1,14 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { formatDecimals, formatNumber } from '@/format'
-import {
-  assetAmount,
-  fetchPoolDescriptions,
-  fetchShardPools,
-  fetchTlmPools,
-  liveShardPool,
-  liveTlmPool,
-} from '@/pools/tables'
+import { fetchPoolDescriptions, fetchShardPools, fetchTlmPools, liveShardPool, liveTlmState } from '@/pools/tables'
 import { fetchPlayerTags } from '@/players'
 import { fetchPoolActivity, fetchPoolDailyFile, fetchPoolHistory } from '@/poolstats/queries'
 import { progressMeter } from '@/chain/history'
@@ -72,6 +65,16 @@ function closesOf(days: PoolDay[], pool: string): BalancePoint[] {
     .filter((d) => d.close[pool] !== undefined)
     .map((d) => ({ t: Date.parse(d.date + 'T00:00:00Z') + DAY, v: d.close[pool] }))
 }
+
+/** Reserve at the end of each collected day — recorded for parent pools only. */
+function reserveClosesOf(days: PoolDay[], pool: string): BalancePoint[] {
+  return days
+    .filter((d) => d.reserve?.[pool] !== undefined)
+    .map((d) => ({ t: Date.parse(d.date + 'T00:00:00Z') + DAY, v: d.reserve![pool] }))
+}
+
+/* The reserve's line: dashed, and a colour none of the pool types use. */
+const RESERVE_COLOR = 'var(--series-4)'
 
 const ICON: Record<string, string> = {
   tlm: 'icons/tlm.svg',
@@ -219,14 +222,17 @@ export default function PoolStats() {
            * totals or every payout would be counted twice. But its balance is
            * the first place a shortfall would show, which is worth watching.
            */
-          ...tlm.map((p) => ({
-            pool: p.pool,
-            type: 'tlm',
-            balance: liveTlmPool(p, now) / 10_000,
-            ...((p.subpools ?? []).length
-              ? { parent: true, reserve: assetAmount(p.tlm_reserve, 4) / 10_000 }
-              : {}),
-          })),
+          ...tlm.map((p) => {
+            /* Projected together: what the fill rate has moved into the
+               balance since the row was written has left the reserve. */
+            const live = liveTlmState(p, now)
+            return {
+              pool: p.pool,
+              type: 'tlm',
+              balance: live.current / 10_000,
+              ...((p.subpools ?? []).length ? { parent: true, reserve: live.reserve / 10_000 } : {}),
+            }
+          }),
           ...shards.map((p) => ({ pool: p.pool, type: 'shards', balance: liveShardPool(p, now) / 10 })),
         ])
       })
@@ -328,6 +334,7 @@ export default function PoolStats() {
               (selected.startsWith('shrd') ? 'shards' : 'tlm')
             }
             balance={balances.find((b) => b.pool === selected)?.balance}
+            reserve={balances.find((b) => b.pool === selected)?.reserve}
           />
         ) : (
           <Overview
@@ -651,6 +658,7 @@ function PoolDetail({
   summary,
   type,
   balance,
+  reserve,
 }: {
   frame: Frame
   payouts: Payout[]
@@ -659,6 +667,8 @@ function PoolDetail({
   summary?: PoolSummary
   type: string
   balance?: number
+  /** Present only for a parent pool: what it is holding back. */
+  reserve?: number
 }) {
   const players = useMemo(() => playersOf(payouts, pool), [payouts, pool])
   const mine = useMemo(() => payouts.filter((p) => poolOf(p) === pool).reverse(), [payouts, pool])
@@ -701,6 +711,31 @@ function PoolDetail({
     }
   }, [pool, type, from, balance, detailed, frame])
 
+  /*
+     The reserve, for a parent pool: the same row's other half, read the same
+     way — every change for a day or a week, the recorded daily closes past
+     that. Allowed to be missing on its own; the balance line stands without it.
+  */
+  const [reserveLine, setReserveLine] = useState<BalancePoint[] | null>(null)
+  useEffect(() => {
+    if (reserve === undefined) return setReserveLine(null)
+    if (!detailed) {
+      setReserveLine(reserveClosesOf(frame.days, pool))
+      return
+    }
+    let live = true
+    setReserveLine(null)
+    fetchPoolHistory('tlmpools', pool, from, false, 'reserve')
+      .then((pts) => {
+        if (!live) return
+        setReserveLine(frame.live ? withNow(pts, reserve) : pts.filter((p) => p.t <= frame.until))
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [pool, from, reserve, detailed, frame])
+
   const sym = SYMBOL[type] ?? type
   const [showAll, setShowAll] = useState(false)
   const escrowOnly = summary ? summary.intoEscrow > 0 : false
@@ -716,6 +751,7 @@ function PoolDetail({
         <Total label="Players paid" value={formatNumber(players.length)} />
         <Total label="Biggest payment" value={amount(summary?.biggest ?? 0, type)} />
         {balance !== undefined && <Total label={`Holds now (${sym})`} value={amount(balance, type)} />}
+        {reserve !== undefined && <Total label={`In reserve now (${sym})`} value={amount(reserve, type)} />}
       </section>
 
       {summary && summary.out > 0 && (
@@ -753,6 +789,9 @@ function PoolDetail({
               unit={sym}
               format={(v) => amount(v, type)}
               label={`${pool} balance`}
+              {...(reserveLine?.length
+                ? { name: 'Holds', extra: { points: reserveLine, color: RESERVE_COLOR, name: 'Reserve' } }
+                : {})}
             />
           ) : (
             <div className="pstats__chartwait">
@@ -769,6 +808,9 @@ function PoolDetail({
             {detailed
               ? 'Every recorded change to the pool row, joined up. Rises are the fill rate topping it up; drops are money leaving it.'
               : 'The balance at the end of each UTC day.'}
+            {reserve !== undefined
+              ? ' The dashed line is the reserve: TLM this pool has been given but not yet released into what it holds.'
+              : ''}
           </p>
         </section>
       ) : (

@@ -98,20 +98,29 @@ export function liveShardPool(pool: ShardPool, now = Date.now()): number {
  * not `tlm_current`, so it cannot change this mine's payout.
  */
 export function liveTlmPool(pool: TlmPool, now = Date.now()): number {
-  let current = assetAmount(pool.tlm_current, 4)
-  if (!pool.has_fillrate) return current
+  return liveTlmState(pool, now).current
+}
 
+/**
+ * Both halves of a TLM pool, projected forward together: what has moved into
+ * `current` has left `reserve`, so quoting the stored reserve beside a
+ * projected balance would count the same TLM twice.
+ */
+export function liveTlmState(pool: TlmPool, now = Date.now()): { current: number; reserve: number } {
+  let current = assetAmount(pool.tlm_current, 4)
   let reserve = assetAmount(pool.tlm_reserve, 4)
+  if (!pool.has_fillrate) return { current, reserve }
+
   let rate = assetAmount(pool.fillrate, 4)
   let expiry = Date.parse(pool.fillrate_expiry + 'Z')
   let last = Date.parse(pool.last_current_update + 'Z')
 
   if (expiry > now) {
     const secs = Math.floor((now - last) / 1000)
-    if (secs <= 0) return current
+    if (secs <= 0) return { current, reserve }
     const fill = Math.min(Math.floor((rate * secs) / 60), reserve)
     /* The contract ignores dust: anything at or under 100 (0.01 TLM) is not moved. */
-    return fill > 100 ? current + fill : current
+    return fill > 100 ? { current: current + fill, reserve: reserve - fill } : { current, reserve }
   }
 
   /* Expired: replay the day-by-day catch-up the contract would run. */
@@ -131,5 +140,5 @@ export function liveTlmPool(pool: TlmPool, now = Date.now()): number {
   }
 
   current += moved
-  return current
+  return { current, reserve }
 }

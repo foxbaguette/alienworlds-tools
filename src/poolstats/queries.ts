@@ -57,7 +57,7 @@ interface DeltaPage {
   deltas?: {
     timestamp: string
     block_num: number
-    data: { tlm_current?: string; shard_current?: string | number }
+    data: { tlm_current?: string; tlm_reserve?: string; shard_current?: string | number }
   }[]
 }
 
@@ -323,6 +323,20 @@ export function fetchPoolDailyFile(): Promise<PoolDailyFile> {
 }
 
 /** A pool's balance as it stood at `at`: the last write before it. */
+/** A TLM pool's reserve as it stood at `at`, in whole TLM. */
+export async function fetchReserveAt(pool: string, at: number): Promise<number | undefined> {
+  const page = await historyGet<DeltaPage>('/v2/history/get_deltas', {
+    code: 'pools.ale',
+    scope: 'pools.ale',
+    table: 'tlmpools',
+    primary_key: nameToUint64(pool).toString(),
+    before: iso(at),
+    limit: 1,
+  })
+  const d = page.deltas?.[0]
+  return d ? amountOf(String(d.data.tlm_reserve ?? '0')) : undefined
+}
+
 export async function fetchBalanceAt(table: PoolTable, pool: string, at: number): Promise<number | undefined> {
   const page = await historyGet<DeltaPage>('/v2/history/get_deltas', {
     code: 'pools.ale',
@@ -337,26 +351,27 @@ export async function fetchBalanceAt(table: PoolTable, pool: string, at: number)
   return table === 'tlmpools' ? amountOf(String(d.data.tlm_current ?? '0')) : Number(d.data.shard_current ?? 0) / 10
 }
 
+type Delta = NonNullable<DeltaPage['deltas']>[number]
+
 /**
- * A pool's balance over time: every write since `sinceMs`, plus the last one
- * before it so the line starts at the left edge rather than at the first mine.
+ * Every write to one pool row since `sinceMs`, plus the last one before it.
+ *
+ * Shared by both halves of a TLM pool: the balance and the reserve are two
+ * fields of the same row, so a chart drawing both reads the row's history
+ * once rather than crawling the same ten thousand writes twice.
  */
-export function fetchPoolHistory(
+function poolWrites(
   table: PoolTable,
   pool: string,
   sinceMs: number,
-  refresh = false,
-): Promise<BalancePoint[]> {
+  refresh: boolean,
+): Promise<{ before: Delta | undefined; rows: Delta[] }> {
   const until = Date.now()
   return remember(
-    `hist:${table}:${pool}:${Math.floor(sinceMs / 60_000)}`,
+    `writes:${table}:${pool}:${Math.floor(sinceMs / 60_000)}`,
     async () => {
       const key = nameToUint64(pool).toString()
       const base = { code: 'pools.ale', scope: 'pools.ale', table, primary_key: key }
-      type Delta = NonNullable<DeltaPage['deltas']>[number]
-      const valueOf = (d: Delta['data']) =>
-        table === 'tlmpools' ? amountOf(String(d.tlm_current ?? '0')) : Number(d.shard_current ?? 0) / 10
-
       const [before, rows] = await Promise.all([
         historyGet<DeltaPage>('/v2/history/get_deltas', { ...base, before: iso(sinceMs), limit: 1 }),
         historyCrawl<Delta>(
@@ -370,13 +385,32 @@ export function fetchPoolHistory(
           12,
         ),
       ])
-
-      const points: BalancePoint[] = []
-      const first = before.deltas?.[0]
-      if (first) points.push({ t: sinceMs, v: valueOf(first.data) })
-      for (const d of rows) points.push({ t: historyTime(d.timestamp), v: valueOf(d.data) })
-      return points.sort((a, b) => a.t - b.t)
+      return { before: before.deltas?.[0], rows }
     },
     refresh,
   )
+}
+
+/**
+ * A pool's balance over time: every write since `sinceMs`, plus the last one
+ * before it so the line starts at the left edge rather than at the first mine.
+ */
+export async function fetchPoolHistory(
+  table: PoolTable,
+  pool: string,
+  sinceMs: number,
+  refresh = false,
+  /** Which half of a TLM pool: what it can pay, or what it holds back. */
+  field: 'current' | 'reserve' = 'current',
+): Promise<BalancePoint[]> {
+  const { before, rows } = await poolWrites(table, pool, sinceMs, refresh)
+  const valueOf = (d: Delta['data']) =>
+    table !== 'tlmpools'
+      ? Number(d.shard_current ?? 0) / 10
+      : amountOf(String((field === 'reserve' ? d.tlm_reserve : d.tlm_current) ?? '0'))
+
+  const points: BalancePoint[] = []
+  if (before) points.push({ t: sinceMs, v: valueOf(before.data) })
+  for (const d of rows) points.push({ t: historyTime(d.timestamp), v: valueOf(d.data) })
+  return points.sort((a, b) => a.t - b.t)
 }

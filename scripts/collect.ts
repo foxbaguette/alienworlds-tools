@@ -34,7 +34,7 @@ import {
   type DailyFile,
   type PlayersDailyFile,
 } from '../src/activity/rules'
-import { fetchBalanceAt, fetchClaimedPayouts, fetchPoolActivity } from '../src/poolstats/queries'
+import { fetchBalanceAt, fetchClaimedPayouts, fetchPoolActivity, fetchReserveAt } from '../src/poolstats/queries'
 import { compressDay, HIDDEN_POOLS, poolTable, type PoolDailyFile, type PoolDay } from '../src/poolstats/rules'
 import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { PROJECTS } from '../src/projects/defs'
@@ -113,6 +113,8 @@ async function pools(): Promise<void> {
     ...tlm.map((p) => ({ pool: p.pool, type: 'tlm' })),
     ...shards.map((p) => ({ pool: p.pool, type: 'shards' })),
   ].filter((p) => !HIDDEN_POOLS.has(p.pool))
+  /* The pools other pools are released from, whose reserve gets a line. */
+  const parents = tlm.filter((p) => (p.subpools ?? []).length).map((p) => p.pool)
 
   for (const date of dates) {
     const t0 = Date.now()
@@ -124,7 +126,12 @@ async function pools(): Promise<void> {
       const v = await fetchBalanceAt(poolTable(b.type), b.pool, until).catch(() => undefined)
       if (v !== undefined) close[b.pool] = v
     }
-    const day: PoolDay = { date, rows: compressDay(payouts), close }
+    const reserve: Record<string, number> = {}
+    for (const pool of parents) {
+      const v = await fetchReserveAt(pool, until).catch(() => undefined)
+      if (v !== undefined) reserve[pool] = v
+    }
+    const day: PoolDay = { date, rows: compressDay(payouts), close, ...(parents.length ? { reserve } : {}) }
     const by = new Map(file.days.map((d) => [d.date, d]))
     by.set(date, day)
     file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
