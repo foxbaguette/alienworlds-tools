@@ -59,6 +59,9 @@ export function statValue(stats: Record<string, number>, stat: string): number {
 
 export const DAY_MS = 86_400_000
 
+/** The first player signed up on this day; nothing before it is the game. */
+export const LAUNCH = '2026-08-31'
+
 /** `YYYY-MM-DD` for a UTC instant. */
 export function dayOf(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)

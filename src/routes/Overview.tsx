@@ -11,6 +11,7 @@ import {
 import {
   dayOf,
   dayStart,
+  LAUNCH,
   legendCount,
   signupsByDay,
   statValue,
@@ -35,7 +36,6 @@ const RANGES = [
 ] satisfies readonly { key: PeriodKey; label: string; days: number }[]
 
 /** The first player signed up this day. */
-const LAUNCH = '2026-08-31'
 
 const whole = (v: number) => formatNumber(Math.round(v))
 

@@ -28,6 +28,7 @@ import {
   dayOf,
   dayStart,
   DAY_MS,
+  LAUNCH,
   mergeDays,
   summariseDay,
   summarisePlayers,
@@ -42,8 +43,6 @@ import { PROJECTS } from '../src/projects/defs'
 import { fetchProjectDay } from '../src/projects/queries'
 import type { ProjectFile } from '../src/projects/rules'
 
-/** The first player signed up on this day; nothing before it is the game. */
-const LAUNCH = '2026-08-31'
 
 const args = process.argv.slice(2)
 const flag = (name: string) => {

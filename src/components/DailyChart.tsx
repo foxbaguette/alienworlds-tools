@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 
 export interface Series {
   key: string
@@ -9,7 +9,8 @@ export interface Series {
 }
 
 /**
- * One value per day, as bars (one series) or lines (up to three).
+ * One value per day, as bars (one series) or lines (up to three). Lines can
+ * be filled down to the axis, which reads as a quantity rather than a trend.
  *
  * Drawn in plain SVG at the pixel width it is given, so text stays crisp.
  * One y-axis, starting at zero. Hovering a day shows every series' value for
@@ -23,6 +24,7 @@ export function DailyChart({
   height = 220,
   format = (v: number) => Math.round(v).toLocaleString('en-US'),
   label,
+  fill = false,
 }: {
   dates: string[]
   series: Series[]
@@ -30,10 +32,14 @@ export function DailyChart({
   height?: number
   format?: (v: number) => string
   label: string
+  /** Shade under each line, fading towards the axis. Lines only. */
+  fill?: boolean
 }) {
   const box = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const [hover, setHover] = useState<number | null>(null)
+  /* Gradient ids are document-wide; two charts on a page must not share one. */
+  const uid = useId().replace(/:/g, '')
 
   useEffect(() => {
     const el = box.current
@@ -80,6 +86,10 @@ export function DailyChart({
           <svg
             width={width}
             height={height}
+            /* The same box it is drawn in, so a printed page — narrower than
+               the screen, and laid out without a resize to redraw it — can
+               scale the chart instead of cropping it. */
+            viewBox={`0 0 ${width} ${height}`}
             role="img"
             aria-label={label}
             onPointerMove={(e) => {
@@ -117,6 +127,23 @@ export function DailyChart({
                 )
               : series.map((s) => (
                   <g key={s.key}>
+                    {fill && s.values.length > 0 && (
+                      <>
+                        <defs>
+                          <linearGradient id={`dc-${uid}-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={s.color} stopOpacity={0.3} />
+                            <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
+                          </linearGradient>
+                        </defs>
+                        <path
+                          d={
+                            s.values.map((v, i) => `${i ? 'L' : 'M'}${cx(i).toFixed(1)},${y(v).toFixed(1)}`).join('') +
+                            `L${cx(s.values.length - 1).toFixed(1)},${pad.t + h}L${cx(0).toFixed(1)},${pad.t + h}Z`
+                          }
+                          fill={`url(#dc-${uid}-${s.key})`}
+                        />
+                      </>
+                    )}
                     <path
                       d={s.values.map((v, i) => `${i ? 'L' : 'M'}${cx(i).toFixed(1)},${y(v).toFixed(1)}`).join('')}
                       fill="none"

@@ -66,6 +66,7 @@ export const SECTIONS: Section[] = [
           { to: '/overview', label: 'Overview' },
           { to: '/stats', label: 'Stats' },
           { to: '/pools', label: 'Reward pools' },
+          { to: '/ghubs', label: 'gHubs report' },
         ],
       },
       ...PROJECTS.map((p) => ({ label: p.name, tools: [{ to: `/${p.key}`, label: 'Overview' }] })),

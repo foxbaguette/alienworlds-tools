@@ -5,6 +5,7 @@ import './styles/base.css'
 import './styles/app.css'
 import './styles/overview.css'
 import './styles/poolstats.css'
+import './styles/report.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
