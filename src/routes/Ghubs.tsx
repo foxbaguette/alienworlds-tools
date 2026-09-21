@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { fetchDailyFile, fetchPlayers, type PlayersSnapshot } from '@/activity/queries'
 import { dayStart, statValue, summariseRange, type DaySummary } from '@/activity/rules'
 import { DailyChart, longDate } from '@/components/DailyChart'
@@ -29,23 +29,37 @@ interface Metric {
   /** Where the value comes from: a stat, or the day's active-player count. */
   stat?: string
   unit?: string
+  group: Group
 }
 
 const METRICS: Metric[] = [
-  { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM' },
-  { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards' },
-  { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played' },
-  { key: 'arenas', title: 'Arenas played', stat: 'arenas_played' },
-  { key: 'quests', title: 'Quests completed', stat: 'quests_completed' },
-  { key: 'recruits', title: 'Fighters recruited', stat: 'recruits' },
+  { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM', group: 'rewards' },
+  { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards', group: 'rewards' },
+  { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played', group: 'game' },
+  { key: 'arenas', title: 'Arenas played', stat: 'arenas_played', group: 'game' },
+  { key: 'quests', title: 'Quests completed', stat: 'quests_completed', group: 'game' },
+  { key: 'recruits', title: 'Fighters recruited', stat: 'recruits', group: 'game' },
 ]
 
 /**
- * One colour for every graph. Each graph shows one quantity under its own
- * heading, so a colour would have nothing to tell apart — and a different
- * one per section invites the reader to look for a meaning that is not there.
+ * A colour per GROUP of sections, never per section: the report reads as four
+ * parts — who plays, what they are paid, what they do, and what the NFTs are
+ * doing — and the colour is how a reader flicking through the pages knows
+ * which part they are in. Within a group every graph is the same colour.
  */
-const LINE = 'var(--series-1)'
+type Group = 'players' | 'rewards' | 'game' | 'nfts'
+const GROUP_COLOR: Record<Group, string> = {
+  players: 'var(--series-1)',
+  rewards: 'var(--series-4)',
+  game: 'var(--rpt-game)',
+  nfts: 'var(--rpt-nfts)',
+}
+const GROUP_NAME: Record<Group, string> = {
+  players: 'Players',
+  rewards: 'Rewards paid out',
+  game: 'Game activity',
+  nfts: 'NFTs',
+}
 
 const whole = (v: number) => formatNumber(Math.round(v))
 const monthOf = (date: string) => date.slice(0, 7)
@@ -160,7 +174,9 @@ export default function Ghubs() {
       ) : (
         <>
           <Block
-            title="Players"
+            head="players"
+            title="Accounts and activity"
+            color={GROUP_COLOR.players}
             figures={[
               { label: 'All time', value: playersAllTime === null ? '…' : whole(playersAllTime), sub: 'accounts signed up' },
               {
@@ -176,25 +192,30 @@ export default function Ghubs() {
             ]}
           />
 
-          {METRICS.map((m) => (
-            <Block
-              key={m.key}
-              title={m.title}
-              figures={[
-                { label: 'All time', value: whole(sum(upTo, m.stat!)), sub: m.unit },
-                { label: within, value: whole(sum(inMonth, m.stat!)), sub: m.unit },
-              ]}
-              charts={[
-                { title: 'Per day, since launch', dates, values: upTo.map((d) => statValue(d.stats, m.stat!)) },
-                { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat!)) },
-                { title: 'Running total, since launch', dates, values: running(upTo.map((d) => statValue(d.stats, m.stat!))) },
-              ]}
-            />
+          {METRICS.map((m, i) => (
+            <Fragment key={m.key}>
+              <Block
+                head={i === 0 || METRICS[i - 1].group !== m.group ? m.group : undefined}
+                title={m.title}
+                color={GROUP_COLOR[m.group]}
+                figures={[
+                  { label: 'All time', value: whole(sum(upTo, m.stat!)), sub: m.unit },
+                  { label: within, value: whole(sum(inMonth, m.stat!)), sub: m.unit },
+                ]}
+                charts={[
+                  { title: 'Per day, since launch', dates, values: upTo.map((d) => statValue(d.stats, m.stat!)) },
+                  { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat!)) },
+                  { title: 'Running total, since launch', dates, values: running(upTo.map((d) => statValue(d.stats, m.stat!))) },
+                ]}
+              />
+            </Fragment>
           ))}
 
           {farm.length ? (
             <Block
+              head="nfts"
               title="NFTs staked on the farm"
+              color={GROUP_COLOR.nfts}
               figures={stockFigures(staked, lastDay ? `Staked on ${longDate(lastDay)}` : 'Staked', FARM, within)}
               charts={[
                 { title: 'End of each day, since launch', dates, values: staked.values },
@@ -205,7 +226,9 @@ export default function Ghubs() {
 
           {nftDays.length ? (
             <Block
+              head={farm.length ? undefined : 'nfts'}
               title="Unique NFTs used for other purposes per day"
+              color={GROUP_COLOR.nfts}
               figures={stockFigures(nftRows, lastDay ? `On ${longDate(lastDay)}` : 'Last day', `unique NFTs, ${NFTS}`, within)}
               charts={[
                 { title: 'Per day, since launch', dates, values: nftRows.values },
@@ -262,6 +285,19 @@ function stockFigures(s: Stock, endLabel: string, endSub: string, within: string
   ]
 }
 
+/**
+ * The heading over a group of sections, in the group's colour — the one place
+ * the colour appears as a name rather than as a line, which is what lets it
+ * carry meaning in the graphs below.
+ */
+function GroupHead({ group }: { group: Group }) {
+  return (
+    <h2 className="rpt__group" style={{ '--grp': GROUP_COLOR[group] } as CSSProperties}>
+      {GROUP_NAME[group]}
+    </h2>
+  )
+}
+
 /** Each day's value added to everything before it. */
 function running(values: number[]): number[] {
   let n = 0
@@ -269,17 +305,28 @@ function running(values: number[]): number[] {
 }
 
 function Block({
+  head,
   title,
   figures,
   charts,
+  color,
 }: {
+  /**
+   * The group this section opens, if it is the first of one. Drawn INSIDE the
+   * section so a printed page can never leave the group's name at the foot of
+   * one page and its first section at the top of the next — the section is
+   * kept whole, and the name is part of it.
+   */
+  head?: Group
   title: string
   figures: { label: string; value: string; sub?: string }[]
   charts: { title: string; dates: string[]; values: number[] }[]
+  color: string
 }) {
   return (
     <section className="section rpt__block">
-      <h2 className="section__title">{title}</h2>
+      {head ? <GroupHead group={head} /> : null}
+      <h3 className="section__title">{title}</h3>
       <div className="rpt__body card card--pad">
         <div className="rpt__figures">
           {figures.map((f) => (
@@ -299,7 +346,7 @@ function Block({
                 fill
                 height={160}
                 dates={c.dates}
-                series={[{ key: 'v', label: title, color: LINE, values: c.values }]}
+                series={[{ key: 'v', label: title, color, values: c.values }]}
                 label={`${title}: ${c.title}`}
               />
             </div>

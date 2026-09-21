@@ -1,6 +1,35 @@
 /* The gHubs report: a figure pair and a graph per subject, and a printed form. */
 
+/* Group colours the shared palette has no slot for: red for what players do,
+   purple for the NFTs. Not --critical, which means an error everywhere else. */
+:root {
+  --rpt-game: #d24545;
+  --rpt-nfts: #7b52d9;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    --rpt-game: #e8625f;
+    --rpt-nfts: #a384f0;
+  }
+}
+:root[data-theme='dark'] {
+  --rpt-game: #e8625f;
+  --rpt-nfts: #a384f0;
+}
+
 .rpt__block { gap: var(--sp-2); }
+
+/* A group's name, with its colour as a rule beneath it. The sections under it
+   draw their graphs in the same colour. */
+.rpt__group {
+  margin: 0 0 var(--sp-2);
+  padding-bottom: var(--sp-2);
+  font-size: var(--fs-xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  border-bottom: 3px solid var(--grp);
+}
+.rpt__block + .rpt__block .rpt__group { margin-top: var(--sp-4); }
 
 /* The two figures across the top, the three graphs in a row beneath:
    since launch, the month alone, and the running total. */
@@ -75,6 +104,7 @@
   .rpt { gap: 3mm; padding-bottom: 0; }
   .rpt .page__head { margin-bottom: 2mm; }
   .rpt__block { break-inside: avoid; page-break-inside: avoid; }
+  .rpt__group { margin: 2mm 0 1mm; font-size: 15pt; }
   .rpt__body { gap: 3mm; padding: 4mm 5mm; }
   .rpt__figures { gap: 8mm; }
   .rpt__charts { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5mm; }
