@@ -270,6 +270,24 @@ export function wpDocUrl(hash: string | null | undefined): string | null {
   return null
 }
 
+/**
+ * The arbiters a proposal may name right now, read straight from the chain.
+ *
+ * The custodians add and remove them (addarbwl, rmvarbwl) and change their
+ * rating (updarbwl), so a list read when the page opened can be out of date
+ * by the time a proposal is written. Only those rated above zero are offered
+ * — createprop refuses the others.
+ */
+export async function fetchArbiters(dacId: string): Promise<string[]> {
+  const rows = await getRows<{ arbiter: string; rating: number }>({
+    code: WP_CONTRACT,
+    scope: dacId,
+    table: 'arbwhitelist',
+    limit: 500,
+  })
+  return rows.filter((a) => Number(a.rating) > 0).map((a) => a.arbiter).sort()
+}
+
 export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | null): Promise<WorkerData> {
   /* Bounded to one account, for the three reads that are about the signer. */
   const one = actor ? { lower_bound: actor, upper_bound: actor, limit: 1 } : null

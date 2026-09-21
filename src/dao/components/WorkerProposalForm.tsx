@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   createPropActions,
+  fetchArbiters,
   uploadToIpfs,
   wpFeeShortfall,
   type WorkerData,
@@ -46,6 +47,26 @@ export function WorkerProposalForm({
     days: 7,
     category: 0,
   })
+  /* The whitelist as it stands now, not as it stood when the page loaded:
+     the custodians can add, remove and re-rate arbiters at any time. The
+     cached list is shown until the fresh one arrives. */
+  const [arbiters, setArbiters] = useState<string[]>(wp.arbiters)
+  const [arbitersFresh, setArbitersFresh] = useState(false)
+  useEffect(() => {
+    let alive = true
+    void fetchArbiters(dao.id)
+      .then((list) => {
+        if (!alive) return
+        setArbiters(list)
+        setArbitersFresh(true)
+        /* A picked arbiter who has since left the whitelist is dropped. */
+        setDraft((d) => (list.includes(d.arbiter) ? d : { ...d, arbiter: list[0] ?? '' }))
+      })
+      .catch((err: unknown) => console.error('arbiters:', err))
+    return () => {
+      alive = false
+    }
+  }, [dao.id])
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
@@ -69,7 +90,7 @@ export function WorkerProposalForm({
     if (wp.member === false) {
       blocks.push(`${actor} has not agreed to the latest member terms (version ${wp.latestTerms}).`)
     }
-    if (!wp.arbiters.length) blocks.push('This DAO has no active arbiter on its whitelist.')
+    if (arbitersFresh && !arbiters.length) blocks.push('This DAO has no active arbiter on its whitelist.')
   }
 
   const upload = async (file: File | undefined) => {
@@ -145,8 +166,8 @@ export function WorkerProposalForm({
             Arbiter<i>settles a dispute; cannot be you</i>
           </span>
           <select value={draft.arbiter} onChange={(e) => set({ arbiter: e.target.value })}>
-            {wp.arbiters.length ? (
-              wp.arbiters.map((a) => (
+            {arbiters.length ? (
+              arbiters.map((a) => (
                 <option key={a} value={a}>
                   {a}
                 </option>
