@@ -64,8 +64,11 @@ export function DailyChart({
   const slot = n ? w / n : 0
   const cx = (i: number) => pad.l + slot * (i + 0.5)
   const y = (v: number) => pad.t + h - (v / max) * h
-  /* Enough date labels to orient, never so many they collide. */
+  /* Enough date labels to orient, never so many they collide. The last day
+     always gets one — it is the day the chart runs to — so the regular label
+     nearest it gives way when the two would sit on top of each other. */
   const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(w / 64))))
+  const labelled = (i: number) => i === n - 1 || (i % every === 0 && n - 1 - i >= every)
 
   const barW = Math.max(2, Math.min(28, slot - 4))
 
@@ -108,8 +111,16 @@ export function DailyChart({
               </g>
             ))}
             {dates.map((d, i) =>
-              i % every === 0 || i === n - 1 ? (
-                <text key={d} className="dchart__tick" x={cx(i)} y={height - 7} textAnchor="middle">
+              labelled(i) ? (
+                /* The last day sits against the right edge, where a centred
+                   label would run off the chart — so it ends there instead. */
+                <text
+                  key={d}
+                  className="dchart__tick"
+                  x={i === n - 1 && n > 1 ? pad.l + w : cx(i)}
+                  y={height - 7}
+                  textAnchor={i === n - 1 && n > 1 ? 'end' : 'middle'}
+                >
                   {shortDate(d)}
                 </text>
               ) : null,

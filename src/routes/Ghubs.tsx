@@ -12,8 +12,9 @@ import { formatNumber } from '@/format'
  * makes a report a report — September's reads the same whenever it is
  * printed, instead of drifting with every day added since.
  *
- * The graphs run from launch to the end of the chosen month, one point a day,
- * filled beneath the line.
+ * Three graphs each, one point a day and filled beneath the line: every day
+ * from launch to the month's end, the chosen month on its own scale, and the
+ * running total — the "all time" figure, drawn as it grew.
  *
  * Built only from finished days (`data/daily.json`) and the player table's
  * signup dates, so the current month is marked "so far" and says which day it
@@ -76,6 +77,14 @@ export default function Ghubs() {
   const playersAllTime = snap ? snap.players.filter((p) => p.signup < cutoff).length : null
   const signedUp = snap ? snap.players.filter((p) => p.signup < cutoff && p.signup >= dayStart(`${picked}-01`)).length : null
   const activeInMonth = summariseRange(inMonth).uniqueActive
+  const monthDates = inMonth.map((d) => d.date)
+  /* Accounts that existed by the end of each day. Not a running sum of the
+     daily actives — that would count the same players again every day. */
+  const accounts = useMemo(
+    () =>
+      snap ? dates.map((d) => snap.players.filter((p) => p.signup < dayStart(d) + 86_400_000).length) : dates.map(() => 0),
+    [snap, dates.join()],
+  )
 
   /* Print light whatever the screen shows: a dark page is a page of ink, and
      most printers drop the backgrounds anyway, leaving white text on white. */
@@ -142,10 +151,12 @@ export default function Ghubs() {
                 sub: `active players${signedUp !== null ? ` · ${whole(signedUp)} signed up` : ''}`,
               },
             ]}
-            chartTitle="Active players per day"
-            dates={dates}
-            values={upTo.map((d) => d.active)}
             color="var(--series-1)"
+            charts={[
+              { title: 'Active players per day, since launch', dates, values: upTo.map((d) => d.active) },
+              { title: `Active players per day, ${name}`, dates: monthDates, values: inMonth.map((d) => d.active) },
+              { title: 'Accounts signed up, running total', dates, values: accounts },
+            ]}
           />
 
           {METRICS.map((m) => (
@@ -156,10 +167,12 @@ export default function Ghubs() {
                 { label: 'All time', value: whole(sum(upTo, m.stat!)), sub: m.unit },
                 { label: within, value: whole(sum(inMonth, m.stat!)), sub: m.unit },
               ]}
-              chartTitle={`${m.title} per day`}
-              dates={dates}
-              values={upTo.map((d) => statValue(d.stats, m.stat!))}
               color={m.color}
+              charts={[
+                { title: 'Per day, since launch', dates, values: upTo.map((d) => statValue(d.stats, m.stat!)) },
+                { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat!)) },
+                { title: 'Running total, since launch', dates, values: running(upTo.map((d) => statValue(d.stats, m.stat!))) },
+              ]}
             />
           ))}
 
@@ -176,19 +189,21 @@ export default function Ghubs() {
   )
 }
 
+/** Each day's value added to everything before it. */
+function running(values: number[]): number[] {
+  let n = 0
+  return values.map((v) => (n += v))
+}
+
 function Block({
   title,
   figures,
-  chartTitle,
-  dates,
-  values,
+  charts,
   color,
 }: {
   title: string
   figures: { label: string; value: string; sub?: string }[]
-  chartTitle: string
-  dates: string[]
-  values: number[]
+  charts: { title: string; dates: string[]; values: number[] }[]
   color: string
 }) {
   return (
@@ -204,16 +219,20 @@ function Block({
             </div>
           ))}
         </div>
-        <div className="rpt__chart">
-          <span className="rpt__charttitle">{chartTitle}, since launch</span>
-          <DailyChart
-            kind="line"
-            fill
-            height={180}
-            dates={dates}
-            series={[{ key: 'v', label: title, color, values }]}
-            label={`${chartTitle}, since launch`}
-          />
+        <div className="rpt__charts">
+          {charts.map((c) => (
+            <div key={c.title} className="rpt__chart">
+              <span className="rpt__charttitle">{c.title}</span>
+              <DailyChart
+                kind="line"
+                fill
+                height={160}
+                dates={c.dates}
+                series={[{ key: 'v', label: title, color, values: c.values }]}
+                label={`${title}: ${c.title}`}
+              />
+            </div>
+          ))}
         </div>
       </div>
     </section>
