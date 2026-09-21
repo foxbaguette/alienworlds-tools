@@ -60,7 +60,7 @@ const data = (over: Partial<WorkerData> = {}): WorkerData => ({
     min_proposal_duration: 604_800,
     proposal_fee: null,
   },
-  arbiters: ['arb.wam'],
+  arbiters: [{ arbiter: 'arb.wam', rating: 1 }],
   receivers: new Set(['worker.wam']),
   actor: 'seat1.wam',
   member: true,

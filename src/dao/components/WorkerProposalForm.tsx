@@ -4,6 +4,7 @@ import {
   fetchArbiters,
   uploadToIpfs,
   wpFeeShortfall,
+  type Arbiter,
   type WorkerData,
   type WorkerDraft,
 } from '../chain/worker'
@@ -41,7 +42,7 @@ export function WorkerProposalForm({
     title: '',
     summary: '',
     url: '',
-    arbiter: wp.arbiters[0] ?? '',
+    arbiter: wp.arbiters[0]?.arbiter ?? '',
     pay: '',
     arbiterPay: '',
     days: 7,
@@ -50,7 +51,7 @@ export function WorkerProposalForm({
   /* The whitelist as it stands now, not as it stood when the page loaded:
      the custodians can add, remove and re-rate arbiters at any time. The
      cached list is shown until the fresh one arrives. */
-  const [arbiters, setArbiters] = useState<string[]>(wp.arbiters)
+  const [arbiters, setArbiters] = useState<Arbiter[]>(wp.arbiters)
   const [arbitersFresh, setArbitersFresh] = useState(false)
   useEffect(() => {
     let alive = true
@@ -60,7 +61,7 @@ export function WorkerProposalForm({
         setArbiters(list)
         setArbitersFresh(true)
         /* A picked arbiter who has since left the whitelist is dropped. */
-        setDraft((d) => (list.includes(d.arbiter) ? d : { ...d, arbiter: list[0] ?? '' }))
+        setDraft((d) => (list.some((a) => a.arbiter === d.arbiter) ? d : { ...d, arbiter: list[0]?.arbiter ?? '' }))
       })
       .catch((err: unknown) => console.error('arbiters:', err))
     return () => {
@@ -168,8 +169,8 @@ export function WorkerProposalForm({
           <select value={draft.arbiter} onChange={(e) => set({ arbiter: e.target.value })}>
             {arbiters.length ? (
               arbiters.map((a) => (
-                <option key={a} value={a}>
-                  {a}
+                <option key={a.arbiter} value={a.arbiter}>
+                  {a.rating > 0 ? a.arbiter : `${a.arbiter} · rating 0`}
                 </option>
               ))
             ) : (

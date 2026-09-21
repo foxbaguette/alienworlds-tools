@@ -107,8 +107,8 @@ export interface WorkerData {
   props: WorkerProposal[]
   votes: WorkerVote[]
   config: WorkerConfig
-  /** Arbiters with a rating above zero — createprop refuses the others. */
-  arbiters: string[]
+  /** Every whitelisted arbiter, rated ones first — see fetchArbiters. */
+  arbiters: Arbiter[]
   receivers: Set<string>
   /**
    * Whose reads these were. Half of what is here is about one account, so
@@ -270,22 +270,32 @@ export function wpDocUrl(hash: string | null | undefined): string | null {
   return null
 }
 
+export interface Arbiter {
+  arbiter: string
+  rating: number
+}
+
+/** Rated arbiters first, then by name. */
+const byRating = (a: Arbiter, b: Arbiter) => b.rating - a.rating || a.arbiter.localeCompare(b.arbiter)
+
 /**
  * The arbiters a proposal may name right now, read straight from the chain.
  *
  * The custodians add and remove them (addarbwl, rmvarbwl) and change their
  * rating (updarbwl), so a list read when the page opened can be out of date
- * by the time a proposal is written. Only those rated above zero are offered
- * — createprop refuses the others.
+ * by the time a proposal is written. Every whitelisted arbiter is offered,
+ * as the official Worker Proposal System offers them: nothing found in the
+ * contract or its history says an arbiter rated 0 is refused, so the rating
+ * is shown rather than used to hide anyone.
  */
-export async function fetchArbiters(dacId: string): Promise<string[]> {
+export async function fetchArbiters(dacId: string): Promise<Arbiter[]> {
   const rows = await getRows<{ arbiter: string; rating: number }>({
     code: WP_CONTRACT,
     scope: dacId,
     table: 'arbwhitelist',
     limit: 500,
   })
-  return rows.filter((a) => Number(a.rating) > 0).map((a) => a.arbiter).sort()
+  return rows.map((a) => ({ arbiter: String(a.arbiter), rating: Number(a.rating) || 0 })).sort(byRating)
 }
 
 export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | null): Promise<WorkerData> {
@@ -356,7 +366,7 @@ export async function fetchWorker(dacId: string, dao?: Dao, actor?: string | nul
       min_proposal_duration: Number(c.min_proposal_duration) || 0,
       proposal_fee: (c.proposal_fee as WorkerConfig['proposal_fee']) ?? null,
     },
-    arbiters: arbiters.filter((a) => Number(a.rating) > 0).map((a) => a.arbiter).sort(),
+    arbiters: arbiters.map((a) => ({ arbiter: String(a.arbiter), rating: Number(a.rating) || 0 })).sort(byRating),
     receivers: new Set(receivers.map((r) => r.receiver)),
     actor: actor ?? null,
     member: !actor ? null : latest > 0 && agreed === latest,
