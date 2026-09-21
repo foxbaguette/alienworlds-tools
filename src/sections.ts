@@ -1,7 +1,7 @@
 import { PROJECTS } from './projects/defs'
 
 /** Projects with a monthly report of their own, at /<key>/ghubs. */
-const REPORTS = new Set(['mc'])
+const REPORTS = new Set(['mc', 'pd', 'naron'])
 
 /**
  * The site's top level.

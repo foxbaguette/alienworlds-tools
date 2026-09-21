@@ -55,15 +55,32 @@ export function DailyChart({
   const h = height - pad.t - pad.b
   const n = dates.length
 
-  const { max, ticks } = useMemo(() => {
-    let m = 0
-    for (const s of series) for (const v of s.values) m = Math.max(m, v)
-    return niceScale(m)
+  /*
+     Zero is always on the axis. Almost everything charted is a count or an
+     amount and never goes below it; a figure that can — paid out less the
+     entry fees players paid in — gets the axis extended downwards, on the
+     same step as above, instead of a line running off the bottom.
+  */
+  const { max, min, ticks } = useMemo(() => {
+    let hi = 0
+    let lo = 0
+    for (const s of series)
+      for (const v of s.values) {
+        hi = Math.max(hi, v)
+        lo = Math.min(lo, v)
+      }
+    const up = niceScale(hi)
+    if (lo >= 0) return { max: up.max, min: 0, ticks: up.ticks }
+    const step = up.ticks.length > 1 ? up.ticks[1] - up.ticks[0] : up.max
+    const floor = -Math.ceil(-lo / step) * step
+    const below: number[] = []
+    for (let t = -step; t >= floor - step / 2; t -= step) below.unshift(t)
+    return { max: up.max, min: floor, ticks: [...below, ...up.ticks] }
   }, [series])
 
   const slot = n ? w / n : 0
   const cx = (i: number) => pad.l + slot * (i + 0.5)
-  const y = (v: number) => pad.t + h - (v / max) * h
+  const y = (v: number) => pad.t + h - ((v - min) / (max - min)) * h
   /* Enough date labels to orient, never so many they collide. The last day
      always gets one — it is the day the chart runs to — so the regular label
      nearest it gives way when the two would sit on top of each other. */
@@ -133,7 +150,7 @@ export function DailyChart({
             {kind === 'bar'
               ? series[0]?.values.map((v, i) =>
                   v > 0 ? (
-                    <path key={i} d={bar(cx(i) - barW / 2, y(v), barW, pad.t + h - y(v))} fill={series[0].color} />
+                    <path key={i} d={bar(cx(i) - barW / 2, y(v), barW, y(0) - y(v))} fill={series[0].color} />
                   ) : null,
                 )
               : series.map((s) => (
@@ -149,7 +166,7 @@ export function DailyChart({
                         <path
                           d={
                             s.values.map((v, i) => `${i ? 'L' : 'M'}${cx(i).toFixed(1)},${y(v).toFixed(1)}`).join('') +
-                            `L${cx(s.values.length - 1).toFixed(1)},${pad.t + h}L${cx(0).toFixed(1)},${pad.t + h}Z`
+                            `L${cx(s.values.length - 1).toFixed(1)},${y(0).toFixed(1)}L${cx(0).toFixed(1)},${y(0).toFixed(1)}Z`
                           }
                           fill={`url(#dc-${uid}-${s.key})`}
                         />
