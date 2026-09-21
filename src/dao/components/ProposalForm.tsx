@@ -251,17 +251,17 @@ export function ProposalForm({
           </div>
           <label className="ale-field">
             <span className="ale-field__name">
-              Memo<i>optional — tlmsplitting reads it as the accounts to split between</i>
+              Memo
             </span>
             <input type="text" value={pay.memo} spellCheck={false} onChange={(e) => setPay({ ...pay, memo: e.target.value })} />
           </label>
-          <p className={short ? 'dao-note dao-note--bad' : 'dao-dim'}>
-            Paid from <code>{payer ?? '—'}</code>
-            {balance != null ? <>, which holds {fmtAmount(`${balance} TLM`)} TLM today</> : null}.{' '}
-            {short
-              ? 'That is more than it holds — the council can still sign it, but it will only execute once there is enough in the account, for instance after the budget is claimed.'
-              : `${dao.approvalThreshold} council signatures send it.`}
-          </p>
+          {/* Only when it matters: a payment the account cannot cover yet. */}
+          {short ? (
+            <p className="dao-note dao-note--bad">
+              More than <code>{payer}</code> holds today ({fmtAmount(`${balance} TLM`)} TLM). The council can still sign
+              it, but it only executes once there is enough in the account.
+            </p>
+          ) : null}
         </>
       ) : null}
 
