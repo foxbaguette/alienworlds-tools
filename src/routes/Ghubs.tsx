@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchDailyFile, fetchPlayers, type PlayersSnapshot } from '@/activity/queries'
-import { LAUNCH, dayStart, statValue, summariseRange, type DaySummary } from '@/activity/rules'
+import { dayStart, statValue, summariseRange, type DaySummary } from '@/activity/rules'
 import { DailyChart, longDate } from '@/components/DailyChart'
 import { formatNumber } from '@/format'
 import { FARM, fetchFarmDaily, type FarmDay } from '@/farm/queries'
@@ -128,12 +128,7 @@ export default function Ghubs() {
     <div className="page rpt">
       <header className="page__head">
         <div>
-          <h1 className="page__title">gHubs report · {name || '…'}</h1>
-          <p className="page__lead">
-            Alien Legends, from launch on {longDate(LAUNCH)}
-            {lastDay ? <> to {longDate(lastDay)} UTC</> : null}.{' '}
-            {complete ? '' : lastDay ? 'The month is not over; figures run to the last finished day.' : ''}
-          </p>
+          <h1 className="page__title">Alien Legends - gHubs report · {name || '…'}</h1>
         </div>
         <div className="page__actions rpt__actions">
           <label className="rpt__month">
