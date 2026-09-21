@@ -32,6 +32,14 @@ import { fetchRedirect, type Redirect } from '../chain/inflation'
 import { TAP_MAX_X100, fetchTap, fmtRate, planetOf, tapSetAction, type Tap } from '../chain/tap'
 import { PROPOSAL_DAYS, proposeAction } from '../chain/propose'
 import {
+  PERIOD_MAX_DAYS,
+  claimBudgetAction,
+  claimedThisPeriod,
+  hasBudget,
+  periodFloorDays,
+  setPeriodAction,
+} from '../chain/period'
+import {
   approveAction,
   canApprove,
   canExecute,
@@ -270,66 +278,54 @@ function RedirectPanel({ dao }: { dao: Dao }) {
  * on chain is signed by the union's owner account. So what is offered here is a
  * PROPOSAL, not a write.
  */
-function TapPanel({ dao }: { dao: Dao }) {
-  const { session, actor } = useSession()
-  const [tap, setTap] = useState<Tap | null>(null)
-  const [mining, setMining] = useState<number | null>(null)
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+/**
+ * The tap and the mining figure it takes its share of, read once per council
+ * and shared: the panel above every tab shows it, and the redirect form on the
+ * Proposals tab starts from it. Two components asking should not be two reads.
+ */
+const tapCache = new Map<string, Promise<{ tap: Tap | null; mining: number | null }>>()
 
+function useTap(dao: Dao) {
   const planet = planetOf(dao)
+  const [got, setGot] = useState<{ tap: Tap | null; mining: number | null } | null>(null)
 
   useEffect(() => {
     if (!planet) return
     let alive = true
-    setTap(null)
-    setMining(null)
-    setOpen(false)
-    void fetchTap(planet)
-      .then((t) => alive && setTap(t))
-      .catch((err) => console.error('tap:', err))
-    /* The mining leg of the daily inflation split is the number the tap takes
-       its percentage of. Read here rather than handed down from the income
-       panel: the two are independent, and one failing should not blank the
-       other. */
-    void fetchRedirect(dao)
-      .then((r) => alive && setMining(r?.miningPerDay ?? null))
-      .catch((err) => console.error('tap basis:', err))
+    setGot(null)
+    let load = tapCache.get(dao.id)
+    if (!load) {
+      load = Promise.all([
+        fetchTap(planet).catch((err) => {
+          console.error('tap:', err)
+          return null
+        }),
+        /* The mining leg of the daily inflation split is the number the tap
+           takes its percentage of. Allowed to fail on its own: the tap is
+           still worth showing without the TLM figure. */
+        fetchRedirect(dao)
+          .then((r) => r?.miningPerDay ?? null)
+          .catch((err) => {
+            console.error('tap basis:', err)
+            return null
+          }),
+      ]).then(([tap, mining]) => ({ tap, mining }))
+      tapCache.set(dao.id, load)
+    }
+    void load.then((v) => alive && setGot(v))
     return () => {
       alive = false
     }
   }, [dao.id, planet])
 
+  return { planet, tap: got?.tap ?? null, mining: got?.mining ?? null }
+}
+
+function TapPanel({ dao }: { dao: Dao }) {
+  const { planet, tap, mining } = useTap(dao)
   if (!planet || !tap) return null
 
   const perDay = mining != null ? (mining * tap.rateX100) / 10_000 : null
-  const seated = actor ? dao.custodians.includes(actor) : false
-
-  const propose = async (rateX100: number, destination: string, title: string, description: string) => {
-    if (!session || busy) return
-    setBusy(true)
-    setNote({ text: 'Building the proposal — check your wallet…' })
-    try {
-      const action: ChainAction = await proposeAction(session, dao, tapSetAction([], planet, rateX100, destination), {
-        title,
-        description,
-      })
-      await session.transact({ actions: [action] }, { broadcast: true })
-      setOpen(false)
-      setNote({
-        text: `Proposed. The council has ${PROPOSAL_DAYS} days to sign it, and ${dao.approvalThreshold} signatures execute it.`,
-      })
-    } catch (err) {
-      if (isCancel(err)) setNote({ text: 'Cancelled.' })
-      else {
-        console.error('tap proposal failed:', err)
-        setNote({ text: readableError(err), bad: true })
-      }
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <div className="dao-note redirect redirect--out">
@@ -353,24 +349,6 @@ function TapPanel({ dao }: { dao: Dao }) {
         </span>
       </p>
 
-      {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
-
-      {open ? (
-        <TapForm dao={dao} tap={tap} mining={mining} busy={busy} onCancel={() => setOpen(false)} onPropose={propose} />
-      ) : (
-        <p className="page__actions">
-          <button className="btn" type="button" disabled={!session} onClick={() => setOpen(true)}>
-            Propose a change
-          </button>
-          <span className="dao-dim">
-            {!session
-              ? 'Connect a wallet to propose a change.'
-              : seated
-                ? `Raises a council proposal — ${dao.approvalThreshold} signatures execute it.`
-                : `Anyone may raise it; ${dao.approvalThreshold} council signatures execute it.`}
-          </span>
-        </p>
-      )}
     </div>
   )
 }
@@ -471,6 +449,123 @@ function TapForm({
           disabled={busy || badRate || badName || unchanged || !description.trim()}
           onClick={() => onPropose(rateX100, destination, title.trim() || fallbackTitle, description.trim())}
         >
+          {busy ? 'Signing…' : `Propose to ${dao.title}`}
+        </button>
+        <button className="btn" type="button" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+type Raise = (inner: Omit<ChainAction, 'authorization'>, title: string, description: string) => Promise<void> | void
+
+/**
+ * A new term length.
+ *
+ * Days in the form, seconds on chain. The bounds are the contract's own, so a
+ * number outside them is stopped here rather than at the council's last
+ * signature, which is where a bad setperiodlen would otherwise fail.
+ */
+function PeriodForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolean; onCancel: () => void; onPropose: Raise }) {
+  const floor = periodFloorDays(dao)
+  const current = dao.periodLength ? Math.round(dao.periodLength / 86_400) : null
+  const [days, setDays] = useState(String(current ?? 7))
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+
+  const n = Math.round(Number(days))
+  const bad = !days.trim() || !Number.isFinite(n) || n < floor || n > PERIOD_MAX_DAYS
+  const unchanged = n === current
+  const plural = (x: number) => `${x} day${x === 1 ? '' : 's'}`
+  const fallbackTitle = `Set the election period to ${bad ? '?' : plural(n)}`
+  const fallbackWhy = `Change the election period for ${dao.title} from ${current != null ? plural(current) : 'unknown'} to ${bad ? '?' : plural(n)}.`
+
+  return (
+    <div className="tap-form">
+      <div className="ale-form">
+        <label className="ale-field">
+          <span className="ale-field__name">
+            Days per term<i>{floor} to {PERIOD_MAX_DAYS}, the contract&rsquo;s bounds</i>
+          </span>
+          <input type="number" min={floor} max={PERIOD_MAX_DAYS} step={1} value={days} onChange={(e) => setDays(e.target.value)} />
+        </label>
+      </div>
+
+      <p className="dao-dim">
+        {bad
+          ? `A term has to be between ${plural(floor)} and ${plural(PERIOD_MAX_DAYS)}.`
+          : unchanged
+            ? 'That is the term already.'
+            : `Today it is ${current != null ? plural(current) : 'unknown'}. The new length applies from the election after the council executes this.`}
+      </p>
+
+      <div className="ale-form">
+        <label className="ale-field">
+          <span className="ale-field__name">
+            Title<i>what the council sees in its list</i>
+          </span>
+          <input type="text" value={title} placeholder={fallbackTitle} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+      </div>
+      <label className="ale-field">
+        <span className="ale-field__name">
+          Why<i>optional — the case for the change</i>
+        </span>
+        <textarea rows={3} value={description} placeholder={fallbackWhy} onChange={(e) => setDescription(e.target.value)} />
+      </label>
+
+      <div className="page__actions">
+        <button
+          className="btn btn--go"
+          type="button"
+          disabled={busy || bad || unchanged}
+          onClick={() => void onPropose(setPeriodAction(dao, n), title.trim() || fallbackTitle, description.trim() || fallbackWhy)}
+        >
+          {busy ? 'Signing…' : `Propose to ${dao.title}`}
+        </button>
+        <button className="btn" type="button" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Drawing this period's budget.
+ *
+ * claimbudget takes nothing but the DAO — the contract works out the amount
+ * from the DAO's own budget setting — so the form is a confirmation with the
+ * two facts that decide whether it will go through.
+ */
+function BudgetForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolean; onCancel: () => void; onPropose: Raise }) {
+  const already = claimedThisPeriod(dao)
+  const when = (ms: number | null) => {
+    if (ms == null) return 'never'
+    const age = Date.now() - ms
+    return `${isoDay(ms)} (${age < 86_400_000 ? 'today' : `${fmtAge(age)} ago`})`
+  }
+  const title = `Claim the ${dao.title} budget`
+  const description = `Claim this period\u2019s budget for ${dao.title}.`
+
+  return (
+    <div className="tap-form">
+      <p>
+        Budget set to <b>{dao.budgetPercent}%</b>. Last drawn <b>{when(dao.lastClaimBudget)}</b>; this term began{' '}
+        {when(dao.lastPeriod)}.
+      </p>
+      <p className={already ? 'dao-note dao-note--bad' : 'dao-dim'}>
+        {already
+          ? `Already drawn this term. Every syndicate claims once between elections, so this would only execute after the next one${
+              dao.nextElection ? `, on ${isoDay(dao.nextElection)}` : ''
+            } — the proposal stays open ${PROPOSAL_DAYS} days.`
+          : 'Not drawn yet this term, so it can execute as soon as it has its signatures.'}
+      </p>
+
+      <div className="page__actions">
+        <button className="btn btn--go" type="button" disabled={busy} onClick={() => void onPropose(claimBudgetAction(dao), title, description)}>
           {busy ? 'Signing…' : `Propose to ${dao.title}`}
         </button>
         <button className="btn" type="button" onClick={onCancel} disabled={busy}>
@@ -582,8 +677,42 @@ function CouncilTab({ dao }: { dao: Dao }) {
 function ProposalsTab({ dao }: { dao: Dao }) {
   const { session, actor } = useSession()
   const [filter, setFilter] = useState<'active' | 'executed'>('active')
-  /* null means closed; a proposal means "copy that one"; 'new' means blank. */
-  const [writing, setWriting] = useState<MsigProposal | 'new' | null>(null)
+  /* null means closed; a proposal means "copy that one"; 'new' means blank;
+     the others are the three settings proposals that have a form of their own. */
+  const [writing, setWriting] = useState<MsigProposal | 'new' | 'period' | 'tap' | 'budget' | null>(null)
+  const { planet, tap, mining } = useTap(dao)
+  const toggle = (w: 'new' | 'period' | 'tap' | 'budget') => setWriting(writing === w ? null : w)
+
+  /**
+   * Raise a proposal carrying one owner-authorised action.
+   *
+   * The same path for all three settings: the action runs as the DAO's owner,
+   * which nobody holds alone, so what gets signed here is the PROPOSAL and the
+   * council's approvals are what eventually run it.
+   */
+  const raise = async (inner: Omit<ChainAction, 'authorization'>, title: string, description: string) => {
+    if (!session || busy) return
+    setBusy('raise')
+    setNote({ text: 'Building the proposal — check your wallet…' })
+    try {
+      const action = await proposeAction(session, dao, inner, { title, description })
+      await session.transact({ actions: [action] }, { broadcast: true })
+      setWriting(null)
+      await new Promise((r) => setTimeout(r, 2500))
+      clearProposalCaches()
+      setNote({
+        text: `Proposed. The council has ${PROPOSAL_DAYS} days to sign it, and ${dao.approvalThreshold} signatures execute it.`,
+      })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error('proposal failed:', err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
   const version = useProposalCaches()
@@ -654,14 +783,66 @@ function ProposalsTab({ dao }: { dao: Dao }) {
             Settled
           </button>
         </div>
-        <button className="btn" type="button" onClick={() => setWriting(writing === 'new' ? null : 'new')}>
+        {/* Every proposal a council raises, side by side: the free-form one,
+            and the settings that have a form of their own because getting
+            their arguments wrong is easy and the contract is unforgiving. */}
+        <button className="btn" type="button" aria-pressed={writing === 'new'} onClick={() => toggle('new')}>
           New proposal
         </button>
+        <button
+          className="btn"
+          type="button"
+          aria-pressed={writing === 'period'}
+          disabled={!session}
+          title={session ? 'Propose a new length for this council\u2019s term' : 'Connect a wallet to propose'}
+          onClick={() => toggle('period')}
+        >
+          Election period
+        </button>
+        {planet && tap ? (
+          <button
+            className="btn"
+            type="button"
+            aria-pressed={writing === 'tap'}
+            disabled={!session}
+            title={session ? `Propose a new share or destination for ${planet}\u2019s mining redirect` : 'Connect a wallet to propose'}
+            onClick={() => toggle('tap')}
+          >
+            Mining redirect
+          </button>
+        ) : null}
+        {hasBudget(dao) ? (
+          <button
+            className="btn"
+            type="button"
+            aria-pressed={writing === 'budget'}
+            disabled={!session}
+            title={session ? 'Propose drawing this period\u2019s budget' : 'Connect a wallet to propose'}
+            onClick={() => toggle('budget')}
+          >
+            Claim budget
+          </button>
+        ) : null}
       </div>
 
       {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
 
-      {writing ? (
+      {writing === 'period' ? (
+        <PeriodForm dao={dao} busy={busy === 'raise'} onCancel={() => setWriting(null)} onPropose={raise} />
+      ) : writing === 'tap' && planet && tap ? (
+        <TapForm
+          dao={dao}
+          tap={tap}
+          mining={mining}
+          busy={busy === 'raise'}
+          onCancel={() => setWriting(null)}
+          onPropose={(rateX100, destination, title, description) =>
+            void raise(tapSetAction([], planet, rateX100, destination), title, description)
+          }
+        />
+      ) : writing === 'budget' ? (
+        <BudgetForm dao={dao} busy={busy === 'raise'} onCancel={() => setWriting(null)} onPropose={raise} />
+      ) : writing === 'new' || (writing && typeof writing === 'object') ? (
         <ProposalForm
           dao={dao}
           from={writing === 'new' ? null : writing}

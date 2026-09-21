@@ -101,6 +101,14 @@ export interface Dao {
   standing: Map<string, boolean>
   nextElection: number | null
   periodLength: number | null
+  /** When the current period began, ms. */
+  lastPeriod: number | null
+  /** setperiodlen refuses a period shorter than this, seconds. Absent on every DAO today. */
+  pendingPeriodDelay: number
+  /** When the budget was last drawn, ms — syndicates only. */
+  lastClaimBudget: number | null
+  /** The budget setting, as a percentage — syndicates only; unions carry none. */
+  budgetPercent: number | null
   approvalThreshold: number
   /** Seated now, but below the cut on today's ranking. */
   atRisk: Set<string>
@@ -148,6 +156,10 @@ async function loadOne(row: DirectoryRow): Promise<Dao> {
     standing: new Map(),
     nextElection: null,
     periodLength: null,
+    lastPeriod: null,
+    pendingPeriodDelay: 0,
+    lastClaimBudget: null,
+    budgetPercent: null,
     approvalThreshold: 3,
     atRisk: new Set(),
     wouldSeat: [],
@@ -210,6 +222,12 @@ async function loadOne(row: DirectoryRow): Promise<Dao> {
     const length = Number(g.periodlength)
     dao.nextElection = Number.isFinite(last) && Number.isFinite(length) && length > 0 ? last + length * 1000 : null
     dao.periodLength = Number.isFinite(length) ? length : null
+    dao.lastPeriod = Number.isFinite(last) ? last : null
+    dao.pendingPeriodDelay = Number(g.pending_period_delay) || 0
+    const claimed = Date.parse(`${g.lastclaimbudgettime}Z`)
+    dao.lastClaimBudget = Number.isFinite(claimed) ? claimed : null
+    /* Stored in hundredths: 400 is 4%. */
+    dao.budgetPercent = g.budget_percentage != null ? Number(g.budget_percentage) / 100 : null
     /* The owner's "active" permission just delegates to "high" with a threshold
        of 1, so "high" is the real bar a msig proposal has to clear. */
     dao.approvalThreshold = Number(g.auth_threshold_high) || 3
