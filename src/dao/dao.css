@@ -1528,3 +1528,16 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   .act-pick__row { display: none; }
   .stand-more { width: 100%; }
 }
+
+/* Something waiting on you on this tab. The sidebar badge's colour, shrunk to
+   a dot: the count is already in the sidebar and the note, and a tab only has
+   to say "here". */
+.tab-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  vertical-align: 1px;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+}

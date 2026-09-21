@@ -110,19 +110,12 @@ export default function DaoDetails() {
         </div>
       </header>
 
-      <div className="sections dao-tabs" role="tablist">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={t.key === shown}
-            onClick={() => navigate(`/daos/${id}/${t.key}`, { replace: true })}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <DaoTabs
+        dao={dao}
+        tabs={tabs}
+        shown={shown}
+        onPick={(key) => navigate(`/daos/${id}/${key}`, { replace: true })}
+      />
 
       <TodoNote dao={dao} />
 
@@ -148,6 +141,53 @@ export default function DaoDetails() {
  * how many, because the tab a thing lives on is not obvious from the count —
  * a council with every proposal executed can still owe three worker votes.
  */
+/**
+ * The tab strip, with a dot on each tab that holds something waiting on you.
+ *
+ * The note below says WHAT is waiting; this says WHERE. Without it, opening a
+ * union lands on Proposals, which can be empty while the thing the sidebar
+ * counted is a worker vote one tab over.
+ *
+ * A component of its own because the page above returns early before the
+ * directory lands, and the hooks this needs cannot sit behind that return.
+ */
+function DaoTabs({
+  dao,
+  tabs,
+  shown,
+  onPick,
+}: {
+  dao: Dao
+  tabs: { key: Tab; label: string }[]
+  shown: Tab
+  onPick: (key: Tab) => void
+}) {
+  const { actor } = useSession()
+  const version = useProposalCaches()
+  void version
+  const { byTab } = todoFor(dao, actor)
+
+  return (
+    <div className="sections dao-tabs" role="tablist">
+      {tabs.map((t) => {
+        const waiting = t.key === 'proposals' ? byTab.proposals : t.key === 'worker' ? byTab.worker : 0
+        return (
+          <button key={t.key} type="button" role="tab" aria-selected={t.key === shown} onClick={() => onPick(t.key)}>
+            {t.label}
+            {waiting ? (
+              <span
+                className="tab-dot"
+                title={`${waiting} thing${waiting === 1 ? '' : 's'} waiting on you here`}
+                aria-label={`${waiting} waiting on you`}
+              />
+            ) : null}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function TodoNote({ dao }: { dao: Dao }) {
   const { actor } = useSession()
   /* Recomputed as the caches fill; the tabs below are what fills them. */

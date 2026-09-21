@@ -55,9 +55,16 @@ export interface Todo {
   n: number
   /** One line per thing counted, in the order they were counted. */
   why: string[]
+  /**
+   * The same count split by the tab it lives on. A council whose proposals
+   * are all settled can still owe a worker vote, and "1 thing waiting" on a
+   * Proposals tab showing nothing open reads as a mistake unless the page can
+   * point at the tab that has it.
+   */
+  byTab: { proposals: number; worker: number }
 }
 
-export const NO_TODO: Todo = { n: 0, why: [] }
+export const NO_TODO: Todo = { n: 0, why: [], byTab: { proposals: 0, worker: 0 } }
 
 export function todoFor(dao: Dao, actor: string | null): Todo {
   if (!actor) return NO_TODO
@@ -73,12 +80,13 @@ export function todoFor(dao: Dao, actor: string | null): Todo {
       why.push(`Execute ${quote(msigTitle(p))} — it has its signatures`)
   }
 
+  const proposals = why.length
   if (hasWorkerProposals(dao)) {
     const wp = workerOf(dao.id)
     if (wp) why.push(...workerTodo(dao, wp, actor, seated))
   }
 
-  return { n: why.length, why }
+  return { n: why.length, why, byTab: { proposals, worker: why.length - proposals } }
 }
 
 /** Titles go in the reasons, and an untitled proposal should not read oddly. */
