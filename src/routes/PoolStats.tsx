@@ -66,7 +66,7 @@ function closesOf(days: PoolDay[], pool: string): BalancePoint[] {
     .map((d) => ({ t: Date.parse(d.date + 'T00:00:00Z') + DAY, v: d.close[pool] }))
 }
 
-/** Reserve at the end of each collected day — recorded for parent pools only. */
+/** Reserve at the end of each collected day, for a TLM pool. */
 function reserveClosesOf(days: PoolDay[], pool: string): BalancePoint[] {
   return days
     .filter((d) => d.reserve?.[pool] !== undefined)
@@ -230,7 +230,11 @@ export default function PoolStats() {
               pool: p.pool,
               type: 'tlm',
               balance: live.current / 10_000,
-              ...((p.subpools ?? []).length ? { parent: true, reserve: live.reserve / 10_000 } : {}),
+              /* Every TLM pool holds some back and releases it at its fill
+                 rate — the source into the sub-pools, each sub-pool into what
+                 it can pay out. Shard pools have no reserve at all. */
+              reserve: live.reserve / 10_000,
+              ...((p.subpools ?? []).length ? { parent: true } : {}),
             }
           }),
           ...shards.map((p) => ({ pool: p.pool, type: 'shards', balance: liveShardPool(p, now) / 10 })),
@@ -493,13 +497,18 @@ function Overview({
      balance of each day, already in the file.
   */
   const [lines, setLines] = useState<Record<string, BalancePoint[]>>({})
+  /* The same for what each TLM pool holds back. Read from the same writes as
+     the balance, so it costs nothing a second time. */
+  const [reserves, setReserves] = useState<Record<string, BalancePoint[]>>({})
   useEffect(() => {
     let live = true
     if (!frame.live) {
       setLines(Object.fromEntries(summaries.map((s) => [s.pool, closesOf(frame.days, s.pool)])))
+      setReserves(Object.fromEntries(summaries.map((s) => [s.pool, reserveClosesOf(frame.days, s.pool)])))
       return
     }
     setLines({})
+    setReserves({})
     void (async () => {
       for (const s of summaries) {
         if (!live) return
@@ -507,6 +516,11 @@ function Overview({
         try {
           const pts = await fetchPoolHistory(poolTable(s.type), s.pool, frame.since)
           if (live) setLines((prev) => ({ ...prev, [s.pool]: withNow(pts, s.balance) }))
+          const held = s.reserve
+          if (s.type === 'tlm' && held !== undefined) {
+            const r = await fetchPoolHistory('tlmpools', s.pool, frame.since, false, 'reserve')
+            if (live) setReserves((prev) => ({ ...prev, [s.pool]: withNow(r, held) }))
+          }
         } catch {
           /* The card just goes without its line. */
         }
@@ -609,6 +623,9 @@ function Overview({
                           height={48}
                           color={COLOR[s.type]}
                           label={`${s.pool} balance, ${frame.phrase}`}
+                          {...(reserves[s.pool]?.length
+                            ? { extra: { points: reserves[s.pool], color: RESERVE_COLOR, name: 'Reserve' } }
+                            : {})}
                         />
                       ) : (
                         <span className="pcard__sparkwait">Loading balance…</span>
@@ -620,9 +637,10 @@ function Overview({
                   {s.balance !== undefined && (
                     <div className="pcard__balance">
                       Holds now <strong>{amount(s.balance, s.type)}</strong> {SYMBOL[s.type]}
-                      {/* The source holds two piles: what is released and ready
-                          for the sub-pools, and what is still held back. The
-                          line above is the first; this is the second. */}
+                      {/* Every TLM pool holds two piles: what is released and
+                          can be paid out, and what is still held back. The
+                          solid line is the first; the dashed one and this
+                          figure are the second. */}
                       {s.reserve !== undefined ? (
                         <span className="pcard__reserve">
                           {' '}

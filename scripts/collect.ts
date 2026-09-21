@@ -113,8 +113,8 @@ async function pools(): Promise<void> {
     ...tlm.map((p) => ({ pool: p.pool, type: 'tlm' })),
     ...shards.map((p) => ({ pool: p.pool, type: 'shards' })),
   ].filter((p) => !HIDDEN_POOLS.has(p.pool))
-  /* The pools other pools are released from, whose reserve gets a line. */
-  const parents = tlm.filter((p) => (p.subpools ?? []).length).map((p) => p.pool)
+  /* Every TLM pool holds a reserve back; each gets a line beside its balance. */
+  const reserved = tlm.map((p) => p.pool).filter((p) => !HIDDEN_POOLS.has(p))
 
   for (const date of dates) {
     const t0 = Date.now()
@@ -127,11 +127,11 @@ async function pools(): Promise<void> {
       if (v !== undefined) close[b.pool] = v
     }
     const reserve: Record<string, number> = {}
-    for (const pool of parents) {
+    for (const pool of reserved) {
       const v = await fetchReserveAt(pool, until).catch(() => undefined)
       if (v !== undefined) reserve[pool] = v
     }
-    const day: PoolDay = { date, rows: compressDay(payouts), close, ...(parents.length ? { reserve } : {}) }
+    const day: PoolDay = { date, rows: compressDay(payouts), close, ...(reserved.length ? { reserve } : {}) }
     const by = new Map(file.days.map((d) => [d.date, d]))
     by.set(date, day)
     file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))

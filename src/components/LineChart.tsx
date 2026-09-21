@@ -177,7 +177,14 @@ export function LineChart({
               </>
             )}
             {extra && extra.points.length > 0 && (
-              <path d={extraLine} fill="none" stroke={extra.color} strokeWidth={2} strokeDasharray="6 4" strokeLinejoin="round" />
+              <path
+                d={extraLine}
+                fill="none"
+                stroke={extra.color}
+                strokeWidth={spark ? 1.25 : 2}
+                strokeDasharray={spark ? '3 3' : '6 4'}
+                strokeLinejoin="round"
+              />
             )}
 
             {hovered && (
@@ -211,7 +218,7 @@ export function LineChart({
           </div>
         )}
       </div>
-      {extra ? (
+      {extra && !spark ? (
         <div className="lchart__legend">
           <span>
             <i style={{ background: color }} /> {name ?? label}
