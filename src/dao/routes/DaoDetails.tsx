@@ -579,7 +579,7 @@ function BudgetForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
           second thing for the council to sign that can never run once the
           first has, so this says where the first one stands instead. */}
       {pending ? (
-        <p className="dao-note">
+        <p className="dao-note dao-note--info">
           <b>&ldquo;{msigTitle(pending)}&rdquo;</b> was proposed by {pending.proposer} and is open —{' '}
           {got >= need
             ? `it has its ${need} signatures and only needs executing.`

@@ -1541,3 +1541,63 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   background: var(--accent);
   border-radius: var(--radius-full);
 }
+
+/* ── Proposal fields generated from an ABI ───────────────────────────────── */
+
+/* What is wrong with one value, under its box. Small and red, and only ever
+   present when something IS wrong — a form covered in "ok"s reads as noise. */
+.cp-bad { font-size: var(--fs-xs); color: var(--critical); }
+
+/* The argument fields sit on the action's sunk panel, so they get the
+   surface back to read as inputs rather than as more panel. */
+.cp-action .cp-fields { background: var(--surface); }
+
+/* A nested struct: its fields, framed and labelled with the field it is. */
+.cp-group {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.cp-group > legend { padding: 0 var(--sp-1); }
+.cp-group .ale-form { padding: 0; background: none; border: 0; }
+
+/* A JSON box needs the width. */
+.cp-wide { grid-column: 1 / -1; }
+
+.cp-check { align-content: center; }
+.cp-check input { width: 18px; height: 18px; }
+
+/* The status line under an action, with the way out to raw JSON at its end. */
+.cp-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.cp-link {
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cp-link:hover:not(:disabled) { text-decoration: underline; }
+.cp-link:disabled { color: var(--text-3); cursor: default; }
+.ale-field__name .cp-link { margin-left: auto; font-weight: 500; }
+
+/* A note that points at something already under way — a claim somebody
+   has raised. Blue like a link, because the useful thing to do with it is go
+   and act on what it points at, not to raise another. */
+.dao-note--info {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+}
