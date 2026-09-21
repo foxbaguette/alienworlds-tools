@@ -31,7 +31,7 @@ export default function AwReport() {
   const sumOf = (list: Day[], pick: (d: Day) => number) => list.reduce((n, d) => n + pick(d), 0)
   const seen = running(upTo.map((d) => d.firstSeen))
 
-  const flow = (title: string, group: 'players' | 'rewards' | 'game', pick: (d: Day) => number, unit?: string, head?: boolean) => (
+  const flow = (title: string, group: 'players' | 'rewards' | 'game' | 'nfts', pick: (d: Day) => number, unit?: string, head?: boolean) => (
     <Block
       key={title}
       head={head}
@@ -76,6 +76,9 @@ export default function AwReport() {
 
       {flow('Mines', 'game', (d) => d.mines, 'mining actions', true)}
       {flow('Claims of mined TLM', 'game', (d) => d.claims, 'claims')}
+      {flow('Shards spent in the Outpost', 'game', (d) => d.shardsSpent ?? 0, 'Shards')}
+
+      {flow('NFTs bought in the Outpost', 'nfts', (d) => d.outpostNfts ?? 0, 'alien.worlds NFTs, paid for in Shards', true)}
     </ReportPage>
   )
 }

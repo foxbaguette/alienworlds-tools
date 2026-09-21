@@ -41,7 +41,7 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
-import { fetchAwDay, fetchShardsMined, type AwDailyFile } from '../src/aw/queries'
+import { fetchAwDay, fetchShardsMined, fetchShardsSpent, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
   fetchMinesByMode,
@@ -371,6 +371,18 @@ async function aw(): Promise<void> {
     console.log(`  ${d.date}  ${Math.round(d.shards).toLocaleString('en-US').padStart(9)} shards`)
   }
 
+  /* Likewise the Outpost's spending, measured later still. */
+  const spentless = file.days.filter((d) => d.shardsSpent === undefined && !dates.includes(d.date))
+  if (spentless.length) console.log(`aw: adding Outpost spending to ${spentless.length} day(s)`)
+  for (const d of spentless) {
+    const from = dayStart(d.date)
+    const spent = await fetchShardsSpent(from, from + DAY_MS)
+    d.shardsSpent = Math.round(spent.shards * 10) / 10
+    d.outpostNfts = spent.nfts
+    save(FILE, file)
+    console.log(`  ${d.date}  ${Math.round(d.shardsSpent).toLocaleString('en-US').padStart(11)} shards spent  ${spent.nfts} NFTs`)
+  }
+
   if (!dates.length) return console.log('aw: up to date')
   console.log(`aw: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
 
@@ -379,6 +391,7 @@ async function aw(): Promise<void> {
     const from = dayStart(date)
     const day = await fetchAwDay(from, from + DAY_MS)
     const shards = await fetchShardsMined(from, from + DAY_MS)
+    const spent = await fetchShardsSpent(from, from + DAY_MS)
     for (const w of day.claimers) if (!firstDay[w] || firstDay[w] > date) firstDay[w] = date
     const month = date.slice(0, 7)
     months[month] = [...new Set([...(months[month] ?? []), ...day.claimers])].sort()
@@ -389,6 +402,8 @@ async function aw(): Promise<void> {
       date,
       mines: day.mines,
       shards: Math.round(shards * 10) / 10,
+      shardsSpent: Math.round(spent.shards * 10) / 10,
+      outpostNfts: spent.nfts,
       newPlayers: day.newPlayers,
       claims: day.claims,
       tlm: Math.round(day.tlm * 10_000) / 10_000,

@@ -1,5 +1,5 @@
 import { historySliced, historyTime, largestCount } from '@/chain/history'
-import { cached } from '@/chain/rpc'
+import { cached, getAllRows } from '@/chain/rpc'
 
 /**
  * Alien Worlds itself, day by day, for its monthly report.
@@ -24,6 +24,14 @@ import { cached } from '@/chain/rpc'
  * through `ptpxy.worlds` (Mission Control, Naron, Planetary Defense…), so
  * what mining produced is the first less the second. Both count in tenths of
  * a Shard.
+ *
+ * SHARDS SPENT. The Outpost sells NFTs for Shards through
+ * `uspts.worlds::redeempntnft {user, offer_id}`, which mints the offer's
+ * template to the player. The price is not in the action — it is the
+ * offer's `required`, in the `pointoffers` table. Offers are removed once
+ * they end, so the prices of past ones come from their `setptsreward`, the
+ * action that created them. (`redeemlvlnft` is the level-up reward: it
+ * costs nothing, it only needs the points to have been earned.)
  */
 
 /**
@@ -68,6 +76,85 @@ export async function fetchShardsMined(from: number, until: number): Promise<num
   const all = await pointsAdded('uspts.worlds', from, until)
   const projects = await pointsAdded('ptpxy.worlds', from, until)
   return (all - projects) / 10
+}
+
+interface OfferRow {
+  id: number | string
+  required: number | string
+}
+
+interface SetOffer {
+  global_sequence: number
+  timestamp: string
+  act: { data: OfferRow }
+}
+
+interface Redeem {
+  global_sequence: number
+  timestamp: string
+  act: { data: { user?: string; offer_id?: number | string } }
+}
+
+/* Offers were created up to a month before they could be redeemed. */
+const OFFERS_FROM = '2026-05-01'
+
+let offerPrices: Promise<Map<string, number>> | null = null
+
+/** Offer id → points it costs: every offer set since OFFERS_FROM, then the live table on top. */
+function prices(): Promise<Map<string, number>> {
+  offerPrices ??= (async () => {
+    const out = new Map<string, number>()
+    const set = await historySliced<SetOffer>(
+      '/v2/history/get_actions',
+      { 'act.account': 'uspts.worlds', 'act.name': 'setptsreward' },
+      Date.parse(`${OFFERS_FROM}T00:00:00Z`),
+      Date.now(),
+      (page) => (page as { actions?: SetOffer[] }).actions ?? [],
+      (a) => historyTime(a.timestamp),
+      (a) => a.global_sequence,
+      4,
+      undefined,
+      true,
+    )
+    for (const a of [...set].sort((x, y) => x.global_sequence - y.global_sequence)) {
+      out.set(String(a.act.data.id), Number(a.act.data.required) || 0)
+    }
+    const live = await getAllRows<OfferRow>({ code: 'uspts.worlds', scope: 'uspts.worlds', table: 'pointoffers' })
+    for (const o of live) out.set(String(o.id), Number(o.required) || 0)
+    return out
+  })()
+  offerPrices.catch(() => (offerPrices = null))
+  return offerPrices
+}
+
+/** NFTs bought in the Outpost between two moments, and the Shards paid for them. */
+export async function fetchShardsSpent(from: number, until: number): Promise<{ shards: number; nfts: number }> {
+  const [price, rows] = await Promise.all([
+    prices(),
+    historySliced<Redeem>(
+      '/v2/history/get_actions',
+      { 'act.account': 'uspts.worlds', 'act.name': 'redeempntnft' },
+      from,
+      until,
+      (page) => (page as { actions?: Redeem[] }).actions ?? [],
+      (a) => historyTime(a.timestamp),
+      (a) => a.global_sequence,
+      4,
+      undefined,
+      true,
+    ),
+  ])
+  let points = 0
+  const unknown = new Set<string>()
+  for (const r of rows) {
+    const id = String(r.act.data.offer_id)
+    const p = price.get(id)
+    if (p === undefined) unknown.add(id)
+    else points += p
+  }
+  /* A missing price would silently undercount, so it stops the day instead. */
+  if (unknown.size) throw new Error(`no price for Outpost offer(s) ${[...unknown].join(', ')}`)
+  return { shards: points / 10, nfts: rows.length }
 }
 
 export interface AwDayRaw {
@@ -115,6 +202,9 @@ export interface AwDay {
   mines: number
   /** Shards credited through mining — see fetchShardsMined. */
   shards?: number
+  /** Shards spent in the Outpost, and the NFTs bought with them — see fetchShardsSpent. */
+  shardsSpent?: number
+  outpostNfts?: number
   newPlayers: number
   claims: number
   tlm: number
