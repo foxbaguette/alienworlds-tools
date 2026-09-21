@@ -62,25 +62,37 @@ export const SECTIONS: Section[] = [
     label: 'Stats',
     blurb: 'Alien Legends and the projects around it',
     home: '/overview',
+    /*
+      Laid out like the DAO Manager's councils: each project is a menu entry of
+      its own — its name, linking to its overview — with its other pages
+      indented beneath it. As small-caps group labels the project names were
+      the quietest text in the menu, when they are what a reader scans for.
+    */
     groups: [
       {
-        label: 'Alien Legends',
+        label: 'Games',
         tools: [
-          { to: '/overview', label: 'Overview' },
-          { to: '/stats', label: 'Stats' },
-          { to: '/pools', label: 'Reward pools' },
-          { to: '/ghubs', label: 'gHubs report' },
+          {
+            to: '/overview',
+            label: 'Alien Legends',
+            children: [
+              { to: '/stats', label: 'Stats' },
+              { to: '/pools', label: 'Reward pools' },
+              { to: '/ghubs', label: 'gHubs report' },
+            ],
+          },
+          /* Alien Worlds itself has no overview page — its entry is its report. */
+          { to: '/aw/ghubs', label: 'Alien Worlds' },
         ],
       },
-      /* Alien Worlds itself has no overview page — only its report. */
-      { label: 'Alien Worlds', tools: [{ to: '/aw/ghubs', label: 'gHubs report' }] },
-      ...PROJECTS.map((p) => ({
-        label: p.name,
-        tools: [
-          { to: `/${p.key}`, label: 'Overview' },
-          ...(REPORTS.has(p.key) ? [{ to: `/${p.key}/ghubs`, label: 'gHubs report' }] : []),
-        ],
-      })),
+      {
+        label: 'Projects',
+        tools: PROJECTS.map((p) => ({
+          to: `/${p.key}`,
+          label: p.name,
+          ...(REPORTS.has(p.key) ? { children: [{ to: `/${p.key}/ghubs`, label: 'gHubs report' }] } : {}),
+        })),
+      },
     ],
   },
   {
@@ -196,7 +208,8 @@ export function sectionFor(path: string): Section {
     SECTIONS.find(
       (s) =>
         s.owns?.some((base) => matches(path, base)) ||
-        s.groups.some((g) => g.tools.some((t) => matches(path, t.to))),
+        /* Indented pages belong to their section as much as the entries above them. */
+        s.groups.some((g) => g.tools.some((t) => matches(path, t.to) || !!t.children?.some((c) => matches(path, c.to)))),
     ) ?? SECTIONS[0]
   )
 }

@@ -60,6 +60,9 @@ const flag = (name: string) => {
   return i >= 0 ? args[i + 1] : undefined
 }
 const redo = Number(flag('--redo')) || 0
+/* Particular days to read again, e.g. --dates 2026-07-31,2026-08-27: the ones
+   the history servers turned out to disagree about. */
+const forced = new Set((flag('--dates') ?? '').split(',').filter(Boolean))
 const only = flag('--only')
 
 function load<T>(file: string, empty: T): T {
@@ -76,7 +79,7 @@ function todo(days: { date: string }[]): string[] {
   const yesterday = dayOf(Date.now() - DAY_MS)
   const have = new Set(days.map((d) => d.date))
   const again = new Set(redo > 0 ? days.slice(-redo).map((d) => d.date) : [])
-  return dateRange(LAUNCH, yesterday).filter((d) => !have.has(d) || again.has(d))
+  return dateRange(LAUNCH, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 }
 
 async function activity(): Promise<void> {
@@ -195,7 +198,7 @@ async function projects(): Promise<void> {
     const yesterday = dayOf(Date.now() - DAY_MS)
     const have = new Set(file.days.map((d) => d.date))
     const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
-    const dates = dateRange(def.since, yesterday).filter((d) => !have.has(d) || again.has(d))
+    const dates = dateRange(def.since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
     if (!dates.length) {
       console.log(`${def.name}: up to date`)
       continue
@@ -288,7 +291,7 @@ async function mcReport(): Promise<void> {
   const yesterday = dayOf(Date.now() - DAY_MS)
   const have = new Set(file.days.map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
-  const dates = dateRange(since, yesterday).filter((d) => !have.has(d) || again.has(d))
+  const dates = dateRange(since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
   if (dates.length) console.log(`mc report: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
 
   for (const date of dates) {
@@ -355,7 +358,7 @@ async function aw(): Promise<void> {
   const yesterday = dayOf(Date.now() - DAY_MS)
   const have = new Set(file.days.map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
-  const dates = dateRange(HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d))
+  const dates = dateRange(HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 
   /* Days collected before Shards were measured get just that figure added,
      rather than the whole day read again. */
