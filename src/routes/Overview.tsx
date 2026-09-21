@@ -24,6 +24,7 @@ import { usePeriod, type PeriodKey } from '@/components/usePeriod'
 import { EconomySection, PlayersSection } from '@/components/Sections'
 import { Recipients, type RecipientRow } from '@/components/Recipients'
 import { formatNumber } from '@/format'
+import { FARM, FARM_SCHEMAS, fetchFarmDaily, fetchFarmPools, type FarmDay, type FarmPool } from '@/farm/queries'
 
 const RANGES = [
   { key: '7', label: '7 days', days: 7 },
@@ -354,6 +355,8 @@ export default function Overview() {
             </div>
           </section>
 
+          <FarmSection dates={dates} before={before.map((d) => d.date)} label={spec.label} />
+
           <p className="section__note">
             Figures through {through ? longDate(through) : '—'} UTC
             {generatedAt ? `, collected ${new Date(generatedAt).toLocaleString()}` : ''}. Today is added once the day is
@@ -362,6 +365,93 @@ export default function Overview() {
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * NFTs staked on farm.ale, day by day.
+ *
+ * Follows the page's period like every other chart here. The line is each
+ * day's close; the tiles are live, straight from the farm's own table, and
+ * compare against the close of the day before the period began — so "+3%"
+ * means the same span the chart shows.
+ */
+function FarmSection({ dates, before, label }: { dates: string[]; before: string[]; label: string }) {
+  const [days, setDays] = useState<FarmDay[] | null>(null)
+  const [now, setNow] = useState<FarmPool[] | null>(null)
+
+  useEffect(() => {
+    fetchFarmDaily().then((f) => setDays(f.days))
+    fetchFarmPools()
+      .then(setNow)
+      .catch(() => setNow([]))
+  }, [])
+
+  const byDate = useMemo(() => new Map((days ?? []).map((d) => [d.date, d.nfts])), [days])
+  /* A day the collector could not read carries the one before it, rather than
+     dropping to zero and drawing a crash that never happened. */
+  const valuesOf = (schema: string) => {
+    let last = 0
+    return dates.map((d) => {
+      const day = byDate.get(d)
+      if (day) last = day[schema] ?? 0
+      return last
+    })
+  }
+
+  const liveOf = (schema: string) => Number(now?.find((p) => p.schema === schema)?.total_nfts ?? 0)
+  const liveTotal = FARM_SCHEMAS.reduce((n, s) => n + liveOf(s.schema), 0)
+  /* The close the period starts from: the last day before it, if collected. */
+  const start = before.length ? byDate.get(before[before.length - 1]) : undefined
+  const startOf = (schema: string | null) =>
+    start ? (schema ? (start[schema] ?? 0) : Object.values(start).reduce((n, v) => n + v, 0)) : undefined
+  const change = (live: number, from: number | undefined) => {
+    const r = from ? changeOf(live, from) : null
+    return r === null ? null : { ratio: r, against: `the start of the last ${label.toLowerCase()}` }
+  }
+
+  if (days && !days.length) return null
+
+  return (
+    <section className="section">
+      <div className="section__head">
+        <h2 className="section__title">Staked on the farm</h2>
+        <span className="section__note">
+          NFTs staked on <span className="mono">{FARM}</span>
+        </span>
+      </div>
+      <div className="tiles">
+        <StatTile
+          label="Staked now"
+          value={now ? whole(liveTotal) : '…'}
+          change={now ? change(liveTotal, startOf(null)) : null}
+        />
+        {FARM_SCHEMAS.map((s) => (
+          <StatTile
+            key={s.schema}
+            label={s.label}
+            value={now ? whole(liveOf(s.schema)) : '…'}
+            change={now ? change(liveOf(s.schema), startOf(s.schema)) : null}
+            sub={s.schema}
+          />
+        ))}
+      </div>
+      <div className="card card--pad">
+        <div className="card__head">
+          <h3 className="card__title">NFTs staked, end of each day</h3>
+        </div>
+        {days ? (
+          <DailyChart
+            kind="line"
+            dates={dates}
+            series={FARM_SCHEMAS.map((s) => ({ key: s.schema, label: s.label, color: s.color, values: valuesOf(s.schema) }))}
+            label="NFTs staked on farm.ale at the end of each day, by schema"
+          />
+        ) : (
+          <p className="section__note">Reading…</p>
+        )}
+      </div>
+    </section>
   )
 }
 

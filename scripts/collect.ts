@@ -37,6 +37,7 @@ import {
 import { fetchBalanceAt, fetchClaimedPayouts, fetchPoolActivity, fetchReserveAt } from '../src/poolstats/queries'
 import { compressDay, HIDDEN_POOLS, poolTable, type PoolDailyFile, type PoolDay } from '../src/poolstats/rules'
 import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
+import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { PROJECTS } from '../src/projects/defs'
 import { fetchProjectDay } from '../src/projects/queries'
 import type { ProjectFile } from '../src/projects/rules'
@@ -205,9 +206,45 @@ async function projects(): Promise<void> {
   }
 }
 
+/**
+ * NFTs staked on farm.ale at the end of each day, by schema. Three reads a
+ * day: the pool row for each schema as it last stood before midnight.
+ */
+async function farm(): Promise<void> {
+  const FILE = 'public/data/farm-daily.json'
+  const file = load<FarmDailyFile>(FILE, { generatedAt: '', days: [] })
+  const dates = todo(file.days)
+  if (!dates.length) return console.log('farm: up to date')
+  console.log(`farm: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+
+  const schemas = (await fetchFarmPools()).map((p) => p.schema)
+  for (const date of dates) {
+    const until = dayStart(date) + DAY_MS
+    const nfts: Record<string, number> = {}
+    for (const schema of schemas) {
+      const v = await fetchFarmStakedAt(schema, until).catch(() => undefined)
+      if (v !== undefined) nfts[schema] = v
+    }
+    /* A day with nothing read is left for the next run rather than saved as
+       zeros, which would draw as everybody unstaking at once. */
+    if (!Object.keys(nfts).length) {
+      console.log(`  ${date}  nothing read — left for next time`)
+      continue
+    }
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, { date, nfts })
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    file.generatedAt = new Date().toISOString()
+    save(FILE, file)
+    const total = Object.values(nfts).reduce((n, v) => n + v, 0)
+    console.log(`  ${date}  ${total.toLocaleString('en-US').padStart(7)} staked`)
+  }
+}
+
 void (async () => {
   if (!only || only === 'activity') await activity()
   if (!only || only === 'pools') await pools()
+  if (!only || only === 'farm') await farm()
   if (!only || only === 'projects') await projects()
   if (only === 'landclaims') await landClaims()
 })()
