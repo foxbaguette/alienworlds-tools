@@ -1,5 +1,8 @@
 import { PROJECTS } from './projects/defs'
 
+/** Projects with a monthly report of their own, at /<key>/ghubs. */
+const REPORTS = new Set(['mc'])
+
 /**
  * The site's top level.
  *
@@ -69,7 +72,13 @@ export const SECTIONS: Section[] = [
           { to: '/ghubs', label: 'gHubs report' },
         ],
       },
-      ...PROJECTS.map((p) => ({ label: p.name, tools: [{ to: `/${p.key}`, label: 'Overview' }] })),
+      ...PROJECTS.map((p) => ({
+        label: p.name,
+        tools: [
+          { to: `/${p.key}`, label: 'Overview' },
+          ...(REPORTS.has(p.key) ? [{ to: `/${p.key}/ghubs`, label: 'gHubs report' }] : []),
+        ],
+      })),
     ],
   },
   {

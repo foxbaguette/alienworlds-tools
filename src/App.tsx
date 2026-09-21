@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Overview from './routes/Overview'
 import Ghubs from './routes/Ghubs'
+import McReport from './routes/McReport'
 import PoolStats from './routes/PoolStats'
 import ProjectOverview from './routes/ProjectOverview'
 import Stats from './routes/Stats'
@@ -177,6 +178,7 @@ function Shell() {
           <Route path="/stats" element={<Stats />} />
           <Route path="/pools" element={<PoolStats />} />
           <Route path="/ghubs" element={<Ghubs />} />
+          <Route path="/mc/ghubs" element={<McReport />} />
           <Route path="/daos/syndicates" element={<Councils group="syndicate" />} />
           <Route path="/daos/unions" element={<Councils group="union" />} />
           <Route path="/daos/proposals" element={<AllProposals />} />

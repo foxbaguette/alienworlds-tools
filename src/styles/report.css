@@ -118,3 +118,13 @@
 
   .rpt__foot { break-inside: avoid; font-size: 8.5pt; }
 }
+
+/* A third line in a split graph, after the group colour and the grey. */
+:root { --rpt-alt: #b3aea3; }
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) { --rpt-alt: #6d6a63; }
+}
+:root[data-theme='dark'] { --rpt-alt: #6d6a63; }
+
+/* A split graph's legend, small enough for a graph a third of the page wide. */
+.rpt .dchart__legend { font-size: var(--fs-xs); gap: var(--sp-1) var(--sp-3); }

@@ -41,6 +41,14 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS } from '../src/projects/defs'
+import {
+  MC_STAKING,
+  fetchMinesByMode,
+  fetchNftFlow,
+  fetchOwnedAw,
+  type McReportFile,
+  type McStakeKey,
+} from '../src/projects/mcReport'
 import { fetchProjectDay } from '../src/projects/queries'
 import type { ProjectFile } from '../src/projects/rules'
 
@@ -265,11 +273,66 @@ async function nftRows(): Promise<void> {
   }
 }
 
+/**
+ * What Mission Control's report needs beyond mc.json: mines by mode, and the
+ * NFTs moving in and out of game.mc and adventure.mc. The staked levels are
+ * then rebuilt for EVERY day from the owned counts right now, walking back
+ * through the stored flows — exact, since nothing but transfers moves them,
+ * and redone each run so a day is never left on yesterday's arithmetic.
+ */
+async function mcReport(): Promise<void> {
+  const FILE = 'public/data/projects/mc-report.json'
+  const since = PROJECTS.find((p) => p.key === 'mc')!.since
+  const file = load<McReportFile>(FILE, { generatedAt: '', days: [] })
+  const yesterday = dayOf(Date.now() - DAY_MS)
+  const have = new Set(file.days.map((d) => d.date))
+  const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
+  const dates = dateRange(since, yesterday).filter((d) => !have.has(d) || again.has(d))
+  if (dates.length) console.log(`mc report: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+
+  for (const date of dates) {
+    const t0 = Date.now()
+    const from = dayStart(date)
+    const until = from + DAY_MS
+    const mines = await fetchMinesByMode(from, until)
+    const flows = {} as McReportFile['days'][number]['flows']
+    for (const s of MC_STAKING) flows[s.key] = await fetchNftFlow(s.account, s.memo, from, until)
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, { date, mines, flows, staked: by.get(date)?.staked ?? { game: 0, adventure: 0 } })
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    save(FILE, file)
+    console.log(
+      `  ${date}  mines ${mines.same}/${mines.land}/${mines.loan}  ` +
+        MC_STAKING.map((s) => `${s.key} +${flows[s.key].in} −${flows[s.key].out}`).join('  ') +
+        `  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    )
+  }
+  if (!file.days.length) return
+
+  /* Today so far, then back one day at a time. */
+  const now = Date.now()
+  const todayStart = dayStart(dayOf(now))
+  for (const s of MC_STAKING) {
+    const owned = await fetchOwnedAw(s.account)
+    const today = await fetchNftFlow(s.account, s.memo, todayStart, now)
+    let level = owned - (today.in - today.out)
+    for (let i = file.days.length - 1; i >= 0; i--) {
+      const d = file.days[i]
+      d.staked = { ...d.staked, [s.key]: level } as Record<McStakeKey, number>
+      level -= d.flows[s.key].in - d.flows[s.key].out
+    }
+    console.log(`  ${s.account}: owns ${owned} now; ${file.days[file.days.length - 1].staked[s.key]} at the end of yesterday`)
+  }
+  file.generatedAt = new Date().toISOString()
+  save(FILE, file)
+}
+
 void (async () => {
   if (!only || only === 'activity') await activity()
   if (!only || only === 'pools') await pools()
   if (!only || only === 'farm') await farm()
   if (!only || only === 'nfts') await nftRows()
+  if (!only || only === 'mcreport') await mcReport()
   if (!only || only === 'projects') await projects()
   if (only === 'landclaims') await landClaims()
 })()
