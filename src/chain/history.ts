@@ -16,13 +16,28 @@
  *     working, so long listings page by time instead — see `historyCrawl`.
  */
 
-export const HISTORY_ENDPOINTS: readonly string[] = [
+export const HISTORY_ENDPOINTS: string[] = [
   'https://wax.cryptolions.io',
   'https://api.waxsweden.org',
   'https://wax.hivebp.io',
   'https://hyperion.wax.detroitledger.tech',
   'https://wax.eosphere.io',
 ]
+
+/**
+ * Narrows the pool to the servers named.
+ *
+ * Indexers keep different amounts of the past: most hold a few months, two
+ * hold the better part of a year. Reading a day from six months ago through
+ * the whole pool means most answers are an empty page that the crawl then has
+ * to prove is not a short read — slow, and hard on servers that have nothing
+ * to give. A backfill says which servers still have that far back; the nightly
+ * run leaves the pool alone.
+ */
+export function useHistoryServers(list: string[]): void {
+  if (!list.length) return
+  HISTORY_ENDPOINTS.splice(0, HISTORY_ENDPOINTS.length, ...list)
+}
 
 /** Pause between pages of one crawl. */
 const PAGE_GAP_MS = 250

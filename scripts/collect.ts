@@ -41,7 +41,7 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
-import { historyReaches } from '../src/chain/history'
+import { historyReaches, useHistoryServers } from '../src/chain/history'
 import { fetchAwDay, fetchShardsMined, fetchShardsSpent, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
@@ -68,6 +68,18 @@ const forced = new Set((flag('--dates') ?? '').split(',').filter(Boolean))
 const only = flag('--only')
 /* Collect further back than a project's own start, for a one-off backfill. */
 const sinceFlag = flag('--since')
+/* Only these history servers, for days most of the pool no longer holds. */
+useHistoryServers((flag('--servers') ?? '').split(',').filter(Boolean))
+/* The last day to collect, so two runs can share a backfill without meeting. */
+const untilFlag = flag('--until')
+/*
+   A backfill run writes its own copy of a file — "mc.part-a.json" — which
+   merge.mjs folds back in afterwards. Two collectors cannot share one file:
+   each saves the whole of it after every day, so the second would undo the
+   first. Splitting the work by server and date makes them independent.
+*/
+const part = flag('--part')
+const partOf = (file: string) => (part ? file.replace(/.json$/, `.${part}.json`) : file)
 
 function load<T>(file: string, empty: T): T {
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as T) : empty
@@ -226,16 +238,16 @@ async function landClaims(): Promise<void> {
 async function projects(): Promise<void> {
   const pick = flag('--project')
   for (const def of PROJECTS.filter((p) => !pick || p.key === pick)) {
-    const FILE = `public/data/projects/${def.key}.json`
+    const FILE = partOf(`public/data/projects/${def.key}.json`)
     const file = load<ProjectFile>(FILE, { generatedAt: '', days: [] })
-    const yesterday = dayOf(Date.now() - DAY_MS)
+    const yesterday = untilFlag ?? dayOf(Date.now() - DAY_MS)
     const have = new Set(file.days.map((d) => d.date))
     const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
     const dates = dateRange(sinceFlag ?? def.since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 
     /* Days collected before incoming tokens were measured get just those added. */
     if (def.incoming?.length) {
-      const bare = file.days.filter((d) => d.incoming === undefined && !dates.includes(d.date))
+      const bare = part ? [] : file.days.filter((d) => d.incoming === undefined && !dates.includes(d.date))
       if (bare.length) console.log(`${def.name}: adding incoming tokens to ${bare.length} day(s)`)
       for (const d of bare) {
         d.incoming = (await fetchProjectIncoming(def, d.date)) ?? {}
@@ -350,10 +362,10 @@ async function nftRows(): Promise<void> {
  * and redone each run so a day is never left on yesterday's arithmetic.
  */
 async function mcReport(): Promise<void> {
-  const FILE = 'public/data/projects/mc-report.json'
+  const FILE = partOf('public/data/projects/mc-report.json')
   const since = sinceFlag ?? PROJECTS.find((p) => p.key === 'mc')!.since
   const file = load<McReportFile>(FILE, { generatedAt: '', days: [] })
-  const yesterday = dayOf(Date.now() - DAY_MS)
+  const yesterday = untilFlag ?? dayOf(Date.now() - DAY_MS)
   const have = new Set(file.days.map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
   const dates = dateRange(since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
@@ -377,6 +389,9 @@ async function mcReport(): Promise<void> {
     )
   }
   if (!file.days.length) return
+  /* A part of a backfill holds only its own stretch of days; the staked levels
+     are counted back across the whole run, once the parts are merged. */
+  if (part) return
 
   /* Today so far, then back one day at a time. */
   const now = Date.now()
@@ -413,8 +428,8 @@ async function mcReport(): Promise<void> {
  * their count, in the report's own file.
  */
 async function aw(): Promise<void> {
-  const FILE = 'public/data/aw-daily.json'
-  const STATE = 'public/data/aw-claimers.json'
+  const FILE = partOf('public/data/aw-daily.json')
+  const STATE = partOf('public/data/aw-claimers.json')
   const file = load<AwDailyFile>(FILE, { generatedAt: '', days: [], months: {} })
   const saved = load<{ firstSeen: Record<string, string[]>; months: Record<string, string[]> }>(STATE, {
     firstSeen: {},
@@ -424,14 +439,14 @@ async function aw(): Promise<void> {
   for (const [date, ws] of Object.entries(saved.firstSeen)) for (const w of ws) firstDay[w] = date
   const months = saved.months
   const counts = { ...file.months }
-  const yesterday = dayOf(Date.now() - DAY_MS)
+  const yesterday = untilFlag ?? dayOf(Date.now() - DAY_MS)
   const have = new Set(file.days.map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
   const dates = dateRange(sinceFlag ?? HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 
   /* Days collected before Shards were measured get just that figure added,
      rather than the whole day read again. */
-  const shardless = file.days.filter((d) => d.shards === undefined && !dates.includes(d.date))
+  const shardless = part ? [] : file.days.filter((d) => d.shards === undefined && !dates.includes(d.date))
   if (shardless.length) console.log(`aw: adding Shards mined to ${shardless.length} day(s)`)
   for (const d of shardless) {
     const from = dayStart(d.date)
@@ -441,7 +456,7 @@ async function aw(): Promise<void> {
   }
 
   /* Likewise the Outpost's spending, measured later still. */
-  const spentless = file.days.filter((d) => d.shardsSpent === undefined && !dates.includes(d.date))
+  const spentless = part ? [] : file.days.filter((d) => d.shardsSpent === undefined && !dates.includes(d.date))
   if (spentless.length) console.log(`aw: adding Outpost spending to ${spentless.length} day(s)`)
   for (const d of spentless) {
     const from = dayStart(d.date)

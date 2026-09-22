@@ -22,6 +22,10 @@ const PROPS = [
   'stroke-linecap',
   'stroke-linejoin',
   'opacity',
+  /* A gradient's stops name their colour as a CSS variable, which means
+     nothing once the chart is on its own: resolved here, or it comes out grey. */
+  'stop-color',
+  'stop-opacity',
   'font-family',
   'font-size',
   'font-weight',
