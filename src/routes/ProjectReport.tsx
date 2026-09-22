@@ -83,9 +83,10 @@ const REPORTS: Record<string, ReportDef> = {
     players: 'players',
     subjects: [
       { title: 'TLM rewarded for adventures', group: 'rewards', pick: net('TLM'), unit: 'TLM' },
+      /* A reward like the TLM, so shown with it rather than as an NFT section. */
+      { title: 'NFTs rewarded for adventures', group: 'rewards', pick: (d) => d.nfts, unit: 'NFTs' },
       /* Every adventure is paid for before it is played. */
       { title: 'Adventures played', group: 'game', pick: (d) => metricOf(d, ['arkhive.lore::payadventure']) },
-      { title: 'NFTs rewarded for adventures', group: 'nfts', pick: (d) => d.nfts, unit: 'NFTs' },
     ],
   },
 }

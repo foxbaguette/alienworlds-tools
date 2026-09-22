@@ -70,7 +70,7 @@ export const SECTIONS: Section[] = [
     */
     groups: [
       {
-        label: 'Games',
+        label: 'Projects',
         tools: [
           {
             to: '/overview',
@@ -81,17 +81,14 @@ export const SECTIONS: Section[] = [
               { to: '/ghubs', label: 'gHubs report' },
             ],
           },
-          /* Alien Worlds itself has no overview page — its entry is its report. */
-          { to: '/aw/ghubs', label: 'Alien Worlds' },
+          /* Alien Worlds itself has no overview page: /aw forwards to its report. */
+          { to: '/aw', label: 'Alien Worlds', children: [{ to: '/aw/ghubs', label: 'gHubs report' }] },
+          ...PROJECTS.map((p) => ({
+            to: `/${p.key}`,
+            label: p.name,
+            ...(REPORTS.has(p.key) ? { children: [{ to: `/${p.key}/ghubs`, label: 'gHubs report' }] } : {}),
+          })),
         ],
-      },
-      {
-        label: 'Projects',
-        tools: PROJECTS.map((p) => ({
-          to: `/${p.key}`,
-          label: p.name,
-          ...(REPORTS.has(p.key) ? { children: [{ to: `/${p.key}/ghubs`, label: 'gHubs report' }] } : {}),
-        })),
       },
     ],
   },
