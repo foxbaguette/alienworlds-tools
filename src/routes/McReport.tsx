@@ -76,7 +76,7 @@ export default function McReport() {
   const sinceTitle = `since ${shortDay(DEF.since)}`
   const flow = (
     title: string,
-    group: 'rewards' | 'game',
+    group: 'rewards' | 'incoming' | 'game',
     pick: (d: Day) => number,
     how: string,
     unit?: string,
@@ -131,6 +131,15 @@ export default function McReport() {
         true,
       )}
       {flow('Shards paid out to players', 'rewards', (d) => paid(d, 'Shards'), 'Sum of shards.mc sendpoints, ÷10.', 'Shards')}
+
+      {flow(
+        'TLM paid to the Emporium',
+        'incoming',
+        (d) => d.incoming?.['emporium|TLM']?.amount ?? 0,
+        'TLM transfers from players to emporium.mc.',
+        'TLM',
+        true,
+      )}
 
       {flow('Buildings constructed', 'game', builds, 'Count of game.mc upgbuilding actions.', 'in game.mc', true)}
       {flow(

@@ -99,6 +99,8 @@ export const PROJECTS: ProjectDef[] = [
     paidNote: 'Paid out is what reached players: weekly mission claims, tool loaning earnings and Shards. Tools lent or returned are left out.',
     payers: ['tools.mc', 'game.mc', 'adventure.mc', 'emporium.mc', 'missions.mc', 'members.mc', 'voting.mc', 'admin.mc'],
     activeFrom: 'signers',
+    /* Players pay the Emporium in TLM (memo "complete task,<id>"). */
+    incoming: [{ account: 'emporium.mc', key: 'emporium', label: 'Emporium', memo: /./ }],
     /*
        Checked against a day of its transfers: weekly mission claims and tool
        owners' loaning earnings are rewards; tools lent out or returned, NFTs
