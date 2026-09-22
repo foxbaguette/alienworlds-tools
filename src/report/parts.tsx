@@ -274,6 +274,7 @@ export function Block({
   title,
   figures,
   charts,
+  how,
 }: {
   /**
    * Whether this section opens its group. The group's name is drawn INSIDE the
@@ -285,6 +286,8 @@ export function Block({
   title: string
   figures: Figure[]
   charts: Chart[]
+  /** One line under the charts: where the numbers come from. */
+  how?: string
 }) {
   const color = GROUP_COLOR[group]
   return (
@@ -325,6 +328,7 @@ export function Block({
             </div>
           ))}
         </div>
+        {how ? <p className="rpt__how">{how}</p> : null}
       </div>
     </section>
   )

@@ -18,6 +18,7 @@ interface Subject {
   group: Group
   pick: (d: ProjectDay) => number
   unit?: string
+  how: string
 }
 
 interface ReportDef {
@@ -29,6 +30,8 @@ interface ReportDef {
   allTime?: boolean
   /** Who counts as a player, in the figures' small print. */
   players: string
+  /** How a player was counted, under the charts. */
+  playersHow: string
   subjects: Subject[]
 }
 
@@ -40,53 +43,57 @@ const REPORTS: Record<string, ReportDef> = {
   pd: {
     title: 'Planetary Defense - gHubs report',
     players: 'players',
+    playersHow: 'Wallets signing an action on magordefense or miss.pdef.',
     subjects: [
-      { title: 'TLM paid out to players', group: 'rewards', pick: net('TLM'), unit: 'TLM, less entry fees' },
-      { title: 'Shards paid out to players', group: 'rewards', pick: net('Shards'), unit: 'Shards' },
-      { title: 'DEF paid out to players', group: 'rewards', pick: net('DEF'), unit: 'DEF, less entry fees' },
-      { title: 'Missions joined', group: 'game', pick: (d) => metricOf(d, ['miss.pdef::join']) },
-      { title: 'Mission rewards claimed', group: 'game', pick: (d) => metricOf(d, ['miss.pdef::claim']) },
-      { title: 'Attacks sent', group: 'game', pick: (d) => metricOf(d, ['magordefense::sendattack']) },
-      { title: 'Defense added', group: 'game', pick: (d) => metricOf(d, ['magordefense::adddefense']) },
-      { title: 'Attack armies added', group: 'game', pick: (d) => metricOf(d, ['magordefense::addattack']) },
+      { title: 'TLM paid out to players', group: 'rewards', pick: net('TLM'), unit: 'TLM, less entry fees', how: 'TLM reward transfers from magordefense and miss.pdef, less entry: fees paid in.' },
+      { title: 'Shards paid out to players', group: 'rewards', pick: net('Shards'), unit: 'Shards', how: 'Sum of ptpxy.worlds addpoints issued by magordefense and miss.pdef, ÷10.' },
+      { title: 'DEF paid out to players', group: 'rewards', pick: net('DEF'), unit: 'DEF, less entry fees', how: 'DEF reward transfers from magordefense and miss.pdef, less entry: fees paid in.' },
+      { title: 'Missions joined', group: 'game', pick: (d) => metricOf(d, ['miss.pdef::join']), how: 'Count of miss.pdef join actions.' },
+      { title: 'Mission rewards claimed', group: 'game', pick: (d) => metricOf(d, ['miss.pdef::claim']), how: 'Count of miss.pdef claim actions.' },
+      { title: 'Attacks sent', group: 'game', pick: (d) => metricOf(d, ['magordefense::sendattack']), how: 'Count of magordefense sendattack actions.' },
+      { title: 'Defense added', group: 'game', pick: (d) => metricOf(d, ['magordefense::adddefense']), how: 'Count of magordefense adddefense actions.' },
+      { title: 'Attack armies added', group: 'game', pick: (d) => metricOf(d, ['magordefense::addattack']), how: 'Count of magordefense addattack actions.' },
     ],
   },
   naron: {
     title: 'Naron Rewards - gHubs report',
     players: 'players rewarded',
+    playersHow: 'Wallets receiving a reward from theminergame.',
     subjects: [
-      { title: 'NAR paid out to players', group: 'rewards', pick: net('NAR'), unit: 'NAR' },
-      { title: 'Shards paid out to players', group: 'rewards', pick: net('Shards'), unit: 'Shards' },
+      { title: 'NAR paid out to players', group: 'rewards', pick: net('NAR'), unit: 'NAR', how: 'NAR reward transfers from theminergame.' },
+      { title: 'Shards paid out to players', group: 'rewards', pick: net('Shards'), unit: 'Shards', how: 'Sum of ptpxy.worlds addpoints issued by theminergame, ÷10.' },
       /* theminergame has no actions of its own for players to sign; what it
          pays for IS the activity, each payment one reward earned. */
-      { title: 'Mining rewards paid', group: 'game', pick: kind('mining', 'NAR'), unit: 'payments' },
-      { title: 'Number Game wins', group: 'game', pick: kind('number', 'NAR'), unit: 'payments' },
-      { title: 'Accumulator Game rounds', group: 'game', pick: kind('accumulator', 'NAR'), unit: 'payments' },
-      { title: 'Achievements earned', group: 'game', pick: kind('achievement', 'NAR'), unit: 'payments' },
-      { title: 'NFTs sent as rewards', group: 'nfts', pick: (d) => d.nfts, unit: 'NFTs' },
+      { title: 'Mining rewards paid', group: 'game', pick: kind('mining', 'NAR'), unit: 'payments', how: 'Count of theminergame NAR transfers with memo "Mining Reward".' },
+      { title: 'Number Game wins', group: 'game', pick: kind('number', 'NAR'), unit: 'payments', how: 'Count of theminergame NAR transfers with memo "Number Game".' },
+      { title: 'Accumulator Game rounds', group: 'game', pick: kind('accumulator', 'NAR'), unit: 'payments', how: 'Count of theminergame NAR transfers with memo "Accumulator Game".' },
+      { title: 'Achievements earned', group: 'game', pick: kind('achievement', 'NAR'), unit: 'payments', how: 'Count of theminergame NAR transfers with memo "Achievement".' },
+      { title: 'NFTs sent as rewards', group: 'nfts', pick: (d) => d.nfts, unit: 'NFTs', how: 'alien.worlds NFTs transferred by theminergame with a reward memo.' },
     ],
   },
   th: {
     title: 'Treasure Hunt - gHubs report',
     players: 'winners',
+    playersHow: 'Wallets receiving a Treasure reward from planetaworld.',
     subjects: [
-      { title: 'TLM paid out to winners', group: 'rewards', pick: net('TLM'), unit: 'TLM' },
-      { title: 'Shards paid out to winners', group: 'rewards', pick: net('Shards'), unit: 'Shards' },
+      { title: 'TLM paid out to winners', group: 'rewards', pick: net('TLM'), unit: 'TLM', how: 'TLM transfers from planetaworld with memo "Treasure reward".' },
+      { title: 'Shards paid out to winners', group: 'rewards', pick: net('Shards'), unit: 'Shards', how: 'Sum of ptpxy.worlds addpoints issued by planetaworld, ÷10.' },
       /* A hunt is rewarded once, when its treasure is found. */
-      { title: 'Treasure hunts rewarded', group: 'game', pick: (d) => metricOf(d, ['planetaworld::distributere']) },
-      { title: 'Rewards won', group: 'game', pick: kind('treasure', 'TLM'), unit: 'winning places' },
+      { title: 'Treasure hunts rewarded', group: 'game', pick: (d) => metricOf(d, ['planetaworld::distributere']), how: 'Count of planetaworld distributere actions.' },
+      { title: 'Rewards won', group: 'game', pick: kind('treasure', 'TLM'), unit: 'winning places', how: 'Count of planetaworld TLM transfers with memo "Treasure reward".' },
     ],
   },
   arkhive: {
     title: 'Arkhive - gHubs report',
     allTime: true,
     players: 'players',
+    playersHow: 'Wallets signing an action on arkhive.lore.',
     subjects: [
-      { title: 'TLM rewarded for adventures', group: 'rewards', pick: net('TLM'), unit: 'TLM' },
+      { title: 'TLM rewarded for adventures', group: 'rewards', pick: net('TLM'), unit: 'TLM', how: 'TLM transfers from arkhive.lore with memo "Rewards for completing adventure".' },
       /* A reward like the TLM, so shown with it rather than as an NFT section. */
-      { title: 'NFTs rewarded for adventures', group: 'rewards', pick: (d) => d.nfts, unit: 'NFTs' },
+      { title: 'NFTs rewarded for adventures', group: 'rewards', pick: (d) => d.nfts, unit: 'NFTs', how: 'alien.worlds NFTs transferred by arkhive.lore with memo "Rewards for completing adventure".' },
       /* Every adventure is paid for before it is played. */
-      { title: 'Adventures played', group: 'game', pick: (d) => metricOf(d, ['arkhive.lore::payadventure']) },
+      { title: 'Adventures played', group: 'game', pick: (d) => metricOf(d, ['arkhive.lore::payadventure']), how: 'Count of arkhive.lore payadventure actions.' },
     ],
   },
 }
@@ -137,6 +144,7 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
           { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => d.active) },
           { title: report.allTime ? 'Seen so far' : `Seen so far, ${sinceTitle}`, dates, values: seen },
         ]}
+        how={report.playersHow}
       />
 
       {subjects.map((s, i) => (
@@ -154,6 +162,7 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
             { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map(s.pick) },
             { title: `Running total, ${sinceTitle}`, dates, values: running(upTo.map(s.pick)) },
           ]}
+          how={s.how}
         />
       ))}
     </ReportPage>

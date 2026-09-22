@@ -74,12 +74,20 @@ export default function McReport() {
   const advStake = stockOf(stakedBy('adventure'), dates, monthDates.length)
 
   const sinceTitle = `since ${shortDay(DEF.since)}`
-  const flow = (title: string, group: 'rewards' | 'game', pick: (d: Day) => number, unit?: string, head?: boolean) => (
+  const flow = (
+    title: string,
+    group: 'rewards' | 'game',
+    pick: (d: Day) => number,
+    how: string,
+    unit?: string,
+    head?: boolean,
+  ) => (
     <Block
       key={title}
       head={head}
       group={group}
       title={title}
+      how={how}
       figures={[
         { label: SINCE, value: whole(sumOf(upTo, pick)), sub: unit },
         { label: within, value: whole(sumOf(inMonth, pick)), sub: unit },
@@ -111,13 +119,26 @@ export default function McReport() {
           { title: `Active players per day, ${name}`, dates: monthDates, values: inMonth.map((d) => d.active) },
           { title: 'Members, running total', dates, values: memberLine },
         ]}
+        how="Members: join dates in the members.mc table. Active: wallets signing an action on a *.mc contract."
       />
 
-      {flow('TLM paid out to players', 'rewards', (d) => paid(d, 'TLM'), 'TLM', true)}
-      {flow('Shards paid out to players', 'rewards', (d) => paid(d, 'Shards'), 'Shards')}
+      {flow(
+        'TLM paid out to players',
+        'rewards',
+        (d) => paid(d, 'TLM'),
+        'TLM transfers from the *.mc contracts with weekly-claim or Tool Loaning memos.',
+        'TLM',
+        true,
+      )}
+      {flow('Shards paid out to players', 'rewards', (d) => paid(d, 'Shards'), 'Sum of shards.mc sendpoints, ÷10.', 'Shards')}
 
-      {flow('Buildings constructed', 'game', builds, 'in game.mc', true)}
-      {flow('Adventures started', 'game', advStarts)}
+      {flow('Buildings constructed', 'game', builds, 'Count of game.mc upgbuilding actions.', 'in game.mc', true)}
+      {flow(
+        'Adventures started',
+        'game',
+        advStarts,
+        'Count of adventure.mc joinadv actions plus NFT transfers to adventure.mc with memo mcadventure.',
+      )}
 
       <Block
         group="game"
@@ -131,6 +152,7 @@ export default function McReport() {
           { title: `Per day, ${name}`, dates: monthDates, lines: modeLines(inMonth) },
           { title: `Running total, ${sinceTitle}`, dates, lines: modeLines(upTo, running) },
         ]}
+        how="Count of cpu.mc paycpu actions by type: 0 same land, 1 land change, 2 Tool Loaning."
       />
 
       <Block
@@ -142,6 +164,7 @@ export default function McReport() {
           { title: `End of each day, ${sinceTitle}`, dates, values: gameStake.values },
           { title: `End of each day, ${name}`, dates: monthDates, values: gameStake.inMonth },
         ]}
+        how="alien.worlds NFTs held by game.mc at each UTC day's end: current holdings less later transfers."
       />
       <Block
         group="nfts"
@@ -151,6 +174,7 @@ export default function McReport() {
           { title: `End of each day, ${sinceTitle}`, dates, values: advStake.values },
           { title: `End of each day, ${name}`, dates: monthDates, values: advStake.inMonth },
         ]}
+        how="alien.worlds NFTs held by adventure.mc at each UTC day's end: current holdings less later transfers."
       />
     </ReportPage>
   )

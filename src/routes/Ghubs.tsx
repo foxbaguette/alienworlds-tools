@@ -19,16 +19,17 @@ interface Metric {
   stat: string
   unit?: string
   group: Group
+  how: string
 }
 
 const METRICS: Metric[] = [
-  { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM', group: 'rewards' },
-  { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards', group: 'rewards' },
-  { key: 'wax', title: 'WAX paid out to players', stat: 'wax_earned', unit: 'WAX', group: 'rewards' },
-  { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played', group: 'game' },
-  { key: 'arenas', title: 'Arenas played', stat: 'arenas_played', group: 'game' },
-  { key: 'quests', title: 'Quests completed', stat: 'quests_completed', group: 'game' },
-  { key: 'recruits', title: 'Fighters recruited', stat: 'recruits', group: 'game' },
+  { key: 'tlm', title: 'TLM paid out to players', stat: 'tlm_earned', unit: 'TLM', group: 'rewards', how: 'Sum of tlm_earned stat changes on players.ale.' },
+  { key: 'shards', title: 'Shards paid out to players', stat: 'shards_earned', unit: 'Shards', group: 'rewards', how: 'Sum of shards_earned stat changes on players.ale.' },
+  { key: 'wax', title: 'WAX paid out to players', stat: 'wax_earned', unit: 'WAX', group: 'rewards', how: 'Sum of wax_earned stat changes on players.ale.' },
+  { key: 'dungeons', title: 'Dungeons played', stat: 'dungeons_played', group: 'game', how: 'Sum of dungeons_played stat changes on players.ale.' },
+  { key: 'arenas', title: 'Arenas played', stat: 'arenas_played', group: 'game', how: 'Sum of arenas_played stat changes on players.ale.' },
+  { key: 'quests', title: 'Quests completed', stat: 'quests_completed', group: 'game', how: 'Sum of quests_completed stat changes on players.ale.' },
+  { key: 'recruits', title: 'Fighters recruited', stat: 'recruits', group: 'game', how: 'Sum of recruits stat changes on players.ale.' },
 ]
 
 export default function Ghubs() {
@@ -86,6 +87,7 @@ export default function Ghubs() {
           { title: `Active players per day, ${name}`, dates: monthDates, values: inMonth.map((d) => d.active) },
           { title: 'Accounts signed up, running total', dates, values: accounts },
         ]}
+        how="Accounts: signup dates in the players.ale player table. Active: wallets whose stats changed through their own play."
       />
 
       {METRICS.map((m, i) => (
@@ -103,6 +105,7 @@ export default function Ghubs() {
             { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat)) },
             { title: 'Running total, since launch', dates, values: running(upTo.map((d) => statValue(d.stats, m.stat))) },
           ]}
+          how={m.how}
         />
       ))}
 
@@ -116,6 +119,7 @@ export default function Ghubs() {
             { title: 'End of each day, since launch', dates, values: staked.values },
             { title: `End of each day, ${name}`, dates: monthDates, values: staked.inMonth },
           ]}
+          how="alien.worlds NFTs held by farm.ale at the end of each UTC day."
         />
       ) : null}
 
@@ -129,6 +133,7 @@ export default function Ghubs() {
             { title: 'Per day, since launch', dates, values: nftRows.values },
             { title: `Per day, ${name}`, dates: monthDates, values: nftRows.inMonth },
           ]}
+          how="Distinct alien.worlds NFTs in nfts.ale usenfts actions per UTC day."
         />
       ) : null}
     </ReportPage>

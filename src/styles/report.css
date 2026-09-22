@@ -54,6 +54,7 @@
 
 .rpt__chart { display: grid; gap: var(--sp-2); min-width: 0; }
 .rpt__charttitle { font-size: var(--fs-sm); font-weight: 500; color: var(--text-2); }
+.rpt__how { margin: 0; font-size: var(--fs-xs); color: var(--text-3); }
 
 .rpt__month select {
   min-height: 36px;
@@ -110,6 +111,7 @@
   .rpt__charts { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5mm; }
   .rpt .tile__value { font-size: 18pt; }
   .rpt__charttitle { font-size: 8pt; }
+  .rpt__how { font-size: 7.5pt; }
 
   .rpt .dchart__plot { height: auto !important; }
   .rpt .dchart svg { width: 100%; height: auto; display: block; }
