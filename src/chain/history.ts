@@ -42,8 +42,18 @@ export function useHistoryServers(list: string[]): void {
 /** Pause between pages of one crawl. */
 const PAGE_GAP_MS = 250
 
-/** The largest page the indexers hand out. */
-export const HISTORY_PAGE = 1000
+/**
+ * The largest page to ask for.
+ *
+ * A thousand rows is what most indexers hand out, but not all: some answer
+ * 500 to anything above a hundred. A backfill that leans on one of those says
+ * so, and pays for it in requests rather than in failures.
+ */
+export let HISTORY_PAGE = 1000
+
+export function useHistoryPage(rows: number): void {
+  if (rows > 0) HISTORY_PAGE = rows
+}
 
 let next = 0
 

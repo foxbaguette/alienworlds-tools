@@ -41,7 +41,7 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
-import { historyReaches, useHistoryServers } from '../src/chain/history'
+import { historyReaches, useHistoryPage, useHistoryServers } from '../src/chain/history'
 import { fetchAwDay, fetchShardsMined, fetchShardsSpent, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
@@ -70,6 +70,8 @@ const only = flag('--only')
 const sinceFlag = flag('--since')
 /* Only these history servers, for days most of the pool no longer holds. */
 useHistoryServers((flag('--servers') ?? '').split(',').filter(Boolean))
+/* Some indexers refuse a page above a hundred rows. */
+useHistoryPage(Number(flag('--page') ?? 0))
 /* The last day to collect, so two runs can share a backfill without meeting. */
 const untilFlag = flag('--until')
 /*

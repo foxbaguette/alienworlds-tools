@@ -3,3 +3,12 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .ssr*/
+
+# Backfill part files: one collector per server, merged back by hand.
+public/data/**/*.crypt*.json
+public/data/**/*.dac.json
+public/data/**/*.mid.json
+public/data/**/*.new.json
+public/data/**/*.eos.json
+public/data/**/*.oldpair.json
+public/data/**/*.part-*.json
