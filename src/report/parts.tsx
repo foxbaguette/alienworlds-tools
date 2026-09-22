@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { copyChart } from './copyChart'
 import { DailyChart, longDate } from '@/components/DailyChart'
 import { formatNumber } from '@/format'
 
@@ -267,6 +268,35 @@ function GroupHead({ group }: { group: Group }) {
 }
 
 /**
+ * One graph, with the button that copies it as a picture — the report is
+ * written to be quoted from, and a screenshot of a chart in a dark page
+ * pasted into a light chat is not the same chart. See copyChart.
+ */
+function ChartPanel({ title, heading, children }: { title: string; heading: string; children: ReactNode }) {
+  const panel = useRef<HTMLDivElement>(null)
+  const [said, setSaid] = useState('')
+  const copy = async () => {
+    try {
+      const how = await copyChart(panel.current!, title)
+      setSaid(how === 'copied' ? 'Copied' : 'Saved')
+    } catch (err) {
+      console.error('copy chart:', err)
+      setSaid('Failed')
+    }
+    setTimeout(() => setSaid(''), 2000)
+  }
+  return (
+    <div className="rpt__chart" ref={panel}>
+      <span className="rpt__charttitle">{heading}</span>
+      <button className="rpt__copy" type="button" title="Copy this graph as a picture" onClick={() => void copy()}>
+        {said || 'Copy'}
+      </button>
+      {children}
+    </div>
+  )
+}
+
+/**
  * One subject: two figures across the top, up to three graphs beneath. Fewer
  * graphs leave their slots empty rather than stretching the rest.
  */
@@ -308,8 +338,7 @@ export function Block({
         </div>
         <div className="rpt__charts">
           {charts.map((c) => (
-            <div key={c.title} className="rpt__chart">
-              <span className="rpt__charttitle">{c.title}</span>
+            <ChartPanel key={c.title} title={`${title} — ${c.title}`} heading={c.title}>
               <DailyChart
                 kind="line"
                 fill={!c.lines || c.lines.length === 1}
@@ -327,7 +356,7 @@ export function Block({
                 }
                 label={`${title}: ${c.title}`}
               />
-            </div>
+            </ChartPanel>
           ))}
         </div>
         {how ? <p className="rpt__how">{how}</p> : null}

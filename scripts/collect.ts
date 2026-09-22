@@ -66,6 +66,8 @@ const redo = Number(flag('--redo')) || 0
    the history servers turned out to disagree about. */
 const forced = new Set((flag('--dates') ?? '').split(',').filter(Boolean))
 const only = flag('--only')
+/* Collect further back than a project's own start, for a one-off backfill. */
+const sinceFlag = flag('--since')
 
 function load<T>(file: string, empty: T): T {
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as T) : empty
@@ -229,7 +231,7 @@ async function projects(): Promise<void> {
     const yesterday = dayOf(Date.now() - DAY_MS)
     const have = new Set(file.days.map((d) => d.date))
     const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
-    const dates = dateRange(def.since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
+    const dates = dateRange(sinceFlag ?? def.since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 
     /* Days collected before incoming tokens were measured get just those added. */
     if (def.incoming?.length) {
@@ -349,7 +351,7 @@ async function nftRows(): Promise<void> {
  */
 async function mcReport(): Promise<void> {
   const FILE = 'public/data/projects/mc-report.json'
-  const since = PROJECTS.find((p) => p.key === 'mc')!.since
+  const since = sinceFlag ?? PROJECTS.find((p) => p.key === 'mc')!.since
   const file = load<McReportFile>(FILE, { generatedAt: '', days: [] })
   const yesterday = dayOf(Date.now() - DAY_MS)
   const have = new Set(file.days.map((d) => d.date))
@@ -425,7 +427,7 @@ async function aw(): Promise<void> {
   const yesterday = dayOf(Date.now() - DAY_MS)
   const have = new Set(file.days.map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
-  const dates = dateRange(HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
+  const dates = dateRange(sinceFlag ?? HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 
   /* Days collected before Shards were measured get just that figure added,
      rather than the whole day read again. */

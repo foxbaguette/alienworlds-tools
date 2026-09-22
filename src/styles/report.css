@@ -52,7 +52,25 @@
 }
 .rpt__figure { display: grid; gap: 2px; }
 
-.rpt__chart { display: grid; gap: var(--sp-2); min-width: 0; }
+.rpt__chart { position: relative; display: grid; gap: var(--sp-2); min-width: 0; }
+.rpt__copy {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.rpt__chart:hover .rpt__copy,
+.rpt__copy:focus-visible { opacity: 1; }
+.rpt__copy:hover { color: var(--text-1); }
 .rpt__charttitle { font-size: var(--fs-sm); font-weight: 500; color: var(--text-2); }
 .rpt__how { margin: 0; font-size: var(--fs-xs); color: var(--text-3); }
 
@@ -111,6 +129,7 @@
   .rpt__charts { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5mm; }
   .rpt .tile__value { font-size: 18pt; }
   .rpt__charttitle { font-size: 8pt; }
+  .rpt__copy { display: none; }
   .rpt__how { font-size: 7.5pt; }
 
   .rpt .dchart__plot { height: auto !important; }
