@@ -17,7 +17,11 @@
   --rpt-nfts: #a384f0;
 }
 
-.rpt__block { gap: var(--sp-2); }
+.rpt__block { position: relative; gap: var(--sp-2); }
+.rpt__block .section__title { display: flex; align-items: center; gap: var(--sp-2); }
+.rpt__copy--block { position: static; opacity: 0; }
+.rpt__block:hover .rpt__copy--block,
+.rpt__copy--block:focus-visible { opacity: 1; }
 
 /* A group's name, with its colour as a rule beneath it. The sections under it
    draw their graphs in the same colour. */

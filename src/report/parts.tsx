@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { copyChart } from './copyChart'
+import { copyBlock, copyChart } from './copyChart'
 import { DailyChart, longDate } from '@/components/DailyChart'
 import { formatNumber } from '@/format'
 
@@ -272,23 +272,28 @@ function GroupHead({ group }: { group: Group }) {
  * written to be quoted from, and a screenshot of a chart in a dark page
  * pasted into a light chat is not the same chart. See copyChart.
  */
-function ChartPanel({ title, heading, children }: { title: string; heading: string; children: ReactNode }) {
-  const panel = useRef<HTMLDivElement>(null)
+/** A copy button's own short-lived answer: Copied, Saved or Failed. */
+function useCopy(run: () => Promise<'copied' | 'saved'>) {
   const [said, setSaid] = useState('')
-  const copy = async () => {
+  const go = async () => {
     try {
-      const how = await copyChart(panel.current!, title)
-      setSaid(how === 'copied' ? 'Copied' : 'Saved')
+      setSaid((await run()) === 'copied' ? 'Copied' : 'Saved')
     } catch (err) {
-      console.error('copy chart:', err)
+      console.error('copy:', err)
       setSaid('Failed')
     }
     setTimeout(() => setSaid(''), 2000)
   }
+  return { said, go: () => void go() }
+}
+
+function ChartPanel({ title, heading, children }: { title: string; heading: string; children: ReactNode }) {
+  const panel = useRef<HTMLDivElement>(null)
+  const { said, go } = useCopy(() => copyChart(panel.current!, title))
   return (
     <div className="rpt__chart" ref={panel}>
       <span className="rpt__charttitle">{heading}</span>
-      <button className="rpt__copy" type="button" title="Copy this graph as a picture" onClick={() => void copy()}>
+      <button className="rpt__copy" type="button" title="Copy this graph as a picture" onClick={go}>
         {said || 'Copy'}
       </button>
       {children}
@@ -322,11 +327,18 @@ export function Block({
   how?: string
 }) {
   const color = GROUP_COLOR[group]
+  const body = useRef<HTMLDivElement>(null)
+  const { said, go } = useCopy(() => copyBlock(body.current!, title))
   return (
     <section className="section rpt__block">
       {head ? <GroupHead group={group} /> : null}
-      <h3 className="section__title">{title}</h3>
-      <div className="rpt__body card card--pad">
+      <h3 className="section__title">
+        {title}
+        <button className="rpt__copy rpt__copy--block" type="button" title="Copy this whole section as a picture" onClick={go}>
+          {said || 'Copy section'}
+        </button>
+      </h3>
+      <div className="rpt__body card card--pad" ref={body}>
         <div className="rpt__figures">
           {figures.map((f) => (
             <div key={f.label} className="rpt__figure">

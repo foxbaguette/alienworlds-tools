@@ -1,12 +1,11 @@
 /**
- * A chart, copied to the clipboard as a picture.
+ * A chart, or a whole section, copied to the clipboard as a picture.
  *
- * The chart on the page is an SVG that takes its colours from stylesheets and
- * CSS variables, with its legend drawn beside it in HTML. Pulled out on its
- * own it would lose both, so every element's computed styling is written onto
- * its copy, the legend is redrawn into the picture, the page's background is
- * painted behind it and the chart's title sits on top — what is copied should
- * read on its own, in a chat or a slide.
+ * What is on the page is an SVG that takes its colours from stylesheets and
+ * CSS variables, with its title, figures and legend around it in HTML. Pulled
+ * out on its own it would lose all of that, so every drawn element's computed
+ * styling is written onto its copy and the words around it are redrawn into
+ * the picture — what is copied should read on its own, in a chat or a slide.
  *
  * Clipboard images are PNGs, which is what every app that takes a paste
  * understands. Where the clipboard refuses images the picture is saved as a
@@ -31,12 +30,41 @@ const PROPS = [
 ]
 
 const SCALE = 2
-const TITLE_H = 26
-const LEGEND_H = 22
-const PAD = 12
+const PAD = 16
+const GAP = 18
+/* Quoted where a family name has a space: an unquoted one makes canvas ignore the whole string. */
+const FONT = "system-ui,-apple-system,'Segoe UI',sans-serif"
 
-const escape = (t: string) =>
-  t.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c] as string)
+const esc = (t: string) => t.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c] as string)
+
+/* Text is laid out by hand here, so its width is measured rather than guessed. */
+const ruler = document.createElement('canvas').getContext('2d')
+const widthOf = (s: string, font: string) => {
+  if (!ruler) return s.length * 7
+  ruler.font = font
+  return ruler.measureText(s).width
+}
+
+/* The font shorthand must name a family, or the browser throws the whole rule away. */
+const text = (x: number, y: number, s: string, weightSize: string, fill: string) =>
+  s ? `<text x="${x}" y="${y}" style="font:${weightSize} ${FONT};fill:${fill}">${esc(s)}</text>` : ''
+
+interface Ink {
+  strong: string
+  dim: string
+  bg: string
+}
+
+function ink(): Ink {
+  const page = getComputedStyle(document.body)
+  const root = getComputedStyle(document.documentElement)
+  const pick = (name: string, fallback: string) => root.getPropertyValue(name).trim() || fallback
+  return {
+    strong: pick('--text-1', page.color),
+    dim: pick('--text-2', page.color),
+    bg: page.backgroundColor === 'rgba(0, 0, 0, 0)' ? '#ffffff' : page.backgroundColor,
+  }
+}
 
 function inlineStyles(from: SVGSVGElement, to: SVGSVGElement) {
   const a = [from, ...from.querySelectorAll('*')]
@@ -54,68 +82,97 @@ function inlineStyles(from: SVGSVGElement, to: SVGSVGElement) {
   })
 }
 
-/** The lines' names and colours, which the page draws beside the chart, not in it. */
-function legendOf(panel: HTMLElement): { label: string; color: string }[] {
-  return [...panel.querySelectorAll('.dchart__legend li')].map((li) => ({
+interface Piece {
+  markup: string
+  width: number
+  height: number
+}
+
+const LEGEND_H = 20
+const HEAD_H = 18
+
+/**
+ * One chart panel — its heading, its legend and the graph itself — as markup
+ * that can be dropped anywhere in a larger picture.
+ */
+function chartPiece(panel: HTMLElement, colour: Ink, x: number, y: number, withHeading: boolean): Piece {
+  const svg = panel.querySelector('svg')
+  if (!svg) throw new Error('the chart has not been drawn yet')
+  const w = svg.viewBox.baseVal.width || svg.clientWidth
+  const h = svg.viewBox.baseVal.height || svg.clientHeight
+
+  const legend = [...panel.querySelectorAll('.dchart__legend li')].map((li) => ({
     label: (li.textContent ?? '').trim(),
     color: getComputedStyle(li.querySelector('.dchart__swatch') ?? li).backgroundColor,
   }))
-}
-
-/** One row of swatches and names, where the page puts its legend. */
-function legendMarkup(legend: { label: string; color: string }[], fg: string): string {
-  let x = PAD
-  return legend
-    .map((l) => {
-      const at = x
-      x += 16 + l.label.length * 7 + 14
-      return (
-        `<rect x="${at}" y="${TITLE_H + 3}" width="10" height="10" rx="2" fill="${l.color}"/>` +
-        `<text x="${at + 15}" y="${TITLE_H + 12}" style="font:500 11px system-ui,sans-serif;fill:${fg}">${escape(l.label)}</text>`
-      )
-    })
-    .join('')
-}
-
-/** The finished picture: background, title, legend and the chart itself. */
-async function render(panel: HTMLElement, title: string): Promise<Blob> {
-  const svg = panel.querySelector('svg')
-  if (!svg) throw new Error('the chart has not been drawn yet')
-  const legend = legendOf(panel)
+  const heading = withHeading ? (panel.querySelector('.rpt__charttitle')?.textContent ?? '').trim() : ''
+  const headH = heading ? HEAD_H : 0
   const legendH = legend.length ? LEGEND_H : 0
-  const w = svg.viewBox.baseVal.width || svg.clientWidth
-  const h = svg.viewBox.baseVal.height || svg.clientHeight
 
   const clone = svg.cloneNode(true) as SVGSVGElement
   inlineStyles(svg, clone)
   /* A hover readout belongs to the pointer, not to the picture. */
   clone.querySelectorAll('.dchart__hover').forEach((el) => el.remove())
   clone.removeAttribute('style')
-  clone.setAttribute('x', String(PAD))
-  clone.setAttribute('y', String(TITLE_H + legendH))
+  clone.setAttribute('x', String(x))
+  clone.setAttribute('y', String(y + headH + legendH))
   clone.setAttribute('width', String(w))
   clone.setAttribute('height', String(h))
 
-  const page = getComputedStyle(document.body)
-  const bg = page.backgroundColor === 'rgba(0, 0, 0, 0)' ? '#ffffff' : page.backgroundColor
-  const fg = getComputedStyle(document.documentElement).getPropertyValue('--text-1').trim() || page.color
-  const width = w + PAD * 2
-  const height = h + TITLE_H + legendH + PAD
+  let at = x
+  const legendMarkup = legend
+    .map((l) => {
+      const left = at
+      at += 15 + widthOf(l.label, `500 11px ${FONT}`) + 16
+      return (
+        `<rect x="${left}" y="${y + headH + 3}" width="10" height="10" rx="2" fill="${l.color}"/>` +
+        text(left + 15, y + headH + 12, l.label, '500 11px', colour.dim)
+      )
+    })
+    .join('')
 
+  return {
+    markup:
+      text(x, y + 12, heading, '600 12px', colour.dim) +
+      legendMarkup +
+      new XMLSerializer().serializeToString(clone),
+    width: w,
+    height: h + headH + legendH,
+  }
+}
+
+/** The figures across the top of a section: label, value, and its small print. */
+function figuresPiece(block: HTMLElement, colour: Ink, x: number, y: number, width: number): Piece {
+  const figures = [...block.querySelectorAll('.rpt__figure')]
+  if (!figures.length) return { markup: '', width, height: 0 }
+  const col = width / figures.length
+  const markup = figures
+    .map((f, i) => {
+      const at = x + i * col
+      const label = (f.querySelector('.tile__label')?.textContent ?? '').trim()
+      const value = (f.querySelector('.tile__value')?.textContent ?? '').trim()
+      const sub = (f.querySelector('.tile__sub')?.textContent ?? '').trim()
+      return (
+        text(at, y + 11, label, '500 11px', colour.dim) +
+        text(at, y + 38, value, '700 24px', colour.strong) +
+        text(at, y + 55, sub, '400 11px', colour.dim)
+      )
+    })
+    .join('')
+  return { markup, width, height: 62 }
+}
+
+/** An SVG document, drawn and handed back as a PNG. */
+async function toPng(body: string, width: number, height: number, bg: string): Promise<Blob> {
   const doc =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width * SCALE}" height="${height * SCALE}" viewBox="0 0 ${width} ${height}">` +
-    `<rect width="${width}" height="${height}" fill="${bg}"/>` +
-    `<text x="${PAD}" y="18" style="font:600 13px system-ui,sans-serif;fill:${fg}">${escape(title)}</text>` +
-    legendMarkup(legend, fg) +
-    new XMLSerializer().serializeToString(clone) +
-    '</svg>'
-
+    `<rect width="${width}" height="${height}" fill="${bg}"/>${body}</svg>`
   const url = URL.createObjectURL(new Blob([doc], { type: 'image/svg+xml;charset=utf-8' }))
   try {
     const img = new Image()
     await new Promise<void>((ok, fail) => {
       img.onload = () => ok()
-      img.onerror = () => fail(new Error('the chart could not be drawn'))
+      img.onerror = () => fail(new Error('the picture could not be drawn'))
       img.src = url
     })
     const canvas = document.createElement('canvas')
@@ -134,8 +191,7 @@ async function render(panel: HTMLElement, title: string): Promise<Blob> {
 
 export type CopyResult = 'copied' | 'saved'
 
-export async function copyChart(panel: HTMLElement, title: string): Promise<CopyResult> {
-  const blob = await render(panel, title)
+async function handOver(blob: Blob, title: string): Promise<CopyResult> {
   try {
     if (!navigator.clipboard || typeof ClipboardItem === 'undefined') throw new Error('no clipboard')
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
@@ -148,4 +204,58 @@ export async function copyChart(panel: HTMLElement, title: string): Promise<Copy
     setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
     return 'saved'
   }
+}
+
+/** One graph, titled. */
+export async function copyChart(panel: HTMLElement, title: string): Promise<CopyResult> {
+  const colour = ink()
+  const piece = chartPiece(panel, colour, PAD, PAD + 20, false)
+  const width = piece.width + PAD * 2
+  const height = piece.height + PAD * 2 + 20
+  const head = text(PAD, PAD + 13, title, '600 13px', colour.strong)
+  return handOver(await toPng(head + piece.markup, width, height, colour.bg), title)
+}
+
+/**
+ * A whole section: its heading, both figures and every graph side by side,
+ * down to the line that says how it was measured — the section as it reads on
+ * the page, in one picture.
+ */
+export async function copyBlock(block: HTMLElement, title: string): Promise<CopyResult> {
+  const colour = ink()
+  const panels = [...block.querySelectorAll<HTMLElement>('.rpt__chart')]
+  if (!panels.length) throw new Error('nothing to copy')
+
+  let y = PAD
+  const head = text(PAD, y + 15, title, '700 17px', colour.strong)
+  y += 30
+
+  /* Laid out at the charts' own widths, as the page has them. */
+  const widths = panels.map((p) => {
+    const svg = p.querySelector('svg')
+    return svg ? svg.viewBox.baseVal.width || svg.clientWidth : 0
+  })
+  const inner = widths.reduce((n, w) => n + w, 0) + GAP * (panels.length - 1)
+  const width = inner + PAD * 2
+
+  const figures = figuresPiece(block, colour, PAD, y, inner)
+  y += figures.height ? figures.height + 14 : 0
+
+  let x = PAD
+  let tallest = 0
+  const charts = panels
+    .map((p, i) => {
+      const piece = chartPiece(p, colour, x, y, true)
+      x += widths[i] + GAP
+      tallest = Math.max(tallest, piece.height)
+      return piece.markup
+    })
+    .join('')
+  y += tallest
+
+  const how = (block.querySelector('.rpt__how')?.textContent ?? '').trim()
+  if (how) y += 18
+  const howMarkup = text(PAD, y - 4, how, '400 11px', colour.dim)
+
+  return handOver(await toPng(head + figures.markup + charts + howMarkup, width, y + PAD, colour.bg), title)
 }
