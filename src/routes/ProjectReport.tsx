@@ -19,6 +19,8 @@ interface Subject {
   pick: (d: ProjectDay) => number
   unit?: string
   how: string
+  /** Drawn as one line each, and split out in the figures' small print. */
+  parts?: { label: string; pick: (d: ProjectDay) => number }[]
 }
 
 interface ReportDef {
@@ -35,8 +37,14 @@ interface ReportDef {
   subjects: Subject[]
 }
 
-/** What reached players in a token, less what they paid in to take part. */
-const net = (sym: string) => (d: ProjectDay) => (d.paid[sym] ?? 0) - (d.stakes?.[sym] ?? 0)
+/** Everything paid out to players in a token. */
+const net = (sym: string) => (d: ProjectDay) => d.paid[sym] ?? 0
+/** What players paid in, in one token, for some kinds (or all). */
+const inOf = (sym: string, keys?: string[]) => (d: ProjectDay) =>
+  Object.entries(d.incoming ?? {}).reduce(
+    (n, [k, v]) => (k.endsWith(`|${sym}`) && (!keys || keys.includes(k.split('|')[0])) ? n + v.amount : n),
+    0,
+  )
 const kind = (key: string, sym: string) => (d: ProjectDay) => d.categories[`${key}|${sym}`]?.count ?? 0
 
 const REPORTS: Record<string, ReportDef> = {
@@ -45,14 +53,45 @@ const REPORTS: Record<string, ReportDef> = {
     players: 'players',
     playersHow: 'Wallets signing an action on magordefense or miss.pdef.',
     subjects: [
-      { title: 'TLM paid out to players', group: 'rewards', pick: net('TLM'), unit: 'TLM, less entry fees', how: 'TLM reward transfers from magordefense and miss.pdef, less entry: fees paid in.' },
+      { title: 'TLM paid out to players', group: 'rewards', pick: net('TLM'), unit: 'TLM', how: 'TLM reward transfers from magordefense and miss.pdef.' },
       { title: 'Shards paid out to players', group: 'rewards', pick: net('Shards'), unit: 'Shards', how: 'Sum of ptpxy.worlds addpoints issued by magordefense and miss.pdef, ÷10.' },
-      { title: 'DEF paid out to players', group: 'rewards', pick: net('DEF'), unit: 'DEF, less entry fees', how: 'DEF reward transfers from magordefense and miss.pdef, less entry: fees paid in.' },
+      { title: 'DEF paid out to players', group: 'rewards', pick: net('DEF'), unit: 'DEF', how: 'DEF reward transfers from magordefense and miss.pdef.' },
+      {
+        title: 'TLM paid in by players',
+        group: 'incoming',
+        pick: inOf('TLM'),
+        unit: 'TLM',
+        how: 'TLM transfers from players to miss.pdef (entry:), magordefense (Buy forge, land_id:, Fee inscription) and forge.pdef (forge:).',
+        parts: [
+          { label: 'Mission entries', pick: inOf('TLM', ['missions']) },
+          { label: 'Forge', pick: inOf('TLM', ['forgebuy', 'forge']) },
+          { label: 'Land and sign-up fees', pick: inOf('TLM', ['land', 'signup']) },
+        ],
+      },
+      {
+        title: 'DEF paid in by players',
+        group: 'incoming',
+        pick: inOf('DEF'),
+        unit: 'DEF',
+        how: 'DEF transfers from players to miss.pdef (entry:) and forge.pdef (shop:).',
+        parts: [
+          { label: 'Mission entries', pick: inOf('DEF', ['missions']) },
+          { label: 'Forge shop', pick: inOf('DEF', ['shop']) },
+        ],
+      },
       { title: 'Missions joined', group: 'game', pick: (d) => metricOf(d, ['miss.pdef::join']), how: 'Count of miss.pdef join actions.' },
       { title: 'Mission rewards claimed', group: 'game', pick: (d) => metricOf(d, ['miss.pdef::claim']), how: 'Count of miss.pdef claim actions.' },
       { title: 'Attacks sent', group: 'game', pick: (d) => metricOf(d, ['magordefense::sendattack']), how: 'Count of magordefense sendattack actions.' },
-      { title: 'Defense added', group: 'game', pick: (d) => metricOf(d, ['magordefense::adddefense']), how: 'Count of magordefense adddefense actions.' },
-      { title: 'Attack armies added', group: 'game', pick: (d) => metricOf(d, ['magordefense::addattack']), how: 'Count of magordefense addattack actions.' },
+      {
+        title: 'PvP actions',
+        group: 'game',
+        pick: (d) => metricOf(d, ['magordefense::adddefense', 'magordefense::addattack']),
+        how: 'Count of magordefense adddefense and addattack actions.',
+        parts: [
+          { label: 'Defense', pick: (d) => metricOf(d, ['magordefense::adddefense']) },
+          { label: 'Attack', pick: (d) => metricOf(d, ['magordefense::addattack']) },
+        ],
+      },
     ],
   },
   naron: {
@@ -87,7 +126,7 @@ const REPORTS: Record<string, ReportDef> = {
     title: 'Arkhive - gHubs report',
     allTime: true,
     players: 'players',
-    playersHow: 'Wallets signing an action on arkhive.lore.',
+    playersHow: 'Wallets receiving a TLM reward from arkhive.lore.',
     subjects: [
       { title: 'TLM rewarded for adventures', group: 'rewards', pick: net('TLM'), unit: 'TLM', how: 'TLM transfers from arkhive.lore with memo "Rewards for completing adventure".' },
       /* A reward like the TLM, so shown with it rather than as an NFT section. */
@@ -120,6 +159,16 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
   /* An NFT section with nothing in it is left out: only Alien Worlds NFTs are
      counted, and a project sending other collections' NFTs has none. */
   const subjects = report.subjects.filter((s) => s.group !== 'nfts' || sumOf(days ?? [], s.pick) > 0)
+
+  /* A split subject's small print names its parts; a plain one its unit. */
+  const small = (s: Subject, list: ProjectDay[]) =>
+    s.parts
+      ? [s.unit, s.parts.map((p) => `${whole(sumOf(list, p.pick))} ${p.label.toLowerCase()}`).join(' · ')]
+          .filter(Boolean)
+          .join(': ')
+      : s.unit
+  const partLines = (s: Subject, list: ProjectDay[], acc: (v: number[]) => number[] = (x) => x) =>
+    (s.parts ?? []).map((p) => ({ label: p.label, values: acc(list.map(p.pick)) }))
 
   const firstSeen = useMemo(() => firstSeenByDay(days ?? []), [days])
   const seen = running(dates.map((d) => firstSeen[d] ?? 0))
@@ -154,14 +203,22 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
           group={s.group}
           title={s.title}
           figures={[
-            { label: SINCE, value: whole(sumOf(upTo, s.pick)), sub: s.unit },
-            { label: within, value: whole(sumOf(inMonth, s.pick)), sub: s.unit },
+            { label: SINCE, value: whole(sumOf(upTo, s.pick)), sub: small(s, upTo) },
+            { label: within, value: whole(sumOf(inMonth, s.pick)), sub: small(s, inMonth) },
           ]}
-          charts={[
-            { title: `Per day, ${sinceTitle}`, dates, values: upTo.map(s.pick) },
-            { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map(s.pick) },
-            { title: `Running total, ${sinceTitle}`, dates, values: running(upTo.map(s.pick)) },
-          ]}
+          charts={
+            s.parts
+              ? [
+                  { title: `Per day, ${sinceTitle}`, dates, lines: partLines(s, upTo) },
+                  { title: `Per day, ${name}`, dates: monthDates, lines: partLines(s, inMonth) },
+                  { title: `Running total, ${sinceTitle}`, dates, lines: partLines(s, upTo, running) },
+                ]
+              : [
+                  { title: `Per day, ${sinceTitle}`, dates, values: upTo.map(s.pick) },
+                  { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map(s.pick) },
+                  { title: `Running total, ${sinceTitle}`, dates, values: running(upTo.map(s.pick)) },
+                ]
+          }
           how={s.how}
         />
       ))}

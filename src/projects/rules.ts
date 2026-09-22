@@ -28,6 +28,11 @@ export interface ProjectDay {
   /** NFTs sent to players. */
   nfts: number
   /**
+   * What players paid in, as `kind|symbol` → payments and amount — see
+   * ProjectDef.incoming. Absent on days collected before it was measured.
+   */
+  incoming?: Record<string, { count: number; amount: number }>
+  /**
    * Reward kind (by memo) and token, as `kind|symbol` → payments and amount,
    * for projects that label them. One kind can pay in more than one token.
    */
@@ -100,14 +105,15 @@ export function summariseProjectDay(
   let nfts = 0
   for (const p of payouts) {
     if (!isPlayerWallet(p.to, def)) continue
+    const makesActive = !def.activeSymbols || def.activeSymbols.includes(p.nfts ? 'NFT' : p.symbol)
     if (p.nfts) {
       if (!def.nftRewards) continue
-      recipients.add(p.to)
+      if (makesActive) recipients.add(p.to)
       nfts += p.nfts
       continue
     }
     if (p.symbol !== 'Shards' && def.rewardMemos && !def.rewardMemos.some((m) => m.test(p.memo))) continue
-    recipients.add(p.to)
+    if (makesActive) recipients.add(p.to)
     paid[p.symbol] = (paid[p.symbol] ?? 0) + p.amount
     ;(to[p.symbol] ??= new Set()).add(p.to)
     const r = (received[p.symbol] ??= {})
@@ -147,6 +153,29 @@ export function summariseProjectDay(
     nfts,
     categories,
   }
+}
+
+/** A token transfer into one of the project's accounts. */
+export interface InflowSeen {
+  from: string
+  to: string
+  symbol: string
+  amount: number
+  memo: string
+}
+
+/** Players' payments in, by kind and token. Anything no kind claims is left out. */
+export function summariseIncoming(def: ProjectDef, inflows: InflowSeen[]): NonNullable<ProjectDay['incoming']> {
+  const out: NonNullable<ProjectDay['incoming']> = {}
+  for (const t of inflows) {
+    if (!isPlayerWallet(t.from, def)) continue
+    const kind = def.incoming?.find((k) => k.account === t.to && k.memo.test(t.memo))
+    if (!kind) continue
+    const e = (out[`${kind.key}|${t.symbol}`] ??= { count: 0, amount: 0 })
+    e.count += 1
+    e.amount = Math.round((e.amount + t.amount) * 10_000) / 10_000
+  }
+  return out
 }
 
 /** A metric's count on a day: the sum of the actions it is made of. */

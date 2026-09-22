@@ -20,11 +20,12 @@ import { formatNumber } from '@/format'
  * the colour is how a reader flicking through the pages knows which part they
  * are in. Within a group every graph is the same colour.
  */
-export type Group = 'players' | 'rewards' | 'game' | 'nfts'
+export type Group = 'players' | 'rewards' | 'incoming' | 'game' | 'nfts'
 
 export const GROUP_COLOR: Record<Group, string> = {
   players: 'var(--series-1)',
   rewards: 'var(--series-4)',
+  incoming: 'var(--series-3)',
   game: 'var(--rpt-game)',
   nfts: 'var(--rpt-nfts)',
 }
@@ -32,6 +33,7 @@ export const GROUP_COLOR: Record<Group, string> = {
 export const GROUP_NAME: Record<Group, string> = {
   players: 'Players',
   rewards: 'Rewards paid out',
+  incoming: 'Incoming tokens',
   game: 'Game activity',
   nfts: 'NFTs',
 }

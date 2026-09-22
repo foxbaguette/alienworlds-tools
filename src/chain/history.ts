@@ -44,6 +44,23 @@ export function historyTime(s: string): number {
   return Date.parse(s.endsWith('Z') ? s : s + 'Z')
 }
 
+/**
+ * Waits until the history servers have indexed the chain up to `at`. They
+ * index a few minutes behind it, so a count of "everything until now" read
+ * straight away misses the last few minutes. Gives up after ten minutes.
+ */
+export async function historyReaches(at: number): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    const page = await historyGet<{ last_indexed_block_time?: string }>('/v2/history/get_actions', { limit: 1 }).catch(
+      () => null,
+    )
+    const t = page?.last_indexed_block_time
+    if (t && historyTime(t) >= at) return
+    await sleep(15_000)
+  }
+  throw new Error(`history servers have not reached ${iso(at)}`)
+}
+
 /** One GET against whichever indexer is next, falling through on failure. */
 /** How long one request may take before the next server is tried. */
 const REQUEST_TIMEOUT_MS = 8_000

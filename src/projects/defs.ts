@@ -36,6 +36,8 @@ export interface ProjectDef {
    * rewarded.
    */
   activeFrom: 'signers' | 'recipients'
+  /** With activeFrom 'recipients': only rewards in these tokens make a wallet active. */
+  activeSymbols?: string[]
   /** The headline activity figures, in order. */
   metrics: Metric[]
   /** Kinds of reward, told apart by memo, where the project labels them. */
@@ -53,6 +55,12 @@ export interface ProjectDef {
    * would otherwise count the players' own tokens coming back as rewards.
    */
   entryMemos?: RegExp[]
+  /**
+   * What players pay in, for the report's "Incoming tokens": token transfers
+   * to `account` whose memo matches, from a player's wallet. Funding from
+   * planets, DAOs and the project's own accounts matches none of them.
+   */
+  incoming?: { account: string; key: string; label: string; memo: RegExp }[]
   /** Whether NFTs it sends are rewards (not loans or returns). */
   nftRewards?: boolean
   /** Actions signed on a player's behalf: `contract::action` → the data field naming the player. */
@@ -137,6 +145,14 @@ export const PROJECTS: ProjectDef[] = [
     rewardMemos: [/Land TLM payout/i, /Reward planetary defense/i, /PVP reward/i, /Mission division reward/i],
     /* Players pay TLM or DEF to join a mission (memo `entry:<mission>`); rewards come partly out of those. */
     entryMemos: [/^entry:/i],
+    incoming: [
+      { account: 'miss.pdef', key: 'missions', label: 'Mission entries', memo: /^entry:/i },
+      { account: 'magordefense', key: 'forgebuy', label: 'Forge purchases', memo: /^Buy forge/i },
+      { account: 'forge.pdef', key: 'forge', label: 'Forge upgrades', memo: /^forge:/i },
+      { account: 'forge.pdef', key: 'shop', label: 'Forge shop', memo: /^shop:/i },
+      { account: 'magordefense', key: 'land', label: 'Land fees', memo: /^land_id:/i },
+      { account: 'magordefense', key: 'signup', label: 'Sign-up fees', memo: /^Fee inscription/i },
+    ],
     categories: [
       { key: 'defense', label: 'Defense rewards', memo: /Reward planetary defense/i },
       { key: 'land', label: 'Land payouts', memo: /Land TLM payout/i },
@@ -187,7 +203,9 @@ export const PROJECTS: ProjectDef[] = [
     contracts: ['arkhive.lore'],
     payers: ['arkhive.lore'],
     paidNote: 'Paid out is the TLM and NFTs rewarded for completing adventures. Deposits players withdraw again are left out.',
-    activeFrom: 'signers',
+    /* A player is someone rewarded in TLM for an adventure. */
+    activeFrom: 'recipients',
+    activeSymbols: ['TLM'],
     /*
        Checked against a day of its transfers: everything it sends a player is
        a reward ("Rewards for completing adventure …") or a withdrawal of

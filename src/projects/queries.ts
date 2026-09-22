@@ -3,12 +3,14 @@ import { AW_COLLECTION, collectionsOf } from '@/chain/collections'
 import { cached, getAllRows } from '@/chain/rpc'
 import type { ProjectDef } from './defs'
 import {
+  summariseIncoming,
   summariseProjectDay,
   type ActionSeen,
   type PayoutSeen,
   type ProjectDay,
   type ProjectFile,
   type StakeSeen,
+  type InflowSeen,
 } from './rules'
 
 interface Act<D> {
@@ -151,7 +153,39 @@ export async function fetchProjectDay(def: ProjectDef, date: string): Promise<Pr
   }
   const counted = payouts.filter((p) => !p.ids || (p.nfts ?? 0) > 0).map(({ ids: _ids, ...p }) => p)
 
-  return summariseProjectDay(def, date, actions, counted, stakes)
+  const incoming = await fetchProjectIncoming(def, date)
+  return { ...summariseProjectDay(def, date, actions, counted, stakes), ...(incoming ? { incoming } : {}) }
+}
+
+const TOKEN_FILTER = ['alien.worlds:transfer', 'eosio.token:transfer', 'defensetoken:transfer', 'token.worlds:transfer'].join(',')
+
+/** Token transfers into the project's incoming accounts in a day, summarised by kind. */
+export async function fetchProjectIncoming(def: ProjectDef, date: string): Promise<ProjectDay['incoming']> {
+  if (!def.incoming?.length) return undefined
+  const from = Date.parse(date + 'T00:00:00Z')
+  const until = from + 86_400_000
+  const accounts = [...new Set(def.incoming.map((k) => k.account))]
+  const read = await Promise.all(
+    accounts.map((account) => crawl<PayData>({ account, filter: TOKEN_FILTER, 'transfer.to': account }, from, until, 2)),
+  )
+  const seen = new Set<number>()
+  const inflows: InflowSeen[] = []
+  read.forEach((rows, i) => {
+    for (const a of rows) {
+      const t = historyTime(a['@timestamp'])
+      const d = a.act.data
+      if (t < from || t >= until || seen.has(a.global_sequence) || d.to !== accounts[i]) continue
+      seen.add(a.global_sequence)
+      inflows.push({
+        from: String(d.from),
+        to: accounts[i],
+        symbol: d.symbol ?? String(d.quantity ?? '').split(' ')[1] ?? '?',
+        amount: Number(d.amount ?? String(d.quantity ?? '0').split(' ')[0]) || 0,
+        memo: String(d.memo ?? ''),
+      })
+    }
+  })
+  return summariseIncoming(def, inflows)
 }
 
 export function fetchProjectFile(key: string): Promise<ProjectFile> {

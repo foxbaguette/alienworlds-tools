@@ -41,6 +41,7 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
+import { historyReaches } from '../src/chain/history'
 import { fetchAwDay, fetchShardsMined, fetchShardsSpent, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
@@ -50,7 +51,8 @@ import {
   type McReportFile,
   type McStakeKey,
 } from '../src/projects/mcReport'
-import { fetchProjectDay } from '../src/projects/queries'
+import { fetchProjectDay, fetchProjectIncoming } from '../src/projects/queries'
+import { fetchShopDay, type ShopDailyFile } from '../src/shop/queries'
 import type { ProjectFile } from '../src/projects/rules'
 
 
@@ -199,6 +201,20 @@ async function projects(): Promise<void> {
     const have = new Set(file.days.map((d) => d.date))
     const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
     const dates = dateRange(def.since, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
+
+    /* Days collected before incoming tokens were measured get just those added. */
+    if (def.incoming?.length) {
+      const bare = file.days.filter((d) => d.incoming === undefined && !dates.includes(d.date))
+      if (bare.length) console.log(`${def.name}: adding incoming tokens to ${bare.length} day(s)`)
+      for (const d of bare) {
+        d.incoming = (await fetchProjectIncoming(def, d.date)) ?? {}
+        save(FILE, file)
+        const sums: Record<string, number> = {}
+        for (const [k, v] of Object.entries(d.incoming)) sums[k.split('|')[1]] = (sums[k.split('|')[1]] ?? 0) + v.amount
+        console.log(`  ${d.date}  in: ${Object.entries(sums).map(([s, v]) => `${Math.round(v).toLocaleString('en-US')} ${s}`).join(', ') || 'nothing'}`)
+      }
+    }
+
     if (!dates.length) {
       console.log(`${def.name}: up to date`)
       continue
@@ -215,6 +231,24 @@ async function projects(): Promise<void> {
       const paid = Object.entries(day.paid).map(([k, v]) => `${Math.round(v).toLocaleString('en-US')} ${k}`).join(', ')
       console.log(`  ${date}  ${String(day.active).padStart(5)} active  ${paid || 'nothing paid'}  ${((Date.now() - t0) / 1000).toFixed(1)}s`)
     }
+  }
+}
+
+/** What players spent in the Alien Legends shop, day by day since launch. */
+async function shop(): Promise<void> {
+  const FILE = 'public/data/shop-daily.json'
+  const file = load<ShopDailyFile>(FILE, { generatedAt: '', days: [] })
+  const dates = todo(file.days)
+  if (!dates.length) return console.log('shop: up to date')
+  console.log(`shop: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+  for (const date of dates) {
+    const day = await fetchShopDay(date)
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, day)
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    file.generatedAt = new Date().toISOString()
+    save(FILE, file)
+    console.log(`  ${date}  ${String(day.purchases).padStart(4)} purchases  ${Math.round(day.spent.WAX ?? 0).toLocaleString('en-US')} WAX`)
   }
 }
 
@@ -318,7 +352,11 @@ async function mcReport(): Promise<void> {
   const todayStart = dayStart(dayOf(now))
   for (const s of MC_STAKING) {
     const owned = await fetchOwnedAw(s.account)
-    const today = await fetchNftFlow(s.account, s.memo, todayStart, now)
+    /* What it owns this moment, less today's flows up to this same moment —
+       once history has indexed that far, or the newest transfers are missed. */
+    const readAt = Date.now()
+    await historyReaches(readAt + 5_000)
+    const today = await fetchNftFlow(s.account, s.memo, todayStart, readAt)
     let level = owned - (today.in - today.out)
     for (let i = file.days.length - 1; i >= 0; i--) {
       const d = file.days[i]
@@ -440,6 +478,7 @@ void (async () => {
   if (!only || only === 'activity') await activity()
   if (!only || only === 'pools') await pools()
   if (!only || only === 'farm') await farm()
+  if (!only || only === 'shop') await shop()
   if (!only || only === 'nfts') await nftRows()
   if (!only || only === 'mcreport') await mcReport()
   if (!only || only === 'aw') await aw()

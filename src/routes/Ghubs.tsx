@@ -3,6 +3,7 @@ import { fetchDailyFile, fetchPlayers, type PlayersSnapshot } from '@/activity/q
 import { dayStart, statValue, summariseRange, type DaySummary } from '@/activity/rules'
 import { FARM, fetchFarmDaily, type FarmDay } from '@/farm/queries'
 import { NFTS, fetchNftsDaily, type NftsDay } from '@/nfts/queries'
+import { fetchShopDaily, type ShopDay } from '@/shop/queries'
 import { Block, ReportPage, onDay, running, stockFigures, stockOf, useMonthView, whole, type Group } from '@/report/parts'
 
 /**
@@ -37,11 +38,13 @@ export default function Ghubs() {
   const [snap, setSnap] = useState<PlayersSnapshot | null>(null)
   const [farm, setFarm] = useState<FarmDay[]>([])
   const [nftDays, setNftDays] = useState<NftsDay[]>([])
+  const [shop, setShop] = useState<ShopDay[]>([])
 
   useEffect(() => {
     fetchDailyFile().then((f) => setDays(f.days))
     fetchFarmDaily().then((f) => setFarm(f.days))
     fetchNftsDaily().then((f) => setNftDays(f.days))
+    fetchShopDaily().then((f) => setShop(f.days))
     fetchPlayers()
       .then(setSnap)
       .catch(() => {})
@@ -68,6 +71,48 @@ export default function Ghubs() {
   const staked = stockOf(farmBy, dates, monthDates.length)
   const nftRows = stockOf(nftsBy, dates, monthDates.length)
 
+  /* The shop, lined up with the report's days. */
+  const shopBy = useMemo(() => new Map(shop.map((d) => [d.date, d])), [shop])
+  const shopOn = (list: string[]) => list.map((d) => shopBy.get(d))
+  const monthDays = inMonth.map((d) => d.date)
+  const wax = (list: string[]) => shopOn(list).map((d) => d?.spent.WAX ?? 0)
+  const ITEMS = [
+    { key: 'gem.small', label: 'Small gems' },
+    { key: 'gem.medium', label: 'Medium gems' },
+    { key: 'gem.large', label: 'Large gems' },
+    { key: 'gem.giant', label: 'Giant gems' },
+  ]
+  const itemLines = (list: string[], acc: (v: number[]) => number[] = (x) => x) =>
+    ITEMS.map((it) => ({ label: it.label, values: acc(shopOn(list).map((d) => d?.items[it.key]?.amount ?? 0)) }))
+  const shopSub = (list: string[]) => {
+    const got = shopOn(list)
+    const buys = got.reduce((n, d) => n + (d?.purchases ?? 0), 0)
+    const buyers = new Set(got.flatMap((d) => d?.buyers ?? [])).size
+    return `WAX · ${whole(buys)} purchases by ${whole(buyers)} players`
+  }
+  const total = (v: number[]) => v.reduce((n, x) => n + x, 0)
+
+  const metricBlock = (m: Metric, i: number, list: Metric[]) => (
+    <Block
+      key={m.key}
+      head={i === 0 || list[i - 1].group !== m.group}
+      group={m.group}
+      title={m.title}
+      figures={[
+        { label: 'All time', value: whole(sum(upTo, m.stat)), sub: m.unit },
+        { label: within, value: whole(sum(inMonth, m.stat)), sub: m.unit },
+      ]}
+      charts={[
+        { title: 'Per day, since launch', dates, values: upTo.map((d) => statValue(d.stats, m.stat)) },
+        { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat)) },
+        { title: 'Running total, since launch', dates, values: running(upTo.map((d) => statValue(d.stats, m.stat))) },
+      ]}
+      how={m.how}
+    />
+  )
+  const rewards = METRICS.filter((m) => m.group !== 'game')
+  const game = METRICS.filter((m) => m.group === 'game')
+
   return (
     <ReportPage title="Alien Legends - gHubs report" view={v} loading={!days} empty={!days?.length}>
       <Block
@@ -90,24 +135,27 @@ export default function Ghubs() {
         how="Accounts: signup dates in the players.ale player table. Active: wallets whose stats changed through their own play."
       />
 
-      {METRICS.map((m, i) => (
+      {rewards.map(metricBlock)}
+
+      {shop.length ? (
         <Block
-          key={m.key}
-          head={i === 0 || METRICS[i - 1].group !== m.group}
-          group={m.group}
-          title={m.title}
+          head
+          group="incoming"
+          title="WAX spent in the shop"
           figures={[
-            { label: 'All time', value: whole(sum(upTo, m.stat)), sub: m.unit },
-            { label: within, value: whole(sum(inMonth, m.stat)), sub: m.unit },
+            { label: 'All time', value: whole(total(wax(dates))), sub: shopSub(dates) },
+            { label: within, value: whole(total(wax(monthDays))), sub: shopSub(monthDays) },
           ]}
           charts={[
-            { title: 'Per day, since launch', dates, values: upTo.map((d) => statValue(d.stats, m.stat)) },
-            { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map((d) => statValue(d.stats, m.stat)) },
-            { title: 'Running total, since launch', dates, values: running(upTo.map((d) => statValue(d.stats, m.stat))) },
+            { title: 'Per day, since launch', dates, lines: itemLines(dates) },
+            { title: `Per day, ${name}`, dates: monthDates, lines: itemLines(monthDays) },
+            { title: 'Running total, since launch', dates, lines: itemLines(dates, running) },
           ]}
-          how={m.how}
+          how="WAX transfers from players to shop.ale with memo purchase,<item>."
         />
-      ))}
+      ) : null}
+
+      {game.map(metricBlock)}
 
       {farm.length ? (
         <Block
