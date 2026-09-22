@@ -33,6 +33,8 @@ export interface DaySummary {
   players: string[]
   /** Every stat's total for the day, in the chain's own units. */
   stats: Record<string, number>
+  /** Stats corrected from the players' lifetime counters — see statFromCounters. */
+  fromCounters?: string[]
 }
 
 /**

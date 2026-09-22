@@ -22,7 +22,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { fetchStatChanges } from '../src/activity/queries'
+import { fetchStatChanges, statFromCounters } from '../src/activity/queries'
 import {
   dateRange,
   dayOf,
@@ -91,6 +91,33 @@ async function activity(): Promise<void> {
   const players = load<PlayersDailyFile>(PLAYERS, { generatedAt: '', days: [] })
   /* A day either file is missing is read again, and both are written. */
   const dates = [...new Set([...todo(file.days), ...todo(players.days)])].sort()
+
+  /* Shards paid, corrected from the lifetime counters of everyone the stat
+     log credited — for new days below, and here for days read before. */
+  const shardsOf = (date: string, perPlayer: Record<string, Record<string, number>>) =>
+    statFromCounters(
+      Object.fromEntries(
+        Object.entries(perPlayer)
+          .filter(([, s]) => (s.shards_earned ?? 0) > 0)
+          .map(([p, s]) => [p, s.shards_earned]),
+      ),
+      'shards_earned',
+      dayStart(date),
+      dayStart(date) + DAY_MS,
+    )
+  const playersOn = new Map(players.days.map((d) => [d.date, d.players]))
+  const unchecked = file.days.filter((d) => !d.fromCounters?.includes('shards_earned') && !dates.includes(d.date))
+  if (unchecked.length) console.log(`activity: correcting Shards from counters on ${unchecked.length} day(s)`)
+  for (const d of unchecked) {
+    const per = playersOn.get(d.date)
+    if (!per) continue
+    const before = d.stats.shards_earned ?? 0
+    d.stats.shards_earned = await shardsOf(d.date, per)
+    d.fromCounters = [...(d.fromCounters ?? []), 'shards_earned']
+    save(FILE, file)
+    console.log(`  ${d.date}  shards ${before} → ${d.stats.shards_earned} (tenths)`)
+  }
+
   if (!dates.length) return console.log('activity: up to date')
   console.log(`activity: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
   for (const date of dates) {
@@ -98,6 +125,8 @@ async function activity(): Promise<void> {
     const from = dayStart(date)
     const changes = await fetchStatChanges(from, from + DAY_MS)
     const day = summariseDay(date, changes)
+    day.stats.shards_earned = await shardsOf(date, summarisePlayers(changes))
+    day.fromCounters = ['shards_earned']
     file.days = mergeDays(file.days, [day])
     file.generatedAt = new Date().toISOString()
     save(FILE, file)

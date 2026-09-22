@@ -1,5 +1,5 @@
-import { historySliced, historyTime } from '@/chain/history'
-import { cached, getAllRows } from '@/chain/rpc'
+import { historyGet, historySliced, historyTime, iso } from '@/chain/history'
+import { cached, getAllRows, nameToUint64 } from '@/chain/rpc'
 import {
   dayOf,
   sentByAlienLegends,
@@ -95,6 +95,62 @@ export async function fetchStatChanges(from: number, until: number, slices = 6):
     }
   }
   return out
+}
+
+/* ---------- lifetime counters ---------- */
+
+interface CounterDelta {
+  deltas?: { data?: { permstats?: { first?: string; key?: string; second?: number | string; value?: number | string }[] } }[]
+}
+
+/** One player's lifetime counter as the players table last stood before `at`; undefined if unread. */
+async function counterAt(player: string, stat: string, at: number): Promise<number | undefined> {
+  const page = await historyGet<CounterDelta>('/v2/history/get_deltas', {
+    code: 'players.ale',
+    scope: 'players.ale',
+    table: 'players',
+    primary_key: nameToUint64(player).toString(),
+    before: iso(at),
+    limit: 1,
+    sort: 'desc',
+  })
+  const row = page.deltas?.[0]
+  if (!row) return undefined
+  const hit = (row.data?.permstats ?? []).find((x) => (x.first ?? x.key) === stat)
+  return Number(hit?.second ?? hit?.value ?? 0) || 0
+}
+
+/**
+ * A stat's true daily total for the players the stat log shows it moved for,
+ * from their lifetime counters: end of day less start of day.
+ *
+ * The stat log undercounts when one transaction credits the same player the
+ * same amount twice — the history servers keep only one of a transaction's
+ * identical actions. The counters cannot lose anything. A player whose
+ * counters cannot be read, or disagree with the log by more than a merged
+ * duplicate could explain, keeps the log's figure.
+ */
+export async function statFromCounters(
+  logged: Record<string, number>,
+  stat: string,
+  from: number,
+  until: number,
+): Promise<number> {
+  let total = 0
+  for (const [player, fromLog] of Object.entries(logged)) {
+    let value = fromLog
+    try {
+      const [a, b] = await Promise.all([counterAt(player, stat, from), counterAt(player, stat, until)])
+      if (b !== undefined) {
+        const diff = b - (a ?? 0)
+        if (diff >= fromLog && diff <= fromLog * 1.5 + 1_000) value = diff
+      }
+    } catch {
+      /* keep the log's figure */
+    }
+    total += value
+  }
+  return total
 }
 
 /* ---------- the shop ---------- */
