@@ -29,6 +29,13 @@ export default function AwReport() {
   const seen = running(upTo.map((d) => d.firstSeen))
   const { label: SINCE, short: sinceTitle } = recordsFrom(dates)
 
+  /*
+    A figure the records do not reach all the way back for — Shards mined is
+    still being collected for the spring — is shown only over the days it
+    covers. Treating a day that was never read as a day of zero would draw a
+    flat line where there is simply no reading yet, and understate every total
+    beneath it.
+  */
   const flow = (
     title: string,
     group: 'players' | 'rewards' | 'game' | 'nfts',
@@ -36,7 +43,14 @@ export default function AwReport() {
     how: string,
     unit?: string,
     head?: boolean,
-  ) => (
+    known: (d: Day) => boolean = () => true,
+  ) => {
+    const over = upTo.filter(known)
+    const overMonth = inMonth.filter(known)
+    const overDates = over.map((d) => d.date)
+    const overMonthDates = overMonth.map((d) => d.date)
+    const from = recordsFrom(overDates)
+    return (
     <Block
       key={title}
       head={head}
@@ -44,16 +58,17 @@ export default function AwReport() {
       title={title}
       how={how}
       figures={[
-        { label: SINCE, value: whole(sumOf(upTo, pick)), sub: unit },
-        { label: within, value: whole(sumOf(inMonth, pick)), sub: unit },
+        { label: from.label, value: whole(sumOf(over, pick)), sub: unit },
+        { label: within, value: whole(sumOf(overMonth, pick)), sub: unit },
       ]}
       charts={[
-        { title: `Per day, ${sinceTitle}`, dates, values: upTo.map(pick) },
-        { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map(pick) },
-        { title: `Running total, ${sinceTitle}`, dates, values: running(upTo.map(pick)) },
+        { title: `Per day, ${from.short}`, dates: overDates, values: over.map(pick) },
+        { title: `Per day, ${name}`, dates: overMonthDates, values: overMonth.map(pick) },
+        { title: `Running total, ${from.short}`, dates: overDates, values: running(over.map(pick)) },
       ]}
     />
-  )
+    )
+  }
 
   return (
     <ReportPage title="Alien Worlds - gHubs report" view={v} loading={!file} empty={!file?.days.length}>
@@ -85,6 +100,8 @@ export default function AwReport() {
         (d) => d.shards ?? 0,
         'Sum of uspts.worlds addpoints less ptpxy.worlds addpoints (project Shards), ÷10.',
         'Shards',
+        false,
+        (d) => d.shards !== undefined,
       )}
 
       {flow('Mines', 'game', (d) => d.mines, 'Count of m.federation mine actions.', 'mining actions', true)}

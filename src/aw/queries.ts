@@ -1,4 +1,4 @@
-import { historySliced, historyTime, largestCount } from '@/chain/history'
+import { historyGet, historySliced, historyTime, largestCount } from '@/chain/history'
 import { cached, getAllRows } from '@/chain/rpc'
 
 /**
@@ -127,6 +127,33 @@ function prices(): Promise<Map<string, number>> {
   return offerPrices
 }
 
+interface OfferDelta {
+  deltas?: { data?: { required?: number | string } }[]
+}
+
+/**
+ * What one offer cost, for offers older than the actions we can still read.
+ *
+ * The Outpost's offers are deleted from the table when they end, and the
+ * `setptsreward` that created them falls out of the history servers' reach
+ * after a few months — the oldest kept is from March, while the Outpost has
+ * been selling since long before. But the table's own history goes back
+ * further: asking for the row as it last stood gives the price of an offer
+ * whose creation is long gone.
+ */
+async function priceFromTable(id: string): Promise<number | undefined> {
+  const page = await historyGet<OfferDelta>('/v2/history/get_deltas', {
+    code: 'uspts.worlds',
+    scope: 'uspts.worlds',
+    table: 'pointoffers',
+    primary_key: id,
+    limit: 1,
+    sort: 'desc',
+  }).catch(() => null)
+  const required = page?.deltas?.[0]?.data?.required
+  return required === undefined ? undefined : Number(required) || 0
+}
+
 /** NFTs bought in the Outpost between two moments, and the Shards paid for them. */
 export async function fetchShardsSpent(from: number, until: number): Promise<{ shards: number; nfts: number }> {
   const [price, rows] = await Promise.all([
@@ -148,7 +175,12 @@ export async function fetchShardsSpent(from: number, until: number): Promise<{ s
   const unknown = new Set<string>()
   for (const r of rows) {
     const id = String(r.act.data.offer_id)
-    const p = price.get(id)
+    let p = price.get(id)
+    if (p === undefined) {
+      /* Older than the actions we can read: ask the table's own history. */
+      p = await priceFromTable(id)
+      if (p !== undefined) price.set(id, p)
+    }
     if (p === undefined) unknown.add(id)
     else points += p
   }
