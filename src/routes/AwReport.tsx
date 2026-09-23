@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { HISTORY_FLOOR } from '@/projects/defs'
 import { fetchAwDaily, type AwDailyFile } from '@/aw/queries'
-import { Block, ReportPage, running, shortDay, useMonthView, whole } from '@/report/parts'
+import { Block, ReportPage, recordsFrom, running, useMonthView, whole } from '@/report/parts'
 
 /**
  * The gHubs report for Alien Worlds itself.
@@ -14,8 +13,6 @@ import { Block, ReportPage, running, shortDay, useMonthView, whole } from '@/rep
  * totals say "since" that day rather than "all time".
  */
 
-const SINCE = `Since ${shortDay(HISTORY_FLOOR)} ${HISTORY_FLOOR.slice(0, 4)}`
-const sinceTitle = `since ${shortDay(HISTORY_FLOOR)}`
 
 type Day = AwDailyFile['days'][number]
 
@@ -30,6 +27,7 @@ export default function AwReport() {
   const { upTo, inMonth, dates, monthDates, name, within, picked } = v
   const sumOf = (list: Day[], pick: (d: Day) => number) => list.reduce((n, d) => n + pick(d), 0)
   const seen = running(upTo.map((d) => d.firstSeen))
+  const { label: SINCE, short: sinceTitle } = recordsFrom(dates)
 
   const flow = (
     title: string,

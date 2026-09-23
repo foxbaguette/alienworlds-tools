@@ -50,6 +50,20 @@ export const EXTRA_LINES = ['var(--text-2)', 'var(--rpt-alt)']
 
 export const whole = (v: number) => formatNumber(Math.round(v))
 
+/**
+ * What a report can honestly say its figures run from: the first day it
+ * holds, not a date written into the code.
+ *
+ * The records grow backwards as the collector fills earlier months in, and a
+ * heading that still said "since 20 Aug" over a chart starting in January was
+ * the report lying about its own contents.
+ */
+export function recordsFrom(dates: string[]): { label: string; short: string } {
+  const first = dates[0]
+  if (!first) return { label: 'All time', short: 'so far' }
+  return { label: `Since ${shortDay(first)} ${first.slice(0, 4)}`, short: `since ${shortDay(first)}` }
+}
+
 /** Each day's value added to everything before it. */
 export function running(values: number[]): number[] {
   let n = 0

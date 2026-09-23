@@ -3,24 +3,30 @@ import { dayStart } from '@/activity/rules'
 import { fetchMcMembers, fetchProjectFile, type McMember } from '@/projects/queries'
 import { metricOf, summariseProjectRange, type ProjectDay } from '@/projects/rules'
 import { MC_MODES, MC_STAKING, fetchMcReportFile, type McMode, type McReportDay } from '@/projects/mcReport'
-import { PROJECTS } from '@/projects/defs'
-import { Block, ReportPage, onDay, running, shortDay, stockFigures, stockOf, useMonthView, whole } from '@/report/parts'
+import {
+  Block,
+  ReportPage,
+  onDay,
+  recordsFrom,
+  running,
+  stockFigures,
+  stockOf,
+  useMonthView,
+  whole,
+} from '@/report/parts'
 
 /**
  * The gHubs report for Mission Control — the same report as Alien Legends',
  * with Mission Control's own game.
  *
  * One difference is stated rather than hidden: Mission Control has run since
- * 2023, but the history servers keep only a few months, so its records begin
- * on the day collecting started. Totals say "since" that day instead of "all
- * time". The player count is the exception — it comes from the member table,
+ * 2023, but the history servers keep less than a year, so its records begin
+ * on the first day they still hold. Totals say "since" that day — read from
+ * the data, so it moves as earlier months are collected — instead of "all
+ * time". The player count is the exception: it comes from the member table,
  * which is all time.
  */
 
-const DEF = PROJECTS.find((p) => p.key === 'mc')!
-/** "20 Aug 2026": the first day Mission Control's records hold. */
-const RECORDS_FROM = `${shortDay(DEF.since)} ${DEF.since.slice(0, 4)}`
-const SINCE = `Since ${RECORDS_FROM}`
 
 interface Day extends ProjectDay {
   report?: McReportDay
@@ -73,7 +79,7 @@ export default function McReport() {
   const gameStake = stockOf(stakedBy('game'), dates, monthDates.length)
   const advStake = stockOf(stakedBy('adventure'), dates, monthDates.length)
 
-  const sinceTitle = `since ${shortDay(DEF.since)}`
+  const { label: SINCE, short: sinceTitle } = recordsFrom(dates)
   const flow = (
     title: string,
     group: 'rewards' | 'incoming' | 'game',

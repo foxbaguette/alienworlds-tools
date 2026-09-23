@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchProjectFile } from '@/projects/queries'
 import { firstSeenByDay, metricOf, summariseProjectRange, type ProjectDay } from '@/projects/rules'
-import { projectByKey } from '@/projects/defs'
-import { Block, ReportPage, running, shortDay, useMonthView, whole, type Group } from '@/report/parts'
+import { Block, ReportPage, recordsFrom, running, useMonthView, whole, type Group } from '@/report/parts'
 
 /**
  * The gHubs report for a project collected by the generic project collector
@@ -138,7 +137,6 @@ const REPORTS: Record<string, ReportDef> = {
 }
 
 export default function ProjectReport({ projectKey }: { projectKey: string }) {
-  const def = projectByKey(projectKey)!
   const report = REPORTS[projectKey]
   const [days, setDays] = useState<ProjectDay[] | null>(null)
 
@@ -150,9 +148,9 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
   const v = useMonthView(days)
   const { upTo, inMonth, dates, monthDates, name, within } = v
 
-  const recordsFrom = `${shortDay(def.since)} ${def.since.slice(0, 4)}`
-  const SINCE = report.allTime ? 'All time' : `Since ${recordsFrom}`
-  const sinceTitle = report.allTime ? 'since launch' : `since ${shortDay(def.since)}`
+  const held = recordsFrom(dates)
+  const SINCE = report.allTime ? 'All time' : held.label
+  const sinceTitle = report.allTime ? 'since launch' : held.short
   const sumOf = (list: ProjectDay[], pick: (d: ProjectDay) => number) => list.reduce((n, d) => n + pick(d), 0)
 
   /* Wallets seen for the first time each day, and so every wallet seen by then. */

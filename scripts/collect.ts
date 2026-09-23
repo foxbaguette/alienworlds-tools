@@ -41,7 +41,16 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
-import { historyReaches, useHistoryPage, useHistoryServers } from '../src/chain/history'
+import {
+  historyProgress,
+  resetHistoryProgress,
+  historyReaches,
+  useHistoryBackwards,
+  useHistoryConcurrency,
+  useHistoryGap,
+  useHistoryPage,
+  useHistoryServers,
+} from '../src/chain/history'
 import { fetchAwDay, fetchShardsMined, fetchShardsSpent, type AwDailyFile } from '../src/aw/queries'
 import {
   MC_STAKING,
@@ -72,6 +81,52 @@ const sinceFlag = flag('--since')
 useHistoryServers((flag('--servers') ?? '').split(',').filter(Boolean))
 /* Some indexers refuse a page above a hundred rows. */
 useHistoryPage(Number(flag('--page') ?? 0))
+/* Slower between pages, for servers that have started refusing us. */
+useHistoryGap(Number(flag('--gap') ?? 0))
+/* Walk each window backwards — what eosphere needs for anything older than 90 days. */
+useHistoryBackwards(process.argv.includes('--backwards'))
+/* At most this many requests in the air at once — see useHistoryConcurrency. */
+useHistoryConcurrency(Number(flag('--inflight') ?? 0))
+
+/*
+  A running account of what this collector is doing, for the backfill report:
+  which day it is on and how far through its rows it has got. Without it a
+  heavy day — Alien Worlds reads a third of a million rows for one — looks
+  exactly like a hung process.
+*/
+/*
+  Which part of an Alien Worlds day to read.
+
+  A day comes in three parts of wildly different cost: the mines, claims and
+  new players are forty thousand rows; the Shards a million and a half; the
+  Outpost a handful. Read together, the cheap parts wait months behind the
+  dear one and progress is one long silence. Read as separate passes, the
+  players and the Outpost are in hand within the hour, and the Shards fill in
+  behind them — each with a figure of its own.
+*/
+const phase = flag('--phase') ?? 'all'
+const wants = (which: string) => phase === 'all' || phase === which
+
+const progressFile = flag('--progress')
+let progressLabel = ''
+
+function nowReading(label: string): void {
+  progressLabel = label
+  resetHistoryProgress()
+}
+
+if (progressFile) {
+  const tell = () => {
+    const { seen, wanted } = historyProgress()
+    try {
+      writeFileSync(progressFile, JSON.stringify({ at: Date.now(), label: progressLabel, seen, wanted }))
+    } catch {
+      /* the report can live without it */
+    }
+  }
+  const timer = setInterval(tell, 2000)
+  timer.unref()
+}
 /* The last day to collect, so two runs can share a backfill without meeting. */
 const untilFlag = flag('--until')
 /*
@@ -94,10 +149,12 @@ function save(file: string, data: unknown): void {
 
 /** The days a file still needs, plus the last `redo` it already has. */
 function todo(days: { date: string }[]): string[] {
-  const yesterday = dayOf(Date.now() - DAY_MS)
+  const yesterday = untilFlag ?? dayOf(Date.now() - DAY_MS)
   const have = new Set(days.map((d) => d.date))
   const again = new Set(redo > 0 ? days.slice(-redo).map((d) => d.date) : [])
-  return dateRange(LAUNCH, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
+  /* Alien Legends had an alpha before its launch day, so a backfill can ask
+     for days earlier than LAUNCH. */
+  return dateRange(sinceFlag ?? LAUNCH, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 }
 
 async function activity(): Promise<void> {
@@ -267,6 +324,7 @@ async function projects(): Promise<void> {
     console.log(`${def.name}: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
     for (const date of dates) {
       const t0 = Date.now()
+      nowReading(`${def.name} ${date}`)
       const day = await fetchProjectDay(def, date)
       const by = new Map(file.days.map((d) => [d.date, d]))
       by.set(date, day)
@@ -442,7 +500,10 @@ async function aw(): Promise<void> {
   const months = saved.months
   const counts = { ...file.months }
   const yesterday = untilFlag ?? dayOf(Date.now() - DAY_MS)
-  const have = new Set(file.days.map((d) => d.date))
+  /* A day is "had" when the part being read is in it, not when the row exists. */
+  const held = (d: AwDailyFile['days'][number]) =>
+    phase === 'shards' ? d.shards !== undefined : phase === 'outpost' ? d.shardsSpent !== undefined : true
+  const have = new Set(file.days.filter(held).map((d) => d.date))
   const again = new Set(redo > 0 ? file.days.slice(-redo).map((d) => d.date) : [])
   const dates = dateRange(sinceFlag ?? HISTORY_FLOOR, yesterday).filter((d) => !have.has(d) || again.has(d) || forced.has(d))
 
@@ -475,41 +536,65 @@ async function aw(): Promise<void> {
   for (const date of dates) {
     const t0 = Date.now()
     const from = dayStart(date)
-    const day = await fetchAwDay(from, from + DAY_MS)
-    const shards = await fetchShardsMined(from, from + DAY_MS)
-    const spent = await fetchShardsSpent(from, from + DAY_MS)
-    for (const w of day.claimers) if (!firstDay[w] || firstDay[w] > date) firstDay[w] = date
-    const month = date.slice(0, 7)
-    months[month] = [...new Set([...(months[month] ?? []), ...day.claimers])].sort()
-    counts[month] = months[month].length
-
     const by = new Map(file.days.map((d) => [d.date, d]))
+    const was = by.get(date)
+    let told = ''
+
+    let day: Awaited<ReturnType<typeof fetchAwDay>> | undefined
+    if (wants('base')) {
+      nowReading(`Alien Worlds ${date} · mines, claims and new players`)
+      day = await fetchAwDay(from, from + DAY_MS)
+      for (const w of day.claimers) if (!firstDay[w] || firstDay[w] > date) firstDay[w] = date
+      const month = date.slice(0, 7)
+      months[month] = [...new Set([...(months[month] ?? []), ...day.claimers])].sort()
+      counts[month] = months[month].length
+      told += `${String(day.mines).padStart(8)} mines  ${String(day.claims).padStart(5)} claims  ` +
+        `${Math.round(day.tlm).toLocaleString('en-US').padStart(8)} TLM  ${String(day.claimers.length).padStart(5)} miners  ` +
+        `${day.newPlayers} new  `
+    }
+
+    let shards: number | undefined
+    if (wants('shards')) {
+      nowReading(`Alien Worlds ${date} · Shards mined`)
+      shards = await fetchShardsMined(from, from + DAY_MS)
+      told += `${Math.round(shards).toLocaleString('en-US')} shards  `
+    }
+
+    let spent: Awaited<ReturnType<typeof fetchShardsSpent>> | undefined
+    if (wants('outpost')) {
+      nowReading(`Alien Worlds ${date} · Outpost spending`)
+      spent = await fetchShardsSpent(from, from + DAY_MS)
+      told += `${Math.round(spent.shards).toLocaleString('en-US')} spent  `
+    }
+
     by.set(date, {
+      ...(was ?? { date, mines: 0, newPlayers: 0, claims: 0, tlm: 0, miners: 0, firstSeen: 0 }),
       date,
-      mines: day.mines,
-      shards: Math.round(shards * 10) / 10,
-      shardsSpent: Math.round(spent.shards * 10) / 10,
-      outpostNfts: spent.nfts,
-      newPlayers: day.newPlayers,
-      claims: day.claims,
-      tlm: Math.round(day.tlm * 10_000) / 10_000,
-      miners: day.claimers.length,
-      firstSeen: 0,
+      ...(day
+        ? {
+            mines: day.mines,
+            newPlayers: day.newPlayers,
+            claims: day.claims,
+            tlm: Math.round(day.tlm * 10_000) / 10_000,
+            miners: day.claimers.length,
+          }
+        : {}),
+      ...(shards !== undefined ? { shards: Math.round(shards * 10) / 10 } : {}),
+      ...(spent ? { shardsSpent: Math.round(spent.shards * 10) / 10, outpostNfts: spent.nfts } : {}),
     })
     file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
     /* First sightings are recounted over every day each time: a wallet's
-       first day can only move earlier, never later. */
-    const first: Record<string, number> = {}
-    for (const d of Object.values(firstDay)) first[d] = (first[d] ?? 0) + 1
-    for (const d of file.days) d.firstSeen = first[d.date] ?? 0
-    file.months = counts
+       first day can only move earlier, never later. Only the pass that reads
+       the claimers knows anything about them. */
+    if (wants('base')) {
+      const first: Record<string, number> = {}
+      for (const d of Object.values(firstDay)) first[d] = (first[d] ?? 0) + 1
+      for (const d of file.days) d.firstSeen = first[d.date] ?? 0
+      file.months = counts
+    }
     file.generatedAt = new Date().toISOString()
     save(FILE, file)
-    console.log(
-      `  ${date}  ${String(day.mines).padStart(8)} mines  ${String(day.claims).padStart(5)} claims  ` +
-        `${Math.round(day.tlm).toLocaleString('en-US').padStart(8)} TLM  ${String(day.claimers.length).padStart(5)} miners  ` +
-        `${day.newPlayers} new  ${Math.round(shards).toLocaleString('en-US')} shards  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
-    )
+    console.log(`  ${date}  ${told}${((Date.now() - t0) / 1000).toFixed(1)}s`)
   }
 
   const grouped: Record<string, string[]> = {}

@@ -39,8 +39,85 @@ export function useHistoryServers(list: string[]): void {
   HISTORY_ENDPOINTS.splice(0, HISTORY_ENDPOINTS.length, ...list)
 }
 
-/** Pause between pages of one crawl. */
-const PAGE_GAP_MS = 250
+/**
+ * Pause between pages of one crawl.
+ *
+ * A quarter of a second suits a nightly run of one day. A backfill reading
+ * months through servers that have started refusing us needs to ask more
+ * slowly than that, so it can be raised for a run.
+ */
+let PAGE_GAP_MS = 250
+
+export function useHistoryGap(ms: number): void {
+  if (ms > 0) PAGE_GAP_MS = ms
+}
+
+/**
+ * Which way a crawl walks its window.
+ *
+ * Forwards by default. One indexer — eosphere — refuses a window older than
+ * ninety days when asked for it in ascending order, and answers the same
+ * window happily in descending order; walking backwards is what makes its
+ * whole year of history usable. The rows are the same either way: a day is
+ * read in full before it is counted, and each row is keyed, so nothing
+ * depends on the order they arrive in.
+ */
+let BACKWARDS = false
+
+export function useHistoryBackwards(on: boolean): void {
+  BACKWARDS = on
+}
+
+/*
+  How many requests may be in the air at once.
+
+  Pacing pages is not enough on its own: a day is read as several slices at
+  the same time, and a project reads each of its paying accounts at the same
+  time again, so a "polite" run could still put a dozen requests on one server
+  in the same instant. That is what gets us refused. This queue is where every
+  request passes, so one number decides how hard a run leans on a server —
+  a backfill sets it to one, the nightly run leaves it alone.
+*/
+let inFlightLimit = Infinity
+let inFlight = 0
+const queue: (() => void)[] = []
+
+export function useHistoryConcurrency(n: number): void {
+  if (n > 0) inFlightLimit = n
+}
+
+/*
+  How far through the current read we are, in rows.
+
+  A day of Alien Worlds is a third of a million rows and a quarter of an hour;
+  a progress report that only counts finished days says nothing for fifteen
+  minutes at a stretch. Every crawl adds its rows here as they arrive, so a
+  watcher can say "196,838 of 345,221" while the day is still being read.
+*/
+let rowsSeen = 0
+let rowsWanted = 0
+
+export function historyProgress(): { seen: number; wanted: number } {
+  return { seen: rowsSeen, wanted: rowsWanted }
+}
+
+/** Starts a fresh count — called when a new day, or a new part of one, begins. */
+export function resetHistoryProgress(): void {
+  rowsSeen = 0
+  rowsWanted = 0
+}
+
+async function takeTurn(): Promise<() => void> {
+  if (inFlight >= inFlightLimit) await new Promise<void>((go) => queue.push(go))
+  inFlight++
+  let freed = false
+  return () => {
+    if (freed) return
+    freed = true
+    inFlight--
+    queue.shift()?.()
+  }
+}
 
 /**
  * The largest page to ask for.
@@ -114,6 +191,15 @@ export async function historyGet<T>(
   const query = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
   ).toString()
+  const done = await takeTurn()
+  try {
+    return await ask<T>(path, query, pinned)
+  } finally {
+    done()
+  }
+}
+
+async function ask<T>(path: string, query: string, pinned?: string): Promise<T> {
   let lastError: unknown
   for (let round = 0; round < ROUNDS; round++) {
     for (let attempt = 0; attempt < HISTORY_ENDPOINTS.length; attempt++) {
@@ -269,7 +355,7 @@ async function crawlOnce<R>(
 ): Promise<{ rows: R[]; total: number | null }> {
   const seen = new Set<string | number>()
   const out: R[] = []
-  let cursor = from
+  let cursor = BACKWARDS ? until : from
   let total: number | null = null
   /*
     Rows past the start of the page, for the one case paging by time cannot
@@ -284,9 +370,9 @@ async function crawlOnce<R>(
   for (let page = 0; page < maxPages; page++) {
     const body = await historyGet<{ total?: { value?: number; relation?: string } }>(path, {
       ...params,
-      after: iso(cursor),
-      before: iso(until),
-      sort: 'asc',
+      after: iso(BACKWARDS ? from : cursor),
+      before: iso(BACKWARDS ? cursor : until),
+      sort: BACKWARDS ? 'desc' : 'asc',
       limit: HISTORY_PAGE,
       ...(skip ? { skip } : {}),
       ...(page === 0 ? { track: 'true' } : {}),
@@ -296,6 +382,7 @@ async function crawlOnce<R>(
     if (page === 0) {
       if (body.total?.relation === 'eq' && Number.isFinite(Number(body.total.value))) total = Number(body.total.value)
       onProgress?.(0, Number(body.total?.value ?? rows.length))
+      rowsWanted += Number(body.total?.value ?? rows.length) || 0
     }
     let fresh = 0
     for (const r of rows) {
@@ -306,6 +393,7 @@ async function crawlOnce<R>(
       fresh++
     }
     onProgress?.(fresh, 0)
+    rowsSeen += fresh
     if (!rows.length) {
       /* The same on the first page would read as an empty window — believed
          only once every server has said so. */
