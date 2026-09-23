@@ -509,7 +509,9 @@ async function aw(): Promise<void> {
 
   /* Days collected before Shards were measured get just that figure added,
      rather than the whole day read again. */
-  const shardless = part ? [] : file.days.filter((d) => d.shards === undefined && !dates.includes(d.date))
+  /* A run asked for one part of the day, or for named days, does that and
+     nothing else — these two fill in what older runs never measured. */
+  const shardless = part || phase !== 'all' || forced.size ? [] : file.days.filter((d) => d.shards === undefined && !dates.includes(d.date))
   if (shardless.length) console.log(`aw: adding Shards mined to ${shardless.length} day(s)`)
   for (const d of shardless) {
     const from = dayStart(d.date)
@@ -519,7 +521,7 @@ async function aw(): Promise<void> {
   }
 
   /* Likewise the Outpost's spending, measured later still. */
-  const spentless = part ? [] : file.days.filter((d) => d.shardsSpent === undefined && !dates.includes(d.date))
+  const spentless = part || phase !== 'all' || forced.size ? [] : file.days.filter((d) => d.shardsSpent === undefined && !dates.includes(d.date))
   if (spentless.length) console.log(`aw: adding Outpost spending to ${spentless.length} day(s)`)
   for (const d of spentless) {
     const from = dayStart(d.date)
@@ -568,7 +570,10 @@ async function aw(): Promise<void> {
     }
 
     by.set(date, {
-      ...(was ?? { date, mines: 0, newPlayers: 0, claims: 0, tlm: 0, miners: 0, firstSeen: 0 }),
+      /* A pass writes only what it read. Filling the rest with zeros would
+         put "no mines, no claims" into a part file whose only job was Shards,
+         and the merge would then overwrite the real figures with them. */
+      ...((was ?? { date }) as AwDailyFile['days'][number]),
       date,
       ...(day
         ? {

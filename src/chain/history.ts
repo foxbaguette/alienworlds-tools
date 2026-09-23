@@ -205,8 +205,14 @@ async function ask<T>(path: string, query: string, pinned?: string): Promise<T> 
     for (let attempt = 0; attempt < HISTORY_ENDPOINTS.length; attempt++) {
       const base = pinned ?? HISTORY_ENDPOINTS[next % HISTORY_ENDPOINTS.length]
       next++
-      /* Benched servers are skipped — unless it is the last round and nothing else is left. */
-      if (!pinned && (benchedUntil.get(base) ?? 0) > Date.now() && round < ROUNDS - 1) continue
+      /*
+        Benched servers are skipped — unless it is the last round and nothing
+        else is left, or there is nothing else at all. A backfill often reads
+        through one server (the only one holding that month), and benching it
+        for a minute after a single 503 threw away the whole day's work.
+      */
+      const alone = HISTORY_ENDPOINTS.length === 1
+      if (!pinned && !alone && (benchedUntil.get(base) ?? 0) > Date.now() && round < ROUNDS - 1) continue
       try {
         const res = await fetch(`${base}${path}?${query}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
         if (!res.ok) throw new Error(`${base} answered ${res.status}`)
@@ -325,10 +331,19 @@ export async function largestCount(
     ),
   )
   let most = 0
+  let counted = false
   for (const a of answers) {
     if (a.status !== 'fulfilled' || a.value.total?.relation !== 'eq') continue
+    counted = true
     most = Math.max(most, Number(a.value.total.value) || 0)
   }
+  /*
+    A day nobody counted is not a day of nothing. Returning 0 here wrote
+    'no mines, no claims, no players' into sixty days of Alien Worlds whose
+    only fault was that the server was busy at the time. Refusing costs a
+    retry; answering costs the truth.
+  */
+  if (!counted) throw new Error()
   return most
 }
 
@@ -368,15 +383,32 @@ async function crawlOnce<R>(
   let empties = 0
   let firstEmpties = 0
   for (let page = 0; page < maxPages; page++) {
-    const body = await historyGet<{ total?: { value?: number; relation?: string } }>(path, {
-      ...params,
-      after: iso(BACKWARDS ? from : cursor),
-      before: iso(BACKWARDS ? cursor : until),
-      sort: BACKWARDS ? 'desc' : 'asc',
-      limit: HISTORY_PAGE,
-      ...(skip ? { skip } : {}),
-      ...(page === 0 ? { track: 'true' } : {}),
-    }, pinned)
+    /*
+      One page failing is not a reason to throw away the tens of thousands of
+      rows already read: a 503 in the middle of a busy day used to cost the
+      whole day, and the day would then be read again from the beginning.
+    */
+    let body: { total?: { value?: number; relation?: string } } | undefined
+    let pageError: unknown
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        body = await historyGet<{ total?: { value?: number; relation?: string } }>(path, {
+          ...params,
+          after: iso(BACKWARDS ? from : cursor),
+          before: iso(BACKWARDS ? cursor : until),
+          sort: BACKWARDS ? 'desc' : 'asc',
+          limit: HISTORY_PAGE,
+          ...(skip ? { skip } : {}),
+          ...(page === 0 ? { track: 'true' } : {}),
+        }, pinned)
+        pageError = undefined
+        break
+      } catch (e) {
+        pageError = e
+        await sleep(5_000 * (attempt + 1))
+      }
+    }
+    if (!body) throw pageError instanceof Error ? pageError : new Error('a page could not be read')
     const rows = pick(body)
     /* The first page says how many rows the window holds. */
     if (page === 0) {
