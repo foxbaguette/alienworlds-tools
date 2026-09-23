@@ -158,8 +158,8 @@ function todo(days: { date: string }[]): string[] {
 }
 
 async function activity(): Promise<void> {
-  const FILE = 'public/data/daily.json'
-  const PLAYERS = 'public/data/players-daily.json'
+  const FILE = partOf('public/data/daily.json')
+  const PLAYERS = partOf('public/data/players-daily.json')
   const file = load<DailyFile>(FILE, { generatedAt: '', days: [] })
   const players = load<PlayersDailyFile>(PLAYERS, { generatedAt: '', days: [] })
   /* A day either file is missing is read again, and both are written. */
@@ -339,7 +339,7 @@ async function projects(): Promise<void> {
 
 /** What players spent in the Alien Legends shop, day by day since launch. */
 async function shop(): Promise<void> {
-  const FILE = 'public/data/shop-daily.json'
+  const FILE = partOf('public/data/shop-daily.json')
   const file = load<ShopDailyFile>(FILE, { generatedAt: '', days: [] })
   const dates = todo(file.days)
   if (!dates.length) return console.log('shop: up to date')
@@ -360,7 +360,7 @@ async function shop(): Promise<void> {
  * day: the pool row for each schema as it last stood before midnight.
  */
 async function farm(): Promise<void> {
-  const FILE = 'public/data/farm-daily.json'
+  const FILE = partOf('public/data/farm-daily.json')
   const file = load<FarmDailyFile>(FILE, { generatedAt: '', days: [] })
   const dates = todo(file.days)
   if (!dates.length) return console.log('farm: up to date')
@@ -396,7 +396,7 @@ async function farm(): Promise<void> {
  * named in that day's usenfts calls. About eight thousand calls a day.
  */
 async function nftRows(): Promise<void> {
-  const FILE = 'public/data/nfts-daily.json'
+  const FILE = partOf('public/data/nfts-daily.json')
   const file = load<NftsDailyFile>(FILE, { generatedAt: '', days: [] })
   const dates = todo(file.days)
   if (!dates.length) return console.log('nfts: up to date')
