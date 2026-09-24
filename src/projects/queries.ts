@@ -153,14 +153,17 @@ export async function fetchProjectDay(def: ProjectDef, date: string): Promise<Pr
   }
   const counted = payouts.filter((p) => !p.ids || (p.nfts ?? 0) > 0).map(({ ids: _ids, ...p }) => p)
 
-  const incoming = await fetchProjectIncoming(def, date)
-  return { ...summariseProjectDay(def, date, actions, counted, stakes), ...(incoming ? { incoming } : {}) }
+  const paidIn = await fetchProjectIncoming(def, date)
+  return { ...summariseProjectDay(def, date, actions, counted, stakes), ...(paidIn ?? {}) }
 }
 
 const TOKEN_FILTER = ['alien.worlds:transfer', 'eosio.token:transfer', 'defensetoken:transfer', 'token.worlds:transfer'].join(',')
 
 /** Token transfers into the project's incoming accounts in a day, summarised by kind. */
-export async function fetchProjectIncoming(def: ProjectDef, date: string): Promise<ProjectDay['incoming']> {
+export async function fetchProjectIncoming(
+  def: ProjectDef,
+  date: string,
+): Promise<{ incoming: ProjectDay['incoming']; incomingBy: ProjectDay['incomingBy'] } | undefined> {
   if (!def.incoming?.length) return undefined
   const from = Date.parse(date + 'T00:00:00Z')
   const until = from + 86_400_000

@@ -33,6 +33,12 @@ export interface ProjectDay {
    */
   incoming?: Record<string, { count: number; amount: number }>
   /**
+   * Token symbol → wallet → what that wallet paid in that day. The totals
+   * above say how much a game took; this says who it came from, which is what
+   * a payout report needs to set against what each player was paid.
+   */
+  incomingBy?: Record<string, Record<string, number>>
+  /**
    * Reward kind (by memo) and token, as `kind|symbol` → payments and amount,
    * for projects that label them. One kind can pay in more than one token.
    */
@@ -164,18 +170,24 @@ export interface InflowSeen {
   memo: string
 }
 
-/** Players' payments in, by kind and token. Anything no kind claims is left out. */
-export function summariseIncoming(def: ProjectDef, inflows: InflowSeen[]): NonNullable<ProjectDay['incoming']> {
-  const out: NonNullable<ProjectDay['incoming']> = {}
+/** Players' payments in, by kind and token, and by wallet. */
+export function summariseIncoming(
+  def: ProjectDef,
+  inflows: InflowSeen[],
+): { incoming: NonNullable<ProjectDay['incoming']>; incomingBy: NonNullable<ProjectDay['incomingBy']> } {
+  const incoming: NonNullable<ProjectDay['incoming']> = {}
+  const incomingBy: NonNullable<ProjectDay['incomingBy']> = {}
   for (const t of inflows) {
     if (!isPlayerWallet(t.from, def)) continue
     const kind = def.incoming?.find((k) => k.account === t.to && k.memo.test(t.memo))
     if (!kind) continue
-    const e = (out[`${kind.key}|${t.symbol}`] ??= { count: 0, amount: 0 })
+    const e = (incoming[`${kind.key}|${t.symbol}`] ??= { count: 0, amount: 0 })
     e.count += 1
     e.amount = Math.round((e.amount + t.amount) * 10_000) / 10_000
+    const by = (incomingBy[t.symbol] ??= {})
+    by[t.from] = Math.round(((by[t.from] ?? 0) + t.amount) * 10_000) / 10_000
   }
-  return out
+  return { incoming, incomingBy }
 }
 
 /** A metric's count on a day: the sum of the actions it is made of. */

@@ -309,7 +309,9 @@ async function projects(): Promise<void> {
       const bare = part ? [] : file.days.filter((d) => d.incoming === undefined && !dates.includes(d.date))
       if (bare.length) console.log(`${def.name}: adding incoming tokens to ${bare.length} day(s)`)
       for (const d of bare) {
-        d.incoming = (await fetchProjectIncoming(def, d.date)) ?? {}
+        const paidIn = await fetchProjectIncoming(def, d.date)
+        d.incoming = paidIn?.incoming ?? {}
+        d.incomingBy = paidIn?.incomingBy
         save(FILE, file)
         const sums: Record<string, number> = {}
         for (const [k, v] of Object.entries(d.incoming)) sums[k.split('|')[1]] = (sums[k.split('|')[1]] ?? 0) + v.amount

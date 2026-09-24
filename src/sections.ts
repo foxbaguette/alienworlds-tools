@@ -86,7 +86,15 @@ export const SECTIONS: Section[] = [
           ...PROJECTS.map((p) => ({
             to: `/${p.key}`,
             label: p.name,
-            ...(REPORTS.has(p.key) ? { children: [{ to: `/${p.key}/ghubs`, label: 'gHubs report' }] } : {}),
+            ...(REPORTS.has(p.key)
+              ? {
+                  children: [
+                    { to: `/${p.key}/ghubs`, label: 'gHubs report' },
+                    /* Planetary Defense alone has a per-player payout report. */
+                    ...(p.key === 'pd' ? [{ to: '/pd/payouts', label: 'Payout report' }] : []),
+                  ],
+                }
+              : {}),
           })),
         ],
       },

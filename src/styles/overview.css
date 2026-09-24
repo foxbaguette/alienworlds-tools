@@ -329,3 +329,45 @@
 .recipients td.is-down {
   color: var(--critical);
 }
+
+/* ---------- Planetary Defense payouts, player by player ---------- */
+
+.pdp__find {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-1);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-sm);
+  min-width: 220px;
+}
+/* The table is wider than a phone; it scrolls rather than squeezing. */
+.pdp__scroll { overflow-x: auto; }
+.pdp { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.pdp th {
+  text-align: left;
+  padding: 6px 12px 8px 0;
+  color: var(--text-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pdp th.num, .pdp td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pdp td { padding: 6px 12px 6px 0; border-top: 1px solid var(--line); }
+.pdp tfoot td { border-top: 2px solid var(--line); font-weight: 650; }
+.pdp__wallet { font-variant-numeric: tabular-nums; }
+/* The gamertag, where Mission Control knows one for the wallet. */
+.pdp__tag {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--series-1) 14%, transparent);
+  color: var(--series-1);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.pdp__spent { color: var(--text-2); }
+/* A sortable heading: the whole cell is the control, and the current one shows an arrow. */
+.pdp th.pdp__sort { cursor: pointer; user-select: none; }
+.pdp th.pdp__sort:hover { color: var(--text-1); }
+.pdp th.pdp__sort.on { color: var(--series-1); }
