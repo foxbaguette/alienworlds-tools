@@ -1,4 +1,4 @@
-import { getPage } from './nodes'
+import { call, getPage } from './nodes'
 import type { ChainAction } from './act'
 import type { Dao } from './daos'
 
@@ -21,13 +21,68 @@ import type { Dao } from './daos'
 export const FEDERATION = 'm.federation'
 
 /**
- * The ceiling, quoted from the contract's own assert:
+ * The ceiling, and why it is read rather than written down.
  *
- *   ERR::INVALID_CLAIM_RATE::Claim rate must be between 0 and 35%
+ * `pltdtapset` checks the rate against a limit that exists nowhere but inside
+ * the contract — no table row carries it, no action reports it. The one honest
+ * source is the deployed code itself, which holds the assert's message:
  *
- * Stored times a hundred, so 3500 is 35%. Every planet is already at it.
+ *   ERR::INVALID_CLAIM_RATE::Claim rate must be between 0 and 45%
+ *
+ * It read 35% until m.federation was redeployed, which is the whole argument
+ * against a constant: a stale one does not fail loudly, it quietly refuses
+ * proposals the chain would have taken.
+ *
+ * The code is a quarter of a megabyte, so it is downloaded only when its hash
+ * is one that has not been decoded before. Normally this costs one small call.
  */
-export const TAP_MAX_X100 = 3500
+const LIMIT_RE = /Claim rate must be between 0 and ([\d.]+)\s*%/
+const LIMIT_KEY = 'aw.dao.tapMax.'
+
+/** Used only when the chain cannot be reached — the last value seen there. */
+export const TAP_MAX_FALLBACK_X100 = 4500
+
+const remembered = (hash: string): number | null => {
+  try {
+    const v = Number(localStorage.getItem(LIMIT_KEY + hash))
+    return Number.isFinite(v) && v > 0 ? v : null
+  } catch {
+    return null
+  }
+}
+
+async function readTapMax(): Promise<number> {
+  const hash = (await call({ account_name: FEDERATION }, 'get_code_hash'))?.code_hash as string | undefined
+  const known = hash ? remembered(hash) : null
+  if (known) return known
+
+  /* atob yields one character per byte, which is all a string search needs. */
+  const wasm = (await call({ account_name: FEDERATION }, 'get_raw_code_and_abi'))?.wasm as string | undefined
+  const m = wasm ? LIMIT_RE.exec(atob(wasm)) : null
+  if (!m) throw new Error('no claim-rate assert in m.federation')
+
+  const x100 = Math.round(Number(m[1]) * 100)
+  if (!Number.isFinite(x100) || x100 <= 0) throw new Error(`unreadable ceiling "${m[1]}"`)
+  if (hash) {
+    try {
+      localStorage.setItem(LIMIT_KEY + hash, String(x100))
+    } catch {
+      /* Private browsing: costs a download next time, nothing worse. */
+    }
+  }
+  return x100
+}
+
+let ceiling: Promise<number> | null = null
+
+/** The most the contract will accept, times a hundred. Read once per session. */
+export function fetchTapMax(): Promise<number> {
+  ceiling ??= readTapMax().catch((err) => {
+    console.error('tap ceiling:', err)
+    return TAP_MAX_FALLBACK_X100
+  })
+  return ceiling
+}
 
 export interface Tap {
   /** The planet being skimmed, e.g. `eyeke.world`. */

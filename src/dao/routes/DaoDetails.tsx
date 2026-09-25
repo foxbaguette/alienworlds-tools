@@ -29,7 +29,7 @@ import { daoById, useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
 import { ensureProposals, ensureWorker, proposalsOf, useProposalCaches, workerOf } from '../useProposals'
 import { fetchRedirect, type Redirect } from '../chain/inflation'
-import { TAP_MAX_X100, fetchTap, fmtRate, planetOf, tapSetAction, type Tap } from '../chain/tap'
+import { fetchTap, fetchTapMax, fmtRate, planetOf, tapSetAction, type Tap } from '../chain/tap'
 import { PROPOSAL_DAYS, proposeAction } from '../chain/propose'
 import {
   PERIOD_MAX_DAYS,
@@ -322,8 +322,26 @@ function useTap(dao: Dao) {
   return { planet, tap: got?.tap ?? null, mining: got?.mining ?? null }
 }
 
+/**
+ * The contract's ceiling. Null until the code has been read — the panel says
+ * nothing about a limit it does not know, and the form will not take a share
+ * it cannot check against one.
+ */
+function useTapMax() {
+  const [max, setMax] = useState<number | null>(null)
+  useEffect(() => {
+    let alive = true
+    void fetchTapMax().then((v) => alive && setMax(v))
+    return () => {
+      alive = false
+    }
+  }, [])
+  return max
+}
+
 function TapPanel({ dao }: { dao: Dao }) {
   const { planet, tap, mining } = useTap(dao)
+  const max = useTapMax()
   if (!planet || !tap) return null
 
   const perDay = mining != null ? (mining * tap.rateX100) / 10_000 : null
@@ -341,9 +359,11 @@ function TapPanel({ dao }: { dao: Dao }) {
         ) : null}
         <span className="dao-dim">
           {' '}
-          {tap.rateX100 >= TAP_MAX_X100
-            ? `That is the most the contract allows (${fmtRate(TAP_MAX_X100)}).`
-            : `The contract allows up to ${fmtRate(TAP_MAX_X100)}.`}{' '}
+          {max == null
+            ? ''
+            : tap.rateX100 >= max
+              ? `That is the most the contract allows (${fmtRate(max)}).`
+              : `The contract allows up to ${fmtRate(max)}.`}{' '}
           {tap.bucket > 0
             ? `${Math.trunc(tap.bucket).toLocaleString('en-US')} TLM has been skimmed and not collected yet.`
             : 'Nothing is sitting uncollected.'}
@@ -382,8 +402,10 @@ function TapForm({
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
 
+  const max = useTapMax()
+
   const rateX100 = Math.round(Number(percent) * 100)
-  const badRate = !percent.trim() || !Number.isFinite(rateX100) || rateX100 < 0 || rateX100 > TAP_MAX_X100
+  const badRate = max == null || !percent.trim() || !Number.isFinite(rateX100) || rateX100 < 0 || rateX100 > max
   const badName = !/^[a-z1-5.]{1,13}$/.test(destination)
   const unchanged = rateX100 === tap.rateX100 && destination === tap.destination
   const preview = mining != null && !badRate ? (mining * rateX100) / 10_000 : null
@@ -397,12 +419,12 @@ function TapForm({
       <div className="ale-form">
         <label className="ale-field">
           <span className="ale-field__name">
-            Share<i>0 to {fmtRate(TAP_MAX_X100)}, the contract&rsquo;s ceiling</i>
+            Share<i>{max == null ? 'reading the contract\u2019s ceiling\u2026' : `0 to ${fmtRate(max)}, the contract\u2019s ceiling`}</i>
           </span>
           <input
             type="number"
             min={0}
-            max={TAP_MAX_X100 / 100}
+            max={max != null ? max / 100 : undefined}
             step={0.01}
             value={percent}
             onChange={(e) => setPercent(e.target.value)}
@@ -417,15 +439,17 @@ function TapForm({
       </div>
 
       <p className="dao-dim">
-        {badRate
-          ? `A share has to be between 0 and ${fmtRate(TAP_MAX_X100)}.`
-          : badName
-            ? 'That is not a valid WAX account name.'
-            : unchanged
-              ? 'That is what the tap is set to already.'
-              : preview != null
-                ? `Would send about ${Math.trunc(preview).toLocaleString('en-US')} TLM a day to ${destination}.`
-                : `Would set the tap to ${fmtRate(rateX100)}, paid to ${destination}.`}
+        {max == null
+          ? 'Reading the ceiling from the contract.'
+          : badRate
+            ? `A share has to be between 0 and ${fmtRate(max)}.`
+            : badName
+              ? 'That is not a valid WAX account name.'
+              : unchanged
+                ? 'That is what the tap is set to already.'
+                : preview != null
+                  ? `Would send about ${Math.trunc(preview).toLocaleString('en-US')} TLM a day to ${destination}.`
+                  : `Would set the tap to ${fmtRate(rateX100)}, paid to ${destination}.`}
       </p>
 
       <div className="ale-form">

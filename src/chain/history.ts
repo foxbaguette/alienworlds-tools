@@ -266,6 +266,18 @@ export function progressMeter(onFraction: (fraction: number) => void): Progress 
  */
 export class ShortReadError extends Error {}
 
+/**
+ * How far below the counted total a read may land and still count as whole.
+ *
+ * The count and the paging are two questions asked seconds apart, and their
+ * answers can differ by a row or two at the seams: a day of 378,285 Shard
+ * credits came back with 378,283, and the whole four-minute read was thrown
+ * away and begun again, forever. Two rows in four hundred thousand cannot
+ * move a figure quoted to the nearest Shard. A thousand missing rows can, and
+ * still fails.
+ */
+const shortfallAllowed = (total: number) => Math.max(2, Math.floor(total * 0.0001))
+
 export async function historyCrawl<R>(
   path: string,
   params: Record<string, string | number>,
@@ -291,13 +303,16 @@ export async function historyCrawl<R>(
      crawl measured against it would stop early and call itself complete. */
   let most = exact ? await largestCount(path, params, from, until) : 0
   for (let attempt = 0; attempt < tries; attempt++) {
+    /* Each attempt counts from nothing: adding a retry's rows to the last
+       attempt's made the reported progress run past the end and then back. */
+    if (attempt) resetHistoryProgress()
     const pinned = attempt ? HISTORY_ENDPOINTS[attempt - 1] : undefined
     try {
       const { rows, total } = await crawlOnce(path, params, from, until, pick, timeOf, key, maxPages, onProgress, pinned)
       /* Held to the largest total any server gave: one that has dropped the
          day reports a smaller window and would otherwise look complete. */
       if (total !== null) most = Math.max(most, total)
-      if (!exact || total === null || rows.length >= most) return rows
+      if (!exact || total === null || rows.length >= most - shortfallAllowed(most)) return rows
       last = `read ${rows.length} of ${most} rows`
     } catch (err) {
       /* A pinned server that fails is one of several to try, not the end. */
@@ -382,7 +397,18 @@ async function crawlOnce<R>(
   let skip = 0
   let empties = 0
   let firstEmpties = 0
-  for (let page = 0; page < maxPages; page++) {
+  /*
+    How many pages this window is allowed.
+
+    Forty was a sensible guard when a day was forty thousand rows. January's
+    are two and a half million — a third of every mine earned Shards then,
+    against one in fifty now — so the crawl stopped at forty pages, came up
+    short, and threw the day away. Once the first page says how many rows the
+    window holds, the allowance follows it, with room for the retries that
+    paging over a moving cursor needs.
+  */
+  let pagesAllowed = maxPages
+  for (let page = 0; page < pagesAllowed; page++) {
     /*
       One page failing is not a reason to throw away the tens of thousands of
       rows already read: a 503 in the middle of a busy day used to cost the
@@ -412,7 +438,10 @@ async function crawlOnce<R>(
     const rows = pick(body)
     /* The first page says how many rows the window holds. */
     if (page === 0) {
-      if (body.total?.relation === 'eq' && Number.isFinite(Number(body.total.value))) total = Number(body.total.value)
+      if (body.total?.relation === 'eq' && Number.isFinite(Number(body.total.value))) {
+        total = Number(body.total.value)
+        pagesAllowed = Math.min(20_000, Math.max(maxPages, Math.ceil(total / HISTORY_PAGE) * 2 + 20))
+      }
       onProgress?.(0, Number(body.total?.value ?? rows.length))
       rowsWanted += Number(body.total?.value ?? rows.length) || 0
     }
