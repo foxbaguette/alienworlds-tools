@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchAwDaily, type AwDailyFile } from '@/aw/queries'
-import { Block, ReportPage, recordsFrom, running, useMonthView, whole } from '@/report/parts'
+import { Block, ReportPage, gapNote, recordsFrom, running, useMonthView, whole } from '@/report/parts'
 
 /**
  * The gHubs report for Alien Worlds itself.
@@ -50,13 +50,15 @@ export default function AwReport() {
     const overDates = over.map((d) => d.date)
     const overMonthDates = overMonth.map((d) => d.date)
     const from = recordsFrom(overDates)
+    /* Shards are still being backfilled, so this block's span has holes. */
+    const gap = gapNote(overDates)
     return (
     <Block
       key={title}
       head={head}
       group={group}
       title={title}
-      how={how}
+      how={`${how}${gap}`}
       figures={[
         { label: from.label, value: whole(sumOf(over, pick)), sub: unit },
         { label: within, value: whole(sumOf(overMonth, pick)), sub: unit },

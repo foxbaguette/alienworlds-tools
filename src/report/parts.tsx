@@ -64,6 +64,31 @@ export function recordsFrom(dates: string[]): { label: string; short: string } {
   return { label: `Since ${shortDay(first)} ${first.slice(0, 4)}`, short: `since ${shortDay(first)}` }
 }
 
+/**
+ * What is missing from the middle of a span, said plainly.
+ *
+ * Skipping unread days keeps a chart's line honest — a day never read is not
+ * a day of nought — but the totals beside it still say "since 1 Jan", and a
+ * reader has no way to tell that a quarter of the year is not in the sum.
+ * Returns nothing once the span is whole, so the sentence disappears of its
+ * own accord when the collector catches up.
+ */
+export function gapNote(dates: string[]): string {
+  if (dates.length < 2) return ''
+  const held = new Set(dates)
+  const missing: string[] = []
+  for (let t = Date.parse(dates[0]); t <= Date.parse(dates[dates.length - 1]); t += 86_400_000) {
+    const d = new Date(t).toISOString().slice(0, 10)
+    if (!held.has(d)) missing.push(d)
+  }
+  if (!missing.length) return ''
+  const span =
+    missing.length === 1
+      ? `on ${shortDay(missing[0])}`
+      : `from ${shortDay(missing[0])} to ${shortDay(missing[missing.length - 1])}`
+  return ` Still being collected: ${missing.length} day${missing.length === 1 ? '' : 's'} ${span} are not read yet and are not in these totals.`
+}
+
 /** Each day's value added to everything before it. */
 export function running(values: number[]): number[] {
   let n = 0
