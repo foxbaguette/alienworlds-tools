@@ -21,7 +21,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Long enough for the step below to finish and still leave room to commit.
+    timeout-minutes: 120
     outputs:
       changed: ${{ steps.commit.outputs.changed }}
     steps:
@@ -38,8 +39,16 @@ jobs:
       # (--redo 1): an indexer running a little behind at midnight would
       # otherwise leave that day short for good. A failure here still lets
       # the days that did finish be committed below.
+      #
+      # The timeout belongs on the step, not only on the job. A job cancelled
+      # for running long takes the commit step down with it, so three nights
+      # of collected days were thrown away and the backlog they would have
+      # cleared grew instead: seven days to read where there should be one,
+      # which is what made the next night run long as well. Cut the collector
+      # off here and the days it did finish are still committed.
       - id: collect
         continue-on-error: true
+        timeout-minutes: 100
         run: npm run collect -- --redo 1
 
       - id: commit
