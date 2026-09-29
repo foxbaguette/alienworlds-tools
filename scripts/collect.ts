@@ -39,6 +39,7 @@ import { fetchBalanceAt, fetchClaimedPayouts, fetchPoolActivity, fetchReserveAt 
 import { compressDay, HIDDEN_POOLS, poolTable, type PoolDailyFile, type PoolDay } from '../src/poolstats/rules'
 import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
+import { fetchGemsHeldAt, fetchPlayerWallets, type GemsDailyFile } from '../src/gems/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
 import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
 import {
@@ -87,6 +88,45 @@ useHistoryGap(Number(flag('--gap') ?? 0))
 useHistoryBackwards(process.argv.includes('--backwards'))
 /* At most this many requests in the air at once — see useHistoryConcurrency. */
 useHistoryConcurrency(Number(flag('--inflight') ?? 0))
+
+/**
+ * Player rows read at once.
+ *
+ * Six drew 429s out of the history servers, and a refused read comes back
+ * empty rather than angry, so the days it spoiled looked like real days on
+ * which nobody held a gem. Four, and an answer that is missing is now treated
+ * as missing.
+ */
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+const GEM_READS_AT_ONCE = 2
+
+/**
+ * The servers allowed to answer for a player's row at a past moment.
+ *
+ * Asked for one wallet on 26 April, these four all said 302 gems. Of the rest
+ * of the pool, hivebp returned nothing at all, and eosusa — whose deltas only
+ * begin in September — answered 6,501, which is that wallet months later. An
+ * empty answer reads as a player holding nothing and a September answer reads
+ * as April, so a pool picked at random turns a table read into a coin toss.
+ */
+const GEM_SERVERS = [
+  'https://wax.cryptolions.io',
+  'https://wax.eosdac.io',
+  /*
+    Two exclusions, both for answering wrongly rather than failing.
+
+    detroitledger's deltas begin in April, and asked about February it returns
+    nothing — indistinguishable from a player who held nothing.
+
+    eosphere is worse. It never indexed the deltas that deleted every alpha
+    player on 3 June 2026, so asked about one of them afterwards it hands back
+    the row as it last stood alive: a wiped account still holding its gems.
+    The two servers left both report that deletion, to the same second. Mixed
+    together the holder count flickered between 10 and 47 on consecutive days
+    in late June — not the game, just whose turn it was to answer.
+  */
+]
 
 /*
   A running account of what this collector is doing, for the backfill report:
@@ -393,6 +433,142 @@ async function farm(): Promise<void> {
 }
 
 /**
+ * Gems held by every player together at the end of each day.
+ *
+ * One read per player per day, because the balance lives in each player's own
+ * row and no aggregate of it exists. A few hundred players makes that a
+ * couple of minutes; it would be out of the question on a bigger game.
+ *
+ * A day is only written when every player answered. One wallet the server
+ * would not return is one wallet counted as nought, and a sum that quietly
+ * understates is worse than a day left for the next run — the chart would
+ * show gems being spent that never moved.
+ */
+/**
+ * Every wallet that has ever held a player row, and the first day it could
+ * have.
+ *
+ * The live table is not enough. Alien Legends ran an open alpha from January
+ * to June, and those players were wiped before the relaunch on 31 August —
+ * 230 wallets that hold no row today but held gems all spring. They are
+ * recoverable from the stat log, which is what players-daily.json is, so the
+ * two sources together are the real population.
+ */
+/**
+ * Run `fn` over `items`, `width` at a time, keeping the order of the answers.
+ *
+ * A player's balance is one round trip and nothing else — no paging, no work
+ * to do on what comes back. Run one after another they are pure latency: a
+ * third of a second each, which is hours across a year of days for a table
+ * that could be read in one go if the history API let you ask for it that
+ * way. Several at once asks no server for more than the history queue already
+ * allows, and turns the same work into minutes.
+ */
+async function inParallel<T, R>(items: T[], width: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(width, items.length) }, async () => {
+      for (;;) {
+        const i = next++
+        if (i >= items.length) return
+        out[i] = await fn(items[i])
+      }
+    }),
+  )
+  return out
+}
+
+async function gemWallets(): Promise<Map<string, string>> {
+  const since = new Map<string, string>()
+  const note = (wallet: string, day: string) => {
+    const had = since.get(wallet)
+    if (!had || day < had) since.set(wallet, day)
+  }
+
+  const log = load<PlayersDailyFile>('public/data/players-daily.json', { generatedAt: '', days: [] })
+  for (const d of log.days) for (const w of Object.keys(d.players ?? {})) note(w, d.date)
+  /* Somebody who signed up and bought gems without a stat ever moving would
+     be missing from the log, so today's table is folded in as well — by its
+     own signup day, because that is the first day the row can be read and a
+     wallet asked for earlier would look like a server that went quiet. */
+  for (const p of await fetchPlayerWallets()) note(p.wallet, p.signup || LAUNCH)
+
+  return since
+}
+
+async function gems(): Promise<void> {
+  const FILE = partOf('public/data/gems-daily.json')
+  const file = load<GemsDailyFile>(FILE, { generatedAt: '', days: [] })
+  /* A day costs a read per player — a minute and a half, where every other
+     step here is seconds. Left uncapped, a file starting from nothing would
+     take the better part of an hour and crowd out the steps behind it, which
+     is how Alien Worlds came to be six days stale. Catch up a few days a
+     night instead; the steady state is one day. */
+  const dates = todo(file.days).slice(0, 8)
+  if (!dates.length) return console.log('gems: up to date')
+  console.log(`gems: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+
+  const wallets = await gemWallets()
+  /* Narrowed for this step alone; the flag still wins where one was given. */
+  const chosen = (flag('--servers') ?? '').split(',').filter(Boolean)
+  useHistoryServers(chosen.length ? chosen : GEM_SERVERS)
+
+  for (const date of dates) {
+    const t0 = Date.now()
+    const until = dayStart(date) + DAY_MS
+    /* Only wallets that could have had a row by then. The rest cost a read
+       to be told nothing, and there are months of the alpha where that is
+       almost all of them. */
+    const asking = [...wallets].filter(([, since]) => since <= date).map(([w]) => w)
+    const asked = asking.length
+    /* null is a read that threw, undefined one that came back empty for a
+       player who had a row. Neither is a balance. */
+    const held = new Map<string, number>()
+    let waiting = asking
+
+    /*
+      Three or four wallets in a hundred and eighty refuse on any given pass,
+      and throwing the whole day away for them meant reading all hundred and
+      eighty again only to lose another handful — the backfill sat on 4 May
+      for an hour that way. The stragglers are asked again, after a pause, and
+      only a wallet that will not answer three times over holds the day back.
+    */
+    for (let attempt = 0; attempt < 3 && waiting.length; attempt++) {
+      if (attempt) await pause(5_000 * attempt)
+      const got = await inParallel(waiting, GEM_READS_AT_ONCE, (w) =>
+        fetchGemsHeldAt(w, until).catch(() => null),
+      )
+      const again: string[] = []
+      waiting.forEach((w, i) => {
+        const v = got[i]
+        if (v === null || v === undefined) again.push(w)
+        else held.set(w, v)
+      })
+      if (again.length && again.length < waiting.length) console.log(`    ${date}  asking ${again.length} again`)
+      waiting = again
+    }
+
+    if (waiting.length) {
+      console.log(`  ${date}  ${waiting.length} of ${asked} wallets unread — left for next time`)
+      continue
+    }
+    const total = [...held.values()].reduce((n, v) => n + v, 0)
+    /* A player with no row yet reads as nought and is not counted among the
+       day's holders, which is what makes the base grow. */
+    const had = [...held.values()].filter((v) => v > 0).length
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, { date, gems: total, players: had })
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    file.generatedAt = new Date().toISOString()
+    save(FILE, file)
+    console.log(
+      `  ${date}  ${total.toLocaleString('en-US').padStart(11)} gems held by ${had} of ${asked}  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    )
+  }
+}
+
+/**
  * Rows in nfts.ale's assets table at the end of each day — which, since the
  * table keeps a row per NFT used in the last 24 hours, is the distinct NFTs
  * named in that day's usenfts calls. About eight thousand calls a day.
@@ -619,6 +795,7 @@ void (async () => {
   if (!only || only === 'pools') await pools()
   if (!only || only === 'farm') await farm()
   if (!only || only === 'shop') await shop()
+  if (!only || only === 'gems') await gems()
   if (!only || only === 'nfts') await nftRows()
   if (!only || only === 'mcreport') await mcReport()
   if (!only || only === 'aw') await aw()

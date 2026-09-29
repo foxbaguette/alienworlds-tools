@@ -2,9 +2,21 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchDailyFile, fetchPlayers, type PlayersSnapshot } from '@/activity/queries'
 import { dayStart, statValue, summariseRange, type DaySummary } from '@/activity/rules'
 import { FARM, fetchFarmDaily, type FarmDay } from '@/farm/queries'
+import { fetchGemsDaily, type GemsDay } from '@/gems/queries'
 import { NFTS, fetchNftsDaily, type NftsDay } from '@/nfts/queries'
 import { fetchShopDaily, type ShopDay } from '@/shop/queries'
-import { Block, ReportPage, onDay, running, stockFigures, stockOf, useMonthView, whole, type Group } from '@/report/parts'
+import {
+  Block,
+  ReportPage,
+  onDay,
+  running,
+  shortDay,
+  stockFigures,
+  stockOf,
+  useMonthView,
+  whole,
+  type Group,
+} from '@/report/parts'
 
 /**
  * The gHubs report for Alien Legends, by the month, laid out to be printed.
@@ -37,12 +49,14 @@ export default function Ghubs() {
   const [days, setDays] = useState<DaySummary[] | null>(null)
   const [snap, setSnap] = useState<PlayersSnapshot | null>(null)
   const [farm, setFarm] = useState<FarmDay[]>([])
+  const [gemDays, setGemDays] = useState<GemsDay[]>([])
   const [nftDays, setNftDays] = useState<NftsDay[]>([])
   const [shop, setShop] = useState<ShopDay[]>([])
 
   useEffect(() => {
     fetchDailyFile().then((f) => setDays(f.days))
     fetchFarmDaily().then((f) => setFarm(f.days))
+    fetchGemsDaily().then((f) => setGemDays(f.days))
     fetchNftsDaily().then((f) => setNftDays(f.days))
     fetchShopDaily().then((f) => setShop(f.days))
     fetchPlayers()
@@ -68,6 +82,29 @@ export default function Ghubs() {
 
   const farmBy = useMemo(() => new Map(farm.map((d) => [d.date, Object.values(d.nfts).reduce((n, x) => n + x, 0)])), [farm])
   const nftsBy = useMemo(() => new Map(nftDays.map((d) => [d.date, d.rows])), [nftDays])
+  const gemsBy = useMemo(() => new Map(gemDays.map((d) => [d.date, d.gems])), [gemDays])
+  const gemHolders = useMemo(() => new Map(gemDays.map((d) => [d.date, d.players])), [gemDays])
+  /*
+    A balance stands at a level, so a day the collector missed takes the day
+    before's figure — right for a gap of one, badly wrong past the end of what
+    has been read. Carried forward blindly, a balance last read on 4 May was
+    labelled "Held on Mon 28 Sep": five months of flat line, and a figure five
+    months stale presented as today's. The series stops where the reading does.
+  */
+  const gemsThrough = gemDays.length ? gemDays[gemDays.length - 1].date : null
+  const gemDates = useMemo(() => dates.filter((d) => gemsThrough !== null && d <= gemsThrough), [dates.join(), gemsThrough])
+  const gemMonth = useMemo(
+    () => monthDates.filter((d) => gemsThrough !== null && d <= gemsThrough),
+    [monthDates.join(), gemsThrough],
+  )
+  const gemsHeld = stockOf(gemsBy, gemDates, gemMonth.length)
+  const holders = stockOf(gemHolders, gemDates, gemMonth.length)
+  /* Said plainly rather than drawn, for as long as the backfill is behind. */
+  const gemsBehind =
+    gemsThrough && lastDay && gemsThrough < lastDay
+      ? ` Collected to ${shortDay(gemsThrough)} so far; later days are not in this yet.`
+      : ''
+
   const staked = stockOf(farmBy, dates, monthDates.length)
   const nftRows = stockOf(nftsBy, dates, monthDates.length)
 
@@ -152,6 +189,41 @@ export default function Ghubs() {
             { title: 'Running total, since launch', dates, lines: itemLines(dates, running) },
           ]}
           how="WAX transfers from players to shop.ale with memo purchase,<item>."
+        />
+      ) : null}
+
+      {gemDates.length ? (
+        <Block
+          group="incoming"
+          title="Gems held by players"
+          figures={
+            /* A month with nothing read has no change to report. Passing it
+               through anyway gave "Change in September: 0", which reads as a
+               month in which nothing moved rather than one nobody has looked
+               at. */
+            gemMonth.length
+              ? stockFigures(
+                  gemsHeld,
+                  onDay('Held on', gemsThrough, 'Held'),
+                  `gems · ${whole(holders.end)} players holding`,
+                  within,
+                )
+              : [
+                  {
+                    label: onDay('Held on', gemsThrough, 'Held'),
+                    value: whole(gemsHeld.end),
+                    sub: `gems · ${whole(holders.end)} players holding`,
+                  },
+                  { label: within, value: '—', sub: 'not collected yet' },
+                ]
+          }
+          charts={[
+            { title: 'End of each day, since launch', dates: gemDates, values: gemsHeld.values },
+            ...(gemMonth.length
+              ? [{ title: `End of each day, ${name}`, dates: gemMonth, values: gemsHeld.inMonth }]
+              : []),
+          ]}
+          how={`Sum of activestats gems and unclaimed_gems across every players.ale row, at the end of each UTC day.${gemsBehind}`}
         />
       ) : null}
 
