@@ -145,6 +145,11 @@ export interface StageForm {
   fields: AbiField[]
   /** Which field identifies the row — `index`, and the one you must not retype. */
   key: string
+  /**
+   * The parameters of `advance`, the action that walks a tournament through
+   * these stages. Null where the contract has no such action.
+   */
+  advance: AbiField[] | null
   /** The rows as they stand, in index order. */
   rows: Record<string, unknown>[]
 }
@@ -164,12 +169,15 @@ export async function fetchStages(contract: string): Promise<StageForm | null> {
   })
   const key = fields[0]?.name ?? 'index'
 
+  const stepper = abi.actions.find((a) => a.name === 'advance')
+
   return {
     contract,
     action: setter.name,
     remove: abi.actions.some((a) => a.name === 'delstage') ? 'delstage' : null,
     fields,
     key,
+    advance: stepper ? fieldsOf(abi, stepper.type).filter((p) => !HIDDEN_PARAMS.has(p.name)) : null,
     rows: [...rows].sort((a, b) => Number(a[key] ?? 0) - Number(b[key] ?? 0)),
   }
 }

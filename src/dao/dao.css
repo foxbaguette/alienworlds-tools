@@ -669,6 +669,18 @@
   cursor: not-allowed;
 }
 
+/* The step that walks a tournament through the stages below it, set apart
+   from them because it writes nothing and acts at once. */
+.ale-advance {
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.ale-advance .ale-form { background: transparent; border: 0; padding: 0; }
+.ale-advance .page__actions { margin-top: var(--sp-3); }
+
 /* ── Game state ──────────────────────────────────────────────────────────── */
 
 .game-state {

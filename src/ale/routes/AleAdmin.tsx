@@ -64,6 +64,9 @@ export default function AleAdmin() {
   )
 }
 
+/** The most advance steps worth putting in one transaction. */
+const ADVANCE_MAX = 25
+
 /**
  * The stages of a tournament, one row at a time.
  *
@@ -82,6 +85,9 @@ function StagesEditor({ contract }: { contract: string }) {
   const [added, setAdded] = useState<string[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+  /* 20 is the usage the game itself passes; a run of one is the safe default. */
+  const [usage, setUsage] = useState('20')
+  const [times, setTimes] = useState('1')
 
   const rowId = (r: Record<string, unknown>, key: string) => String(r[key] ?? '')
 
@@ -109,29 +115,36 @@ function StagesEditor({ contract }: { contract: string }) {
 
   useEffect(read, [contract])
 
-  const send = async (name: string, data: Record<string, unknown>, id: string, done: string) => {
+  const send = async (name: string, data: Record<string, unknown>, id: string, done: string, repeat = 1) => {
     if (!session || busy) return
     setBusy(id)
     setNote(null)
     try {
       setNote({ text: 'Check your wallet…' })
+      const authorization = [
+        {
+          actor: String(session.actor),
+          permission: session.permissionLevel.permission ? String(session.permissionLevel.permission) : 'active',
+        },
+      ]
+      /*
+        Repeats are copies of the one action in the one transaction, not
+        several transactions. They run in order and settle together: either
+        every step is taken or none is, which is the point of asking for more
+        than one at a time.
+      */
       await session.transact(
         {
-          actions: [
-            {
-              account: contract,
-              name,
-              authorization: [
-                {
-                  actor: String(session.actor),
-                  permission: session.permissionLevel.permission
-                    ? String(session.permissionLevel.permission)
-                    : 'active',
-                },
-              ],
-              data: { wallet: String(session.actor), ...data },
-            },
-          ],
+          actions: Array.from({ length: repeat }, () => ({
+            account: contract,
+            name,
+            authorization,
+            /* Exactly the parameters the action declares. setstage and
+               delstage take a wallet, advance does not, and a field the ABI
+               has never heard of fails to serialise rather than being
+               ignored. */
+            data,
+          })),
         },
         { broadcast: true },
       )
@@ -160,7 +173,7 @@ function StagesEditor({ contract }: { contract: string }) {
     form.fields.filter((f) => (draft[id]?.[f.name] ?? '') !== original(id, f)).length
 
   const save = (id: string) => {
-    const data: Record<string, unknown> = {}
+    const data: Record<string, unknown> = { wallet: String(session?.actor ?? '') }
     for (const f of form.fields) data[f.name] = fromInput(draft[id]?.[f.name] ?? '', kindOf(f.type), f.name)
     void send(form.action, data, id, `Stage ${data[form.key]} written.`)
   }
@@ -181,6 +194,9 @@ function StagesEditor({ contract }: { contract: string }) {
   }
 
   const ids = [...form.rows.map((r) => rowId(r, form.key)), ...added]
+  /* A transaction has a size and a CPU ceiling, and a run that trips either
+     takes none of its steps. Twenty-five is well inside both. */
+  const advanceRuns = Math.min(ADVANCE_MAX, Math.max(0, Math.floor(Number(times) || 0)))
 
   return (
     <section className="section">
@@ -191,6 +207,72 @@ function StagesEditor({ contract }: { contract: string }) {
         One row per step of a tournament, in <code>{form.key}</code> order. <code>{form.action}</code> writes a
         single stage and creates one that is not there yet, so each row saves on its own.
       </p>
+
+      {form.advance ? (
+        <div className="ale-advance">
+          <div className="ale-form">
+            {form.advance.map((f) => (
+              <label key={f.name} className="ale-field">
+                <span className="ale-field__name">
+                  {f.name}
+                  <i>{f.type}</i>
+                </span>
+                <input
+                  type="number"
+                  step="1"
+                  value={usage}
+                  spellCheck={false}
+                  onChange={(e) => setUsage(e.target.value)}
+                />
+              </label>
+            ))}
+            <label className="ale-field">
+              <span className="ale-field__name">
+                times
+                <i>steps in one transaction</i>
+              </span>
+              <input
+                type="number"
+                min="1"
+                max={String(ADVANCE_MAX)}
+                step="1"
+                value={times}
+                onChange={(e) => setTimes(e.target.value)}
+              />
+            </label>
+          </div>
+
+          <div className="page__actions">
+            <button
+              className="btn btn--go"
+              type="button"
+              disabled={!session || busy !== null || !advanceRuns}
+              onClick={() => {
+                const data: Record<string, unknown> = {}
+                for (const f of form.advance ?? []) data[f.name] = Number(usage) || 0
+                void send(
+                  'advance',
+                  data,
+                  'advance',
+                  `advance ran ${advanceRuns} time${advanceRuns === 1 ? '' : 's'}.`,
+                  advanceRuns,
+                )
+              }}
+            >
+              {busy === 'advance'
+                ? 'Signing…'
+                : `Advance ${advanceRuns > 1 ? `${advanceRuns}×` : ''}`.trim()}
+            </button>
+            <span className="dao-dim">
+              {!advanceRuns
+                ? 'Say how many steps to run.'
+                : advanceRuns > 1
+                  ? `${advanceRuns} advance actions in one transaction — all of them or none.`
+                  : 'One step through the stages.'}
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       {ids.map((id) => {
         const changed = changedIn(id)
@@ -260,7 +342,12 @@ function StagesEditor({ contract }: { contract: string }) {
                   title={`Remove stage ${id} from ${contract}`}
                   onClick={() => {
                     if (confirm(`Delete stage ${id} (${draft[id]?.step_name || 'unnamed'})? This cannot be undone.`))
-                      void send(form.remove as string, { [form.key]: Number(id) }, id, `Stage ${id} deleted.`)
+                      void send(
+                        form.remove as string,
+                        { wallet: String(session?.actor ?? ''), [form.key]: Number(id) },
+                        id,
+                        `Stage ${id} deleted.`,
+                      )
                   }}
                 >
                   Delete
