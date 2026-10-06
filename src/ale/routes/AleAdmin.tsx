@@ -3,11 +3,14 @@ import { useParams } from 'react-router-dom'
 import {
   ALE_CONTRACTS,
   fetchConfig,
+  fetchStages,
   fromInput,
   kindOf,
   SAFE_DEFAULTS,
   toInput,
+  type AbiField,
   type ConfigForm,
+  type StageForm,
 } from '../chain/admin'
 import { isCancel, readableError } from '../../dao/chain/act'
 import { useSession } from '../../wallet/session'
@@ -56,7 +59,248 @@ export default function AleAdmin() {
       </div>
 
       <ConfigEditor key={contract} contract={contract} />
+      <StagesEditor key={`stages-${contract}`} contract={contract} />
     </div>
+  )
+}
+
+/**
+ * The stages of a tournament, one row at a time.
+ *
+ * `setstage` is an upsert keyed by index, so the same call edits an existing
+ * stage and creates one that is not there yet — which is why a new stage is
+ * just a blank row with the next index suggested, and why nothing here needs
+ * a separate "create" action.
+ *
+ * Only shown for a contract whose ABI actually has stages. Today that is
+ * tournmnt.ale alone; a second one would need no change here.
+ */
+function StagesEditor({ contract }: { contract: string }) {
+  const { session } = useSession()
+  const [form, setForm] = useState<StageForm | null>(null)
+  const [draft, setDraft] = useState<Record<string, Record<string, string>>>({})
+  const [added, setAdded] = useState<string[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+
+  const rowId = (r: Record<string, unknown>, key: string) => String(r[key] ?? '')
+
+  const read = () => {
+    setForm(null)
+    setNote(null)
+    setAdded([])
+    fetchStages(contract)
+      .then((f) => {
+        setForm(f)
+        if (!f) return
+        const d: Record<string, Record<string, string>> = {}
+        for (const r of f.rows) {
+          const id = rowId(r, f.key)
+          d[id] = {}
+          for (const field of f.fields) d[id][field.name] = toInput(r[field.name], kindOf(field.type))
+        }
+        setDraft(d)
+      })
+      .catch((err: unknown) => {
+        console.error(`stages for ${contract}:`, err)
+        setNote({ text: err instanceof Error ? err.message : String(err), bad: true })
+      })
+  }
+
+  useEffect(read, [contract])
+
+  const send = async (name: string, data: Record<string, unknown>, id: string, done: string) => {
+    if (!session || busy) return
+    setBusy(id)
+    setNote(null)
+    try {
+      setNote({ text: 'Check your wallet…' })
+      await session.transact(
+        {
+          actions: [
+            {
+              account: contract,
+              name,
+              authorization: [
+                {
+                  actor: String(session.actor),
+                  permission: session.permissionLevel.permission
+                    ? String(session.permissionLevel.permission)
+                    : 'active',
+                },
+              ],
+              data: { wallet: String(session.actor), ...data },
+            },
+          ],
+        },
+        { broadcast: true },
+      )
+      await new Promise((r) => setTimeout(r, 2500))
+      read()
+      setNote({ text: done })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error(`${name} failed:`, err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (!form) return null
+
+  const original = (id: string, f: AbiField) => {
+    const row = form.rows.find((r) => rowId(r, form.key) === id)
+    return row ? toInput(row[f.name], kindOf(f.type)) : ''
+  }
+  const isNew = (id: string) => added.includes(id)
+  const changedIn = (id: string) =>
+    form.fields.filter((f) => (draft[id]?.[f.name] ?? '') !== original(id, f)).length
+
+  const save = (id: string) => {
+    const data: Record<string, unknown> = {}
+    for (const f of form.fields) data[f.name] = fromInput(draft[id]?.[f.name] ?? '', kindOf(f.type), f.name)
+    void send(form.action, data, id, `Stage ${data[form.key]} written.`)
+  }
+
+  /* The next index, a thousand clear of the last — the spacing the contract's
+     own stages already use, which leaves room to put one in between. */
+  const nextIndex = () => {
+    const highest = Math.max(0, ...form.rows.map((r) => Number(r[form.key] ?? 0)))
+    return String(highest + 1000)
+  }
+  const addStage = () => {
+    const id = nextIndex()
+    if (draft[id]) return
+    const blank: Record<string, string> = {}
+    for (const f of form.fields) blank[f.name] = f.name === form.key ? id : toInput(undefined, kindOf(f.type))
+    setDraft((d) => ({ ...d, [id]: blank }))
+    setAdded((a) => [...a, id])
+  }
+
+  const ids = [...form.rows.map((r) => rowId(r, form.key)), ...added]
+
+  return (
+    <section className="section">
+      <h2 className="dao-h2">
+        stages <span className="dao-dim">{form.action}</span>
+      </h2>
+      <p className="dao-dim">
+        One row per step of a tournament, in <code>{form.key}</code> order. <code>{form.action}</code> writes a
+        single stage and creates one that is not there yet, so each row saves on its own.
+      </p>
+
+      {ids.map((id) => {
+        const changed = changedIn(id)
+        return (
+          <div key={id} className={`ale-stage${isNew(id) ? ' is-new' : ''}`}>
+            <h3 className="ale-stage__head">
+              <code>{id}</code>{' '}
+              <span className="dao-dim">{draft[id]?.step_name || (isNew(id) ? 'new stage' : '')}</span>
+            </h3>
+
+            <div className="ale-form">
+              {form.fields.map((f) => {
+                const kind = kindOf(f.type)
+                const was = original(id, f)
+                const now = draft[id]?.[f.name] ?? ''
+                const moved = now !== was
+                return (
+                  <label key={f.name} className={`ale-field${moved ? ' is-changed' : ''}`}>
+                    <span className="ale-field__name">
+                      {f.name}
+                      <i>{f.name === form.key ? `${f.type} · the key` : f.type}</i>
+                    </span>
+                    {kind === 'bool' ? (
+                      <select
+                        value={now}
+                        onChange={(e) => setDraft((d) => ({ ...d, [id]: { ...d[id], [f.name]: e.target.value } }))}
+                      >
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    ) : (
+                      <input
+                        type={kind === 'number' ? 'number' : 'text'}
+                        step="any"
+                        value={now}
+                        spellCheck={false}
+                        /* Retyping the key would write a second stage rather
+                           than move this one, so it is fixed once it exists. */
+                        readOnly={f.name === form.key && !isNew(id)}
+                        onChange={(e) => setDraft((d) => ({ ...d, [id]: { ...d[id], [f.name]: e.target.value } }))}
+                      />
+                    )}
+                    {moved && !isNew(id) ? (
+                      <span className="ale-field__was">
+                        was <code>{was || '(empty)'}</code>
+                      </span>
+                    ) : null}
+                  </label>
+                )
+              })}
+            </div>
+
+            <div className="page__actions">
+              <button
+                className="btn btn--go"
+                type="button"
+                disabled={!session || busy !== null || (!changed && !isNew(id))}
+                onClick={() => save(id)}
+              >
+                {busy === id ? 'Signing…' : isNew(id) ? 'Create stage' : changed ? `Save ${changed}` : 'No changes'}
+              </button>
+              {form.remove && !isNew(id) ? (
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={!session || busy !== null}
+                  title={`Remove stage ${id} from ${contract}`}
+                  onClick={() => {
+                    if (confirm(`Delete stage ${id} (${draft[id]?.step_name || 'unnamed'})? This cannot be undone.`))
+                      void send(form.remove as string, { [form.key]: Number(id) }, id, `Stage ${id} deleted.`)
+                  }}
+                >
+                  Delete
+                </button>
+              ) : null}
+              {isNew(id) ? (
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setAdded((a) => a.filter((x) => x !== id))
+                    setDraft((d) => {
+                      const { [id]: _gone, ...rest } = d
+                      return rest
+                    })
+                  }}
+                >
+                  Discard
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )
+      })}
+
+      <div className="page__actions">
+        <button className="btn" type="button" onClick={addStage} disabled={busy !== null}>
+          Add a stage
+        </button>
+        <button className="btn" type="button" onClick={read} disabled={busy !== null}>
+          Re-read
+        </button>
+        <span className="dao-dim">
+          {session ? 'Each stage is written on its own.' : 'Connect a wallet to change a stage.'}
+        </span>
+      </div>
+
+      {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
+    </section>
   )
 }
 

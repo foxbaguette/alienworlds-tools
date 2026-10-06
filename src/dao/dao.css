@@ -638,6 +638,37 @@
 .ale-field__was { font-size: var(--fs-xs); color: var(--text-3); }
 .ale-field__was code { color: var(--text-2); }
 
+/* ── Tournament stages ───────────────────────────────────────────────────── */
+
+/* One block per stage, because each is written on its own — grouping them
+   under a single Save would hide which row a wallet prompt is about to touch. */
+.ale-stage { margin-bottom: var(--sp-5); }
+.ale-stage:last-of-type { margin-bottom: var(--sp-4); }
+
+.ale-stage__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.ale-stage__head code { font-size: var(--fs-sm); }
+
+/* Not on chain yet, so it reads as a draft rather than as a row that exists. */
+.ale-stage.is-new .ale-form {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
+/* The key of a stage that already exists: changing it would write a second
+   stage rather than move this one, so it is shown but not editable. */
+.ale-field input[readonly] {
+  color: var(--text-3);
+  background: var(--surface);
+  cursor: not-allowed;
+}
+
 /* ── Game state ──────────────────────────────────────────────────────────── */
 
 .game-state {

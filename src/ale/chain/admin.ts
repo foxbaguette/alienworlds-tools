@@ -35,6 +35,7 @@ export const ALE_CONTRACTS = [
   'recovery.ale',
   'rwrdlog.ale',
   'taskmngr.ale',
+  'tournmnt.ale',
 ] as const
 
 const SETTER_NAMES = ['setconfig', 'updconfig']
@@ -122,6 +123,55 @@ export async function fetchConfig(contract: string): Promise<ConfigForm> {
   const readOnly = rowFields.filter((f) => !writableNames.has(f.name))
 
   return { contract, action: setter.name, fields: writable, current, readOnly }
+}
+
+/**
+ * The stages a tournament runs through, and the action that writes one.
+ *
+ * Unlike `config`, which is a singleton taken whole, `stages` is a keyed
+ * table: `setstage` writes one row at a time and is an upsert, so an index
+ * that does not exist yet is created by the same call that would edit it.
+ *
+ * Null for a contract with no stages, which is every one of them but
+ * tournmnt.ale — the page simply does not offer the section.
+ */
+export interface StageForm {
+  contract: string
+  /** The action that writes a stage. */
+  action: string
+  /** The action that removes one, if the contract has such a thing. */
+  remove: string | null
+  /** One per parameter of the setter, in ABI order. The first is the key. */
+  fields: AbiField[]
+  /** Which field identifies the row — `index`, and the one you must not retype. */
+  key: string
+  /** The rows as they stand, in index order. */
+  rows: Record<string, unknown>[]
+}
+
+export async function fetchStages(contract: string): Promise<StageForm | null> {
+  const abi = await abiOf(contract)
+  const setter = abi.actions.find((a) => a.name === 'setstage')
+  const table = abi.tables.find((t) => t.name === 'stages')
+  if (!setter || !table) return null
+
+  const fields = fieldsOf(abi, setter.type).filter((p) => !HIDDEN_PARAMS.has(p.name))
+  const rows = await getPage<Record<string, unknown>>({
+    code: contract,
+    scope: contract,
+    table: 'stages',
+    limit: 200,
+  })
+  const key = fields[0]?.name ?? 'index'
+
+  return {
+    contract,
+    action: setter.name,
+    remove: abi.actions.some((a) => a.name === 'delstage') ? 'delstage' : null,
+    fields,
+    key,
+    rows: [...rows].sort((a, b) => Number(a[key] ?? 0) - Number(b[key] ?? 0)),
+  }
 }
 
 /* ---------- turning ABI types into form fields ---------- */
