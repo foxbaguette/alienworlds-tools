@@ -206,9 +206,26 @@ export function kindOf(type: string): FieldKind {
 }
 
 /** The current value, as the form should show it. */
+/**
+ * Whether a chain value means true.
+ *
+ * `get_table_rows` returns a bool as 0 or 1, not as true or false, and the
+ * ABI's own JSON uses the keywords. Both have to read the same way round.
+ */
+export const isTrue = (value: unknown): boolean =>
+  value === true || value === 1 || value === '1' || value === 'true'
+
 export function toInput(value: unknown, kind: FieldKind): string {
   if (value === undefined || value === null) return kind === 'json' ? '[]' : ''
   if (kind === 'json') return JSON.stringify(value, null, 2)
+  /*
+    A bool must come back as one of the two words the dropdown offers.
+    String(1) is "1", which matches no option, so every bool on the page
+    showed the first one — true — whatever the chain said; and because the
+    value sent back is read as `raw === 'true'`, saving a form nobody had
+    touched wrote false over every true setting it had just misread.
+  */
+  if (kind === 'bool') return isTrue(value) ? 'true' : 'false'
   return String(value)
 }
 
