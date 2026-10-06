@@ -26,7 +26,10 @@
 const CONTENT_TYPE = 'text/plain'
 
 export const ENDPOINTS: readonly string[] = [
-  'https://wax.blacklusion.io',
+  /* Not blacklusion or ledgerwise: both answer nothing at all. The pool would
+     bench them within a probe, but the first of them is also what the wallet
+     session falls back to before the pool has run, which bound restored
+     sessions to a node that was never going to reply. */
   'https://api.waxsweden.org',
   'https://wax.eosdac.io',
   'https://wax.api.eosnation.io',
@@ -36,7 +39,6 @@ export const ENDPOINTS: readonly string[] = [
   'https://wax.eosusa.io',
   'https://wax.greymass.com',
   'https://wax.cryptolions.io',
-  'https://waxapi.ledgerwise.io',
 ]
 
 /** Reads a node will take in any RATE_WINDOW. Per node, so the pool multiplies it. */

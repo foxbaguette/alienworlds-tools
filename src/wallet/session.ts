@@ -3,7 +3,7 @@ import { Chains, SessionKit, type Session } from '@wharfkit/session'
 import WebRenderer from '@wharfkit/web-renderer'
 import { WalletPluginAnchor } from '@wharfkit/wallet-plugin-anchor'
 import { WalletPluginCloudWallet } from '@wharfkit/wallet-plugin-cloudwallet'
-import { ENDPOINTS, preferredUrl } from '../dao/chain/nodes'
+import { ENDPOINTS, preferredUrl, start } from '../dao/chain/nodes'
 
 /**
  * One wallet for the whole site.
@@ -18,10 +18,33 @@ import { ENDPOINTS, preferredUrl } from '../dao/chain/nodes'
  */
 export const sessionKit = new SessionKit({
   appName: 'Alien Worlds Tools',
+  /* A placeholder. Nothing is signed or restored before pointAtALiveNode()
+     has replaced it with a node the pool found answering. */
   chains: [{ id: Chains.WAX.id, url: ENDPOINTS[0] }],
   ui: new WebRenderer(),
   walletPlugins: [new WalletPluginCloudWallet(), new WalletPluginAnchor()],
 })
+
+/**
+ * Point the session at a node that answers, before it is used for anything.
+ *
+ * The kit is built at import time, when the only url available is the first
+ * one in the list — and that node can be down. It was: blacklusion answered
+ * nothing at all, so a session restored on page load was bound to a dead
+ * endpoint, failed to load, and dropped the reader back to the connect dialog
+ * with somebody else's wallet listed first. Logging in got away with it
+ * because it already asked the pool; restoring never did.
+ */
+async function pointAtALiveNode() {
+  try {
+    await start()
+  } catch (err) {
+    /* The pool keeps its own counsel about which nodes are up. If it cannot
+       be asked at all, the placeholder is no worse than before. */
+    console.error('Node pool:', err)
+  }
+  sessionKit.setEndpoint(Chains.WAX.id, preferredUrl())
+}
 
 interface State {
   session: Session | null
@@ -56,7 +79,7 @@ export async function login() {
   if (state.busy) return
   publish({ busy: true, error: null })
   try {
-    sessionKit.setEndpoint(Chains.WAX.id, preferredUrl())
+    await pointAtALiveNode()
     const { session } = await sessionKit.login()
     publish({ session, busy: false })
   } catch (err) {
@@ -81,6 +104,7 @@ async function restore() {
   restored = true
   publish({ busy: true })
   try {
+    await pointAtALiveNode()
     const session = await sessionKit.restore()
     publish({ session: session ?? null, busy: false })
   } catch (err) {
