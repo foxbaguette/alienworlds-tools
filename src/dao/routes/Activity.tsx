@@ -477,9 +477,9 @@ export default function Activity() {
               }
             >
               <span className="feed__time" title={stampOf(r.at).full}>
-                {/* A real space, not just a margin: the two are read out and
-                    copied as one string. */}
-                <i className="feed__day">{stampOf(r.at).day}</i>{' '}
+                {/* The day is a block, so it takes its own line and copies
+                    and reads out with a break rather than running together. */}
+                <i className="feed__day">{stampOf(r.at).day}</i>
                 {stampOf(r.at).time}
               </span>
               <span className="feed__who">
