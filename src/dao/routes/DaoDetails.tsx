@@ -43,8 +43,12 @@ import {
 import {
   approveAction,
   canApprove,
+  canCancel,
   canExecute,
+  canUnapprove,
+  cancelProposalAction,
   execAction,
+  unapproveAction,
   isCancel,
   readableError,
   type ChainAction,
@@ -773,13 +777,25 @@ function ProposalsTab({ dao }: { dao: Dao }) {
    * this is the other half of that — you are looking at one council, and the
    * thing you want to act on is in front of you.
    */
-  const sign = async (p: MsigProposal, what: 'approve' | 'exec') => {
+  const sign = async (p: MsigProposal, what: 'approve' | 'exec' | 'unapprove' | 'cancel') => {
     if (!session || busy) return
-    const label = what === 'approve' ? `Approving ${msigTitle(p)}` : `Executing ${msigTitle(p)}`
+    const VERB = {
+      approve: 'Approving',
+      exec: 'Executing',
+      unapprove: 'Taking your signature off',
+      cancel: 'Cancelling',
+    } as const
+    const label = `${VERB[what]} ${msigTitle(p)}`
     setBusy(`${p.proposal_name}:${what}`)
     setNote({ text: `${label} — check your wallet…` })
     try {
-      const action = what === 'approve' ? approveAction(session, dao, p) : execAction(session, dao, p)
+      const build = {
+        approve: approveAction,
+        exec: execAction,
+        unapprove: unapproveAction,
+        cancel: cancelProposalAction,
+      }[what]
+      const action = build(session, dao, p)
       await session.transact({ actions: [action] }, { broadcast: true })
       /* A block has to land before a re-read shows the change. */
       await new Promise((r) => setTimeout(r, 2500))
@@ -948,6 +964,17 @@ function ProposalsTab({ dao }: { dao: Dao }) {
                         {busy === `${p.proposal_name}:approve` ? 'Signing…' : 'Approve'}
                       </button>
                     ) : null}
+                    {canUnapprove(p, dao, actor) ? (
+                      <button
+                        className="btn btn--tiny"
+                        type="button"
+                        disabled={!!busy}
+                        title={`Take your signature back off — ${got} of ${need} so far`}
+                        onClick={() => void sign(p, 'unapprove')}
+                      >
+                        {busy === `${p.proposal_name}:unapprove` ? 'Signing…' : 'Unapprove'}
+                      </button>
+                    ) : null}
                     {canExecute(p, dao, got) ? (
                       <button
                         className="btn btn--tiny btn--go"
@@ -957,6 +984,25 @@ function ProposalsTab({ dao }: { dao: Dao }) {
                         onClick={() => void sign(p, 'exec')}
                       >
                         {busy === `${p.proposal_name}:exec` ? 'Signing…' : 'Execute'}
+                      </button>
+                    ) : null}
+                    {canCancel(p, actor) ? (
+                      <button
+                        className="btn btn--tiny btn--warn"
+                        type="button"
+                        disabled={!!busy}
+                        title={
+                          p.proposer === actor
+                            ? 'Withdraw the proposal you raised'
+                            : 'It has expired, so anyone may clear it away'
+                        }
+                        onClick={() => {
+                          /* It cannot be put back: the signatures go with it. */
+                          if (confirm(`Cancel "${msigTitle(p)}"? Its ${got} signature${got === 1 ? '' : 's'} go with it.`))
+                            void sign(p, 'cancel')
+                        }}
+                      >
+                        {busy === `${p.proposal_name}:cancel` ? 'Signing…' : 'Cancel'}
                       </button>
                     ) : null}
                     <button

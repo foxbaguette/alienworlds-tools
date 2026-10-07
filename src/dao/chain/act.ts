@@ -22,6 +22,33 @@ export function canApprove(p: MsigProposal, dao: Dao, actor: string | null): boo
 }
 
 /**
+ * Whether this account's signature is on it, and so can be taken off again.
+ *
+ * The mirror of canApprove: the same seat and the same open proposal, but it
+ * answers yes exactly where that one answers no.
+ */
+export function canUnapprove(p: MsigProposal, dao: Dao, actor: string | null): boolean {
+  if (!actor) return false
+  if (!dao.custodians.includes(actor)) return false
+  if (p.state !== MSIG_OPEN || isExpired(p)) return false
+  return approvedBy(p, actor)
+}
+
+/**
+ * Whether this account may call the whole thing off.
+ *
+ * The contract's own rule, quoted from the assert it fails with: a canceler
+ * who is not the proposer "cannot cancel until expiration". So the account
+ * that raised it may withdraw it whenever it likes, and once it has expired
+ * anyone may clear it away.
+ */
+export function canCancel(p: MsigProposal, actor: string | null): boolean {
+  if (!actor) return false
+  if (p.state !== MSIG_OPEN) return false
+  return p.proposer === actor || isExpired(p)
+}
+
+/**
  * Whether this proposal can be run now.
  *
  * `exec` takes no seat — anyone may push a proposal that has already collected
@@ -34,7 +61,12 @@ export function canExecute(p: MsigProposal, dao: Dao, approvals: number): boolea
 
 /** Anything this account could usefully do here, which is what a row is dimmed on. */
 export function hasAction(p: MsigProposal, dao: Dao, actor: string | null, approvals: number): boolean {
-  return canApprove(p, dao, actor) || canExecute(p, dao, approvals)
+  return (
+    canApprove(p, dao, actor) ||
+    canExecute(p, dao, approvals) ||
+    canUnapprove(p, dao, actor) ||
+    canCancel(p, actor)
+  )
 }
 
 export interface ChainAction {
@@ -56,6 +88,21 @@ export const approveAction = (session: Session, dao: Dao, p: MsigProposal): Chai
   name: 'approve',
   authorization: [level(session)],
   data: { proposal_name: p.proposal_name, level: level(session), dac_id: dao.id },
+})
+
+export const unapproveAction = (session: Session, dao: Dao, p: MsigProposal): ChainAction => ({
+  account: MSIG_CONTRACT,
+  name: 'unapprove',
+  authorization: [level(session)],
+  data: { proposal_name: p.proposal_name, level: level(session), dac_id: dao.id },
+})
+
+/** Note `canceler`, not `proposer` — the contract takes who is doing it. */
+export const cancelProposalAction = (session: Session, dao: Dao, p: MsigProposal): ChainAction => ({
+  account: MSIG_CONTRACT,
+  name: 'cancel',
+  authorization: [level(session)],
+  data: { proposal_name: p.proposal_name, canceler: String(session.actor), dac_id: dao.id },
 })
 
 export const execAction = (session: Session, dao: Dao, p: MsigProposal): ChainAction => ({
