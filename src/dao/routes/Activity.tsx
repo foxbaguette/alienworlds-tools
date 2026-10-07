@@ -60,6 +60,25 @@ const GROUPS_OF_DAO: { key: DaoGroup; label: string }[] = [
  * few a week and delay changes at a few a MONTH, so a short window is an empty
  * page. Only the transfer stream is busy enough to need paging for it.
  */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * When a row happened, in UTC like every other time on this site.
+ *
+ * The feed reaches back a week, so a time on its own does not say which day it
+ * belongs to. The month is named rather than numbered because 10-07 reads as
+ * two different days depending on where you are, and the whole stamp sits in
+ * the title for anyone who wants it exactly.
+ */
+function stampOf(at: number): { day: string; time: string; full: string } {
+  const iso = new Date(at).toISOString()
+  return {
+    day: `${iso.slice(8, 10)} ${MONTHS[Number(iso.slice(5, 7)) - 1]}`,
+    time: iso.slice(11, 19),
+    full: `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC`,
+  }
+}
+
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 /** Pages of the transfer stream on the opening sweep — about 500 a day. */
 const FIRST_PAGES = 5
@@ -457,7 +476,12 @@ export default function Activity() {
                 (flip ? ' is-flip' : '')
               }
             >
-              <span className="feed__time">{new Date(r.at).toISOString().slice(11, 19)}</span>
+              <span className="feed__time" title={stampOf(r.at).full}>
+                {/* A real space, not just a margin: the two are read out and
+                    copied as one string. */}
+                <i className="feed__day">{stampOf(r.at).day}</i>{' '}
+                {stampOf(r.at).time}
+              </span>
               <span className="feed__who">
                 <Account name={r.actor} />
               </span>

@@ -773,6 +773,15 @@
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-xs);
   color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* The day, ahead of the time and quieter than it: on a feed that is mostly
+   today, the time is what gets read and the date is what gets checked. The
+   day is two digits so the times still line up under each other. */
+.feed__day {
+  font-style: normal;
+  opacity: 0.75;
 }
 
 /*
