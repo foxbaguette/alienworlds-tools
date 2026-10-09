@@ -1,4 +1,11 @@
-import { historyGet, historySliced, historyTime, largestCount } from '@/chain/history'
+import {
+  historyBackwards,
+  historyGet,
+  historySliced,
+  historyTime,
+  largestCount,
+  useHistoryBackwards,
+} from '@/chain/history'
 import { cached, getAllRows } from '@/chain/rpc'
 
 /**
@@ -104,18 +111,38 @@ let offerPrices: Promise<Map<string, number>> | null = null
 function prices(): Promise<Map<string, number>> {
   offerPrices ??= (async () => {
     const out = new Map<string, number>()
-    const set = await historySliced<SetOffer>(
-      '/v2/history/get_actions',
-      { 'act.account': 'uspts.worlds', 'act.name': 'setptsreward' },
-      Date.parse(`${OFFERS_FROM}T00:00:00Z`),
-      Date.now(),
-      (page) => (page as { actions?: SetOffer[] }).actions ?? [],
-      (a) => historyTime(a.timestamp),
-      (a) => a.global_sequence,
-      4,
-      undefined,
-      true,
-    )
+    /*
+      Walked backwards, because this window only grows older.
+
+      eosphere refuses an ascending window beginning more than ninety days ago
+      and serves the same window descending without complaint. OFFERS_FROM is
+      in May, so this read crossed that line in the summer and the nightly
+      Alien Worlds step has failed on a 400 ever since — a crawl pins one
+      server for its whole length, so there was no falling through to another.
+      The rows are the same either way; see useHistoryBackwards.
+
+      Put back as it was found. A shared setting left changed behind one step
+      is what cost the others their week.
+    */
+    const wasBackwards = historyBackwards()
+    useHistoryBackwards(true)
+    let set: SetOffer[]
+    try {
+      set = await historySliced<SetOffer>(
+        '/v2/history/get_actions',
+        { 'act.account': 'uspts.worlds', 'act.name': 'setptsreward' },
+        Date.parse(`${OFFERS_FROM}T00:00:00Z`),
+        Date.now(),
+        (page) => (page as { actions?: SetOffer[] }).actions ?? [],
+        (a) => historyTime(a.timestamp),
+        (a) => a.global_sequence,
+        4,
+        undefined,
+        true,
+      )
+    } finally {
+      useHistoryBackwards(wasBackwards)
+    }
     for (const a of [...set].sort((x, y) => x.global_sequence - y.global_sequence)) {
       out.set(String(a.act.data.id), Number(a.act.data.required) || 0)
     }

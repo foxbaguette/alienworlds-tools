@@ -68,6 +68,9 @@ export function useHistoryBackwards(on: boolean): void {
   BACKWARDS = on
 }
 
+/** Which way crawls are walking, so a caller can put it back as it found it. */
+export const historyBackwards = (): boolean => BACKWARDS
+
 /*
   How many requests may be in the air at once.
 

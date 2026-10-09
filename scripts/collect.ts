@@ -50,6 +50,7 @@ import {
   useHistoryConcurrency,
   useHistoryGap,
   useHistoryPage,
+  HISTORY_ENDPOINTS,
   useHistoryServers,
 } from '../src/chain/history'
 import { fetchAwDay, fetchShardsMined, fetchShardsSpent, type AwDailyFile } from '../src/aw/queries'
@@ -510,10 +511,33 @@ async function gems(): Promise<void> {
   console.log(`gems: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
 
   const wallets = await gemWallets()
-  /* Narrowed for this step alone; the flag still wins where one was given. */
-  const chosen = (flag('--servers') ?? '').split(',').filter(Boolean)
-  useHistoryServers(chosen.length ? chosen : GEM_SERVERS)
 
+  /*
+    Narrowed for this step alone — and put back afterwards.
+
+    useHistoryServers REPLACES the shared list in place, so narrowing it here
+    quietly narrowed it for everything that ran after. The nightly run went on
+    to read NFTs, the Mission Control report, Alien Worlds and five project
+    reports through the two servers these gems need, one of which answers 403:
+    eight days lost on each of them before anyone noticed, while the steps in
+    front of this one stayed up to date.
+  */
+  const chosen = (flag('--servers') ?? '').split(',').filter(Boolean)
+  const poolBefore = [...HISTORY_ENDPOINTS]
+  useHistoryServers(chosen.length ? chosen : GEM_SERVERS)
+  try {
+    await readGemDays(dates, wallets, file, FILE)
+  } finally {
+    useHistoryServers(poolBefore)
+  }
+}
+
+async function readGemDays(
+  dates: string[],
+  wallets: Map<string, string>,
+  file: GemsDailyFile,
+  FILE: string,
+): Promise<void> {
   for (const date of dates) {
     const t0 = Date.now()
     const until = dayStart(date) + DAY_MS
@@ -790,15 +814,50 @@ async function aw(): Promise<void> {
   })
 }
 
+/*
+  Every step, in the order they run.
+
+  landclaims is not part of a nightly run and is only reached by asking for it
+  by name; everything else runs unless --only names one of them.
+*/
+const STEPS: [name: string, run: () => Promise<void>, nightly: boolean][] = [
+  ['activity', activity, true],
+  ['pools', pools, true],
+  ['farm', farm, true],
+  ['shop', shop, true],
+  ['gems', gems, true],
+  ['nfts', nftRows, true],
+  ['mcreport', mcReport, true],
+  ['aw', aw, true],
+  ['projects', projects, true],
+  ['landclaims', landClaims, false],
+]
+
 void (async () => {
-  if (!only || only === 'activity') await activity()
-  if (!only || only === 'pools') await pools()
-  if (!only || only === 'farm') await farm()
-  if (!only || only === 'shop') await shop()
-  if (!only || only === 'gems') await gems()
-  if (!only || only === 'nfts') await nftRows()
-  if (!only || only === 'mcreport') await mcReport()
-  if (!only || only === 'aw') await aw()
-  if (!only || only === 'projects') await projects()
-  if (only === 'landclaims') await landClaims()
+  /*
+    Each step stands on its own.
+
+    They were a single chain of awaits, so the first one to throw ended the
+    run and every step behind it was skipped — never attempted, not merely
+    unfinished. A 500 from one history server during the NFT read cost Alien
+    Worlds, Mission Control and all five project reports eight days each,
+    while the steps in front of it carried on being collected nightly.
+
+    The run still reports failure at the end, so the workflow commits the days
+    that did land and the log still says which step went wrong.
+  */
+  const failed: string[] = []
+  for (const [name, run, nightly] of STEPS) {
+    if (only ? only !== name : !nightly) continue
+    try {
+      await run()
+    } catch (err) {
+      failed.push(name)
+      console.error(`\n${name} stopped early:`, err instanceof Error ? err.message : err)
+    }
+  }
+  if (failed.length) {
+    console.error(`\nSteps that did not finish: ${failed.join(', ')}. The rest were collected.`)
+    process.exitCode = 1
+  }
 })()
