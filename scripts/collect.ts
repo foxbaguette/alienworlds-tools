@@ -820,18 +820,53 @@ async function aw(): Promise<void> {
   landclaims is not part of a nightly run and is only reached by asking for it
   by name; everything else runs unless --only names one of them.
 */
-const STEPS: [name: string, run: () => Promise<void>, nightly: boolean][] = [
-  ['activity', activity, true],
-  ['pools', pools, true],
-  ['farm', farm, true],
-  ['shop', shop, true],
-  ['gems', gems, true],
-  ['nfts', nftRows, true],
-  ['mcreport', mcReport, true],
-  ['aw', aw, true],
-  ['projects', projects, true],
-  ['landclaims', landClaims, false],
+interface Step {
+  name: string
+  run: () => Promise<void>
+  /** Part of a nightly run, or only reached by asking for it by name. */
+  nightly: boolean
+  /** The files whose last day says how far behind this step is. */
+  watches: string[]
+}
+
+const STEPS: Step[] = [
+  { name: 'activity', run: activity, nightly: true, watches: ['daily.json', 'players-daily.json'] },
+  { name: 'pools', run: pools, nightly: true, watches: ['pools-daily.json'] },
+  { name: 'farm', run: farm, nightly: true, watches: ['farm-daily.json'] },
+  { name: 'shop', run: shop, nightly: true, watches: ['shop-daily.json'] },
+  { name: 'gems', run: gems, nightly: true, watches: ['gems-daily.json'] },
+  { name: 'nfts', run: nftRows, nightly: true, watches: ['nfts-daily.json'] },
+  { name: 'mcreport', run: mcReport, nightly: true, watches: ['projects/mc-report.json'] },
+  { name: 'aw', run: aw, nightly: true, watches: ['aw-daily.json'] },
+  {
+    name: 'projects',
+    run: projects,
+    nightly: true,
+    watches: ['projects/mc.json', 'projects/pd.json', 'projects/th.json', 'projects/naron.json', 'projects/arkhive.json'],
+  },
+  { name: 'landclaims', run: landClaims, nightly: false, watches: [] },
 ]
+
+/**
+ * The last day a step has collected — the oldest, where it keeps several files.
+ *
+ * Missing or unreadable counts as the beginning of time, so a step with
+ * nothing at all is the first to be given a turn.
+ */
+function behindSince(step: Step): string {
+  let oldest = '9999-12-31'
+  for (const file of step.watches) {
+    let last = '0000-01-01'
+    try {
+      const days = JSON.parse(readFileSync(`public/data/${file}`, 'utf8')).days ?? []
+      last = days.length ? String(days[days.length - 1].date) : last
+    } catch {
+      /* never collected, or not written yet */
+    }
+    if (last < oldest) oldest = last
+  }
+  return step.watches.length ? oldest : '9999-12-31'
+}
 
 void (async () => {
   /*
@@ -846,9 +881,25 @@ void (async () => {
     The run still reports failure at the end, so the workflow commits the days
     that did land and the log still says which step went wrong.
   */
+  const wanted = STEPS.filter((s) => (only ? only === s.name : s.nightly))
+
+  /*
+    Furthest behind first.
+
+    The order used to be fixed, and a nightly run that cannot finish in its
+    hundred minutes always ran out of them in the same place: the project
+    reports sat last and went eight days without being reached, while the
+    steps in front were collected every night. Sorting by how stale each one
+    is means a step that misses a night is first in the queue the next, and
+    nothing can starve for longer than it takes to fall behind.
+  */
+  const order = only ? wanted : [...wanted].sort((a, b) => behindSince(a).localeCompare(behindSince(b)))
+  if (!only && order.length) {
+    console.log(`order: ${order.map((s) => `${s.name} (${behindSince(s)})`).join(', ')}\n`)
+  }
+
   const failed: string[] = []
-  for (const [name, run, nightly] of STEPS) {
-    if (only ? only !== name : !nightly) continue
+  for (const { name, run } of order) {
     try {
       await run()
     } catch (err) {

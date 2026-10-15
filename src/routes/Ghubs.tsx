@@ -113,14 +113,6 @@ export default function Ghubs() {
   const shopOn = (list: string[]) => list.map((d) => shopBy.get(d))
   const monthDays = inMonth.map((d) => d.date)
   const wax = (list: string[]) => shopOn(list).map((d) => d?.spent.WAX ?? 0)
-  const ITEMS = [
-    { key: 'gem.small', label: 'Small gems' },
-    { key: 'gem.medium', label: 'Medium gems' },
-    { key: 'gem.large', label: 'Large gems' },
-    { key: 'gem.giant', label: 'Giant gems' },
-  ]
-  const itemLines = (list: string[], acc: (v: number[]) => number[] = (x) => x) =>
-    ITEMS.map((it) => ({ label: it.label, values: acc(shopOn(list).map((d) => d?.items[it.key]?.amount ?? 0)) }))
   const shopSub = (list: string[]) => {
     const got = shopOn(list)
     const buys = got.reduce((n, d) => n + (d?.purchases ?? 0), 0)
@@ -184,11 +176,11 @@ export default function Ghubs() {
             { label: within, value: whole(total(wax(monthDays))), sub: shopSub(monthDays) },
           ]}
           charts={[
-            { title: 'Per day, since launch', dates, lines: itemLines(dates) },
-            { title: `Per day, ${name}`, dates: monthDates, lines: itemLines(monthDays) },
-            { title: 'Running total, since launch', dates, lines: itemLines(dates, running) },
+            { title: 'Per day, since launch', dates, values: wax(dates) },
+            { title: `Per day, ${name}`, dates: monthDates, values: wax(monthDays) },
+            { title: 'Running total, since launch', dates, values: running(wax(dates)) },
           ]}
-          how="WAX transfers from players to shop.ale with memo purchase,<item>."
+          how="WAX transfers from players to shop.ale with memo purchase,<item>, every item together."
         />
       ) : null}
 
