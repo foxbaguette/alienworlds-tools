@@ -199,6 +199,114 @@ export function useMonthView<D extends { date: string }>(days: D[] | null): Mont
  * whatever the screen shows — a dark page is a page of ink, and most printers
  * drop the backgrounds anyway, leaving white text on white.
  */
+/** A section of the report, as the chooser sees it on the page. */
+interface Printable {
+  el: HTMLElement
+  title: string
+  group: Group
+}
+
+/**
+ * Which sections go on the paper.
+ *
+ * Read off the rendered page rather than declared anywhere, so every report
+ * gets this without listing its own sections — and a report that gains one
+ * gains a line here too.
+ *
+ * Incoming tokens start unticked. It is the section most often not wanted in
+ * a printed report, and a tick is easier to add than a page is to unprint.
+ */
+function PrintPicker({ onClose }: { onClose: () => void }) {
+  const [blocks, setBlocks] = useState<Printable[]>([])
+  const [keep, setKeep] = useState<Set<number>>(new Set())
+
+  useEffect(() => {
+    const found = [...document.querySelectorAll<HTMLElement>('.rpt__block')].map((el) => ({
+      el,
+      title: el.dataset.title ?? el.querySelector('.section__title')?.textContent?.trim() ?? 'Section',
+      group: (el.dataset.group ?? 'players') as Group,
+    }))
+    setBlocks(found)
+    setKeep(new Set(found.map((b, i) => (b.group === 'incoming' ? -1 : i)).filter((i) => i >= 0)))
+  }, [])
+
+  const toggle = (i: number) =>
+    setKeep((was) => {
+      const next = new Set(was)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+
+  const print = () => {
+    /*
+      Hidden for the print and put back afterwards, whatever happens — a
+      cancelled dialog must not leave half the report missing from the page.
+    */
+    const left = blocks.filter((_, i) => !keep.has(i))
+    for (const b of left) b.el.classList.add('is-left-out')
+    const restore = () => {
+      for (const b of left) b.el.classList.remove('is-left-out')
+      window.removeEventListener('afterprint', restore)
+    }
+    window.addEventListener('afterprint', restore)
+    onClose()
+    /* After the dialog has gone from the screen it is about to photograph. */
+    requestAnimationFrame(() => {
+      window.print()
+      /* Safari and some others never fire afterprint; this is the backstop. */
+      setTimeout(restore, 1000)
+    })
+  }
+
+  /* In the order they appear, under the heading each belongs to. */
+  const groups: { group: Group; items: [Printable, number][] }[] = []
+  blocks.forEach((b, i) => {
+    const last = groups[groups.length - 1]
+    if (last && last.group === b.group) last.items.push([b, i])
+    else groups.push({ group: b.group, items: [[b, i]] })
+  })
+
+  return (
+    <div className="rpt__scrim" role="dialog" aria-modal="true" aria-label="Choose what to print">
+      <div className="rpt__picker card card--pad">
+        <h2 className="rpt__picker-title">What should go on the paper?</h2>
+
+        <div className="rpt__picker-list">
+          {groups.map(({ group, items }) => (
+            <fieldset key={`${group}-${items[0][1]}`} className="rpt__picker-group">
+              <legend>{GROUP_NAME[group]}</legend>
+              {items.map(([b, i]) => (
+                <label key={i} className="rpt__picker-row">
+                  <input type="checkbox" checked={keep.has(i)} onChange={() => toggle(i)} />
+                  <span>{b.title}</span>
+                </label>
+              ))}
+            </fieldset>
+          ))}
+        </div>
+
+        <div className="page__actions">
+          <button className="btn btn--go" type="button" disabled={!keep.size} onClick={print}>
+            {keep.size ? `Print ${keep.size} of ${blocks.length}` : 'Nothing chosen'}
+          </button>
+          <button className="btn" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => setKeep(new Set(blocks.map((_, i) => i)))}
+            disabled={keep.size === blocks.length}
+          >
+            Everything
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ReportPage({
   title,
   view,
@@ -212,6 +320,8 @@ export function ReportPage({
   empty: boolean
   children: ReactNode
 }) {
+  const [picking, setPicking] = useState(false)
+
   useEffect(() => {
     const root = document.documentElement
     let was: string | null = null
@@ -250,11 +360,13 @@ export function ReportPage({
               ))}
             </select>
           </label>
-          <button className="btn rpt__print" type="button" onClick={() => window.print()} disabled={loading}>
+          <button className="btn rpt__print" type="button" onClick={() => setPicking(true)} disabled={loading}>
             Print or save as PDF
           </button>
         </div>
       </header>
+
+      {picking ? <PrintPicker onClose={() => setPicking(false)} /> : null}
 
       {loading ? (
         <p className="section__note">Reading the collected days…</p>
@@ -369,7 +481,7 @@ export function Block({
   const body = useRef<HTMLDivElement>(null)
   const { said, go } = useCopy(() => copyBlock(body.current!, title))
   return (
-    <section className="section rpt__block">
+    <section className="section rpt__block" data-group={group} data-title={title}>
       {head ? <GroupHead group={group} /> : null}
       <h3 className="section__title">
         {title}
