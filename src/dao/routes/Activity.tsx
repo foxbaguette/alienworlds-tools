@@ -324,7 +324,15 @@ export default function Activity() {
       return next
     })
 
-  const Account = ({ name }: { name: string }) => (
+  /*
+    `vote` is off where the star has nothing to say.
+
+    An election row lists who was seated. Whether you are voting for one of
+    them is a fact about the candidate list, not about the result being
+    announced, and a new council of five wearing five stars reads as though
+    the stars were the point.
+  */
+  const Account = ({ name, vote = true }: { name: string; vote?: boolean }) => (
     <>
       <a href={`${EXPLORER}${encodeURIComponent(name)}`} target="_blank" rel="noopener">
         {name}
@@ -334,7 +342,7 @@ export default function Activity() {
           candidate
         </span>
       ) : null}
-      {votedAnywhere.has(name) ? (
+      {vote && votedAnywhere.has(name) ? (
         <span className="tag tag--vote" title="You are voting for this candidate">
           &#9733; your vote
         </span>
@@ -494,7 +502,7 @@ export default function Activity() {
                         <i>New council</i>
                         {council.map((n) => (
                           <span key={n}>
-                            <Account name={n} />
+                            <Account name={n} vote={false} />
                           </span>
                         ))}
                       </span>
