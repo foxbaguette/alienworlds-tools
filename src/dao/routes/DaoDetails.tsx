@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
+import { fetchDaoVotes, votersByCandidate, type VoteRow } from '../chain/votes'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Countdown } from '../components/Countdown'
 import { WATCHED, heldByWatched, isMcControlled, type Dao } from '../chain/daos'
@@ -631,12 +632,134 @@ function BudgetForm({ dao, busy, onCancel, onPropose }: { dao: Dao; busy: boolea
 
 /* ---------- council and candidates ---------- */
 
+/**
+ * Who voted for whom here, fetched the first time anybody asks.
+ *
+ * Not part of the grid load: it is a table of its own and most visits never
+ * open it. Once read it is kept for as long as the tab is, so opening a
+ * second candidate costs nothing.
+ */
+function useVoters(dao: Dao) {
+  const [by, setBy] = useState<Map<string, VoteRow[]> | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  /*
+    Forgotten when the council changes.
+
+    This tab is not remounted on the way from one DAO to the next, and the
+    guard below only reads when nothing is held — so what was read for one
+    council was shown under another's candidates. Nerix listed fifteen voters
+    for a candidate the chain gives three, because the fifteen were Veles
+    Union's.
+  */
+  useEffect(() => {
+    setBy(null)
+    setError(null)
+  }, [dao.id])
+
+  const load = () => {
+    if (by || busy) return
+    setBusy(true)
+    setError(null)
+    fetchDaoVotes(dao)
+      .then((rows) => setBy(votersByCandidate(rows)))
+      .catch((err: unknown) => {
+        console.error('votes:', err)
+        setError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => setBusy(false))
+  }
+
+  return { by, busy, error, load }
+}
+
+/**
+ * The voters behind one candidate, as a row across the table beneath them.
+ */
+function VoterList({
+  name,
+  span,
+  votes,
+  busy,
+  error,
+}: {
+  name: string
+  span: number
+  votes: VoteRow[] | undefined
+  busy: boolean
+  error: string | null
+}) {
+  return (
+    <tr className="dao-voters">
+      <td colSpan={span}>
+        {error ? (
+          <span className="dao-note dao-note--bad">{error}</span>
+        ) : busy && !votes ? (
+          <span className="dao-dim">Reading the votes…</span>
+        ) : !votes?.length ? (
+          <span className="dao-dim">Nobody has {name} on their slate.</span>
+        ) : (
+          <>
+            <span className="dao-dim">
+              {votes.length} {votes.length === 1 ? 'voter has' : 'voters have'} {name} on their slate, most
+              recently first.
+            </span>
+            <ul className="dao-voterlist">
+              {votes.map((v) => {
+                const at = Date.parse(`${v.vote_time_stamp}Z`)
+                return (
+                  <li key={v.voter}>
+                    <Account name={v.voter} />
+                    <i title={Number.isFinite(at) ? `${isoDay(at)} UTC` : undefined}>
+                      {Number.isFinite(at) ? fmtAge(Date.now() - at) : '—'}
+                      {v.candidates.length > 1 ? ` · with ${v.candidates.length - 1} more` : ''}
+                    </i>
+                  </li>
+                )
+              })}
+            </ul>
+          </>
+        )}
+      </td>
+    </tr>
+  )
+}
+
 function CouncilTab({ dao }: { dao: Dao }) {
   /* Already in hand from the grid load — the candidates table comes back with
      the council, so this tab costs no reads at all. */
   const standing = dao.candidates
     .filter((c) => c.is_active)
     .sort((a, b) => Number(b.rank) - Number(a.rank))
+
+  const voters = useVoters(dao)
+  /*
+    Which row is open, by table and name — not by name alone. A seated
+    custodian is in both tables, so one key opened the list twice, once under
+    each, and the same nine voters were listed eighteen times.
+  */
+  const [open, setOpen] = useState<string | null>(null)
+  const show = (key: string) => {
+    voters.load()
+    setOpen((was) => (was === key ? null : key))
+  }
+
+  /* The count, as a button, because the list it opens is the answer to the
+     question the number raises. */
+  const voterCell = (where: 'council' | 'standing', name: string, count: number) => (
+    <td className="num">
+      <button
+        className="dao-linkbtn"
+        type="button"
+        aria-expanded={open === `${where}:${name}`}
+        title={`Who voted for ${name}`}
+        onClick={() => show(`${where}:${name}`)}
+      >
+        {count}
+      </button>
+    </td>
+  )
 
   return (
     <>
@@ -660,20 +783,31 @@ function CouncilTab({ dao }: { dao: Dao }) {
                 const age = Date.parse(`${c.avg_vote_time_stamp}Z`)
                 const risk = dao.atRisk.has(c.cust_name)
                 return (
-                  <tr key={c.cust_name}>
-                    <td className="num">{i + 1}</td>
-                    <td>
-                      <Account name={c.cust_name} />
-                      {risk ? (
-                        <span className="tag tag--bad" title={`Ranked ${dao.rankOf.get(c.cust_name) ?? '?'} today`}>
-                          at risk
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="num">{fmtPower(c.total_vote_power, dao)}</td>
-                    <td className="num">{c.number_voters}</td>
-                    <td className="num">{Number.isFinite(age) ? fmtAge(Date.now() - age) : '—'}</td>
-                  </tr>
+                  <Fragment key={c.cust_name}>
+                    <tr>
+                      <td className="num">{i + 1}</td>
+                      <td>
+                        <Account name={c.cust_name} />
+                        {risk ? (
+                          <span className="tag tag--bad" title={`Ranked ${dao.rankOf.get(c.cust_name) ?? '?'} today`}>
+                            at risk
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="num">{fmtPower(c.total_vote_power, dao)}</td>
+                      {voterCell('council', c.cust_name, c.number_voters)}
+                      <td className="num">{Number.isFinite(age) ? fmtAge(Date.now() - age) : '—'}</td>
+                    </tr>
+                    {open === `council:${c.cust_name}` ? (
+                      <VoterList
+                        name={c.cust_name}
+                        span={5}
+                        votes={voters.by?.get(c.cust_name)}
+                        busy={voters.busy}
+                        error={voters.error}
+                      />
+                    ) : null}
+                  </Fragment>
                 )
               })}
             </tbody>
@@ -701,20 +835,31 @@ function CouncilTab({ dao }: { dao: Dao }) {
                 const seat = dao.custodians.indexOf(c.candidate_name)
                 const age = Date.parse(`${c.avg_vote_time_stamp}Z`)
                 return (
-                  <tr key={c.candidate_name}>
-                    <td>
-                      <Account name={c.candidate_name} />
-                      {dao.wouldSeat.includes(c.candidate_name) && seat < 0 ? (
-                        <span className="tag tag--in" title="Ranked inside the seat count — would take a seat now">
-                          incoming
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="num">{fmtPower(c.total_vote_power, dao)}</td>
-                    <td className="num">{c.number_voters}</td>
-                    <td className="num">{Number.isFinite(age) ? fmtAge(Date.now() - age) : '—'}</td>
-                    <td className="num">{seat >= 0 ? seat + 1 : ''}</td>
-                  </tr>
+                  <Fragment key={c.candidate_name}>
+                    <tr>
+                      <td>
+                        <Account name={c.candidate_name} />
+                        {dao.wouldSeat.includes(c.candidate_name) && seat < 0 ? (
+                          <span className="tag tag--in" title="Ranked inside the seat count — would take a seat now">
+                            incoming
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="num">{fmtPower(c.total_vote_power, dao)}</td>
+                      {voterCell('standing', c.candidate_name, c.number_voters)}
+                      <td className="num">{Number.isFinite(age) ? fmtAge(Date.now() - age) : '—'}</td>
+                      <td className="num">{seat >= 0 ? seat + 1 : ''}</td>
+                    </tr>
+                    {open === `standing:${c.candidate_name}` ? (
+                      <VoterList
+                        name={c.candidate_name}
+                        span={5}
+                        votes={voters.by?.get(c.candidate_name)}
+                        busy={voters.busy}
+                        error={voters.error}
+                      />
+                    ) : null}
+                  </Fragment>
                 )
               })}
             </tbody>

@@ -638,6 +638,55 @@
 .ale-field__was { font-size: var(--fs-xs); color: var(--text-3); }
 .ale-field__was code { color: var(--text-2); }
 
+/* ── Who voted for a candidate ───────────────────────────────────────────── */
+
+/* The voter count, which opens the list behind it. A number that can be
+   pressed should look like one, without becoming a button in a table of
+   figures. */
+.dao-linkbtn {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.dao-linkbtn:hover { text-decoration-style: solid; }
+
+.dao-voters > td {
+  padding: var(--sp-3) var(--sp-3) var(--sp-4);
+  background: var(--surface-sunk);
+}
+
+/* As many to a row as will fit: a candidate can have a hundred voters, and a
+   hundred lines of one name each is a page of scrolling. */
+.dao-voterlist {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--sp-1) var(--sp-4);
+}
+.dao-voterlist li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dao-voterlist i {
+  font-style: normal;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
 /* ── Tournament stages ───────────────────────────────────────────────────── */
 
 /* One block per stage, because each is written on its own — grouping them

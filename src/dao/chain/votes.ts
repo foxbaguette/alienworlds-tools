@@ -1,4 +1,5 @@
 import type { Session } from '@wharfkit/session'
+import { getRows } from './nodes'
 import type { Dao } from './daos'
 import type { ChainAction } from './act'
 
@@ -13,6 +14,45 @@ export interface VoteRow {
   voter: string
   candidates: string[]
   vote_time_stamp: string
+}
+
+/**
+ * Every vote cast in one council.
+ *
+ * The same table the signed-in account's own vote comes from, read whole
+ * rather than one row deep. A union holds a hundred or so and the busiest
+ * planet under two thousand, so this is a page or two — worth asking for
+ * only when somebody wants to see it, which is why nothing calls it on load.
+ */
+export async function fetchDaoVotes(dao: Dao): Promise<VoteRow[]> {
+  if (!dao.custodianContract) return []
+  return getRows<VoteRow>({
+    code: dao.custodianContract,
+    scope: dao.id,
+    table: 'votes',
+    limit: 1000,
+  })
+}
+
+/**
+ * Candidate → the votes naming them, newest first.
+ *
+ * A voter casts one row holding their whole slate, so the same row appears
+ * under every candidate on it; that is what makes the counts here match the
+ * `number_voters` the contract keeps.
+ */
+export function votersByCandidate(rows: VoteRow[]): Map<string, VoteRow[]> {
+  const by = new Map<string, VoteRow[]>()
+  for (const row of rows) {
+    for (const name of row.candidates ?? []) {
+      const list = by.get(name)
+      if (list) list.push(row)
+      else by.set(name, [row])
+    }
+  }
+  const when = (r: VoteRow) => Date.parse(`${r.vote_time_stamp}Z`) || 0
+  for (const list of by.values()) list.sort((a, b) => when(b) - when(a))
+  return by
 }
 
 export function voteAction(session: Session, dao: Dao, candidates: string[]): ChainAction {
