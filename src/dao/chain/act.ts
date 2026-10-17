@@ -59,14 +59,19 @@ export function canExecute(p: MsigProposal, dao: Dao, approvals: number): boolea
   return p.state === MSIG_OPEN && !isExpired(p) && approvals >= dao.approvalThreshold
 }
 
-/** Anything this account could usefully do here, which is what a row is dimmed on. */
+/**
+ * Whether this proposal is waiting on this account — a signature it has not
+ * given, or an execution anyone may now push.
+ *
+ * Exactly the two things the overview's batch performs, which is what makes
+ * "select what needs me" mean something. It briefly also counted taking a
+ * signature back and cancelling, and so selected every proposal the account
+ * had ALREADY approved: both are things you can do, neither is the proposal
+ * wanting anything of you. Those live on the council's own page, where they
+ * are offered per row rather than in a batch.
+ */
 export function hasAction(p: MsigProposal, dao: Dao, actor: string | null, approvals: number): boolean {
-  return (
-    canApprove(p, dao, actor) ||
-    canExecute(p, dao, approvals) ||
-    canUnapprove(p, dao, actor) ||
-    canCancel(p, actor)
-  )
+  return canApprove(p, dao, actor) || canExecute(p, dao, approvals)
 }
 
 export interface ChainAction {

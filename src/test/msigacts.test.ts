@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canApprove, canCancel, canExecute, canUnapprove, hasAction } from '@/dao/chain/act'
+import { canApprove, canCancel, canUnapprove, hasAction } from '@/dao/chain/act'
 import { MSIG_CANCELLED, MSIG_OPEN, type MsigProposal } from '@/dao/chain/proposals'
 import type { Dao } from '@/dao/chain/daos'
 
@@ -82,13 +82,35 @@ describe('calling a proposal off', () => {
   })
 })
 
-describe('a row with something to do', () => {
-  it('counts taking a signature back and cancelling, not just approving', () => {
+describe('a proposal waiting on me', () => {
+  /*
+    What "select what needs me" selects, and the overview's batch performs:
+    a signature not yet given, or an execution anyone may push.
+  */
+  it('is not one I have already signed', () => {
     const mine = proposal({ approvals: signedBy('seat.wam') })
-    /* seat.wam cannot approve again and cannot execute on one signature,
-       but it can still take its own signature off. */
-    expect(canApprove(mine, dao, 'seat.wam')).toBe(false)
-    expect(canExecute(mine, dao, 1)).toBe(false)
-    expect(hasAction(mine, dao, 'seat.wam', 1)).toBe(true)
+    /* There is still something seat.wam could do here — take the signature
+       back — but the proposal is not waiting on them, and selecting every
+       proposal they had already approved is what that confusion did. */
+    expect(canUnapprove(mine, dao, 'seat.wam')).toBe(true)
+    expect(hasAction(mine, dao, 'seat.wam', 1)).toBe(false)
+  })
+
+  it('is one I hold a seat on and have not signed', () => {
+    expect(hasAction(proposal(), dao, 'seat.wam', 0)).toBe(true)
+  })
+
+  it('is one that has its signatures, whoever I am', () => {
+    const ready = proposal({ approvals: signedBy('seat.wam', 'maker.wam', 'third.wam') })
+    /* exec takes no seat, so an outsider can still push it over the line. */
+    expect(hasAction(ready, dao, 'outsider.wam', 3)).toBe(true)
+  })
+
+  it('is not one I cannot vote on at all', () => {
+    expect(hasAction(proposal(), dao, 'outsider.wam', 0)).toBe(false)
+  })
+
+  it('is nothing at all when signed out', () => {
+    expect(hasAction(proposal(), dao, null, 0)).toBe(false)
   })
 })
