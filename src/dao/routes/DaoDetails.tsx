@@ -63,6 +63,21 @@ import { useSession } from '../../wallet/session'
 type Tab = 'council' | 'proposals' | 'worker'
 
 /**
+ * The tab last chosen, carried from one council to the next.
+ *
+ * The tab is a route rather than state — see below — and every link to a DAO
+ * is to the bare /daos/:id, from the sidebar, the council list and the back
+ * button alike. So a bare URL used to mean Proposals, and reading the
+ * candidates of six unions in turn meant six trips through a tab nobody
+ * asked for. Remembered here rather than fixed at each of those links, which
+ * would leave the next one to be added with the same bug.
+ *
+ * Deliberately not stored: within a visit this is a convenience, and across
+ * visits a link should mean what it says.
+ */
+let lastTab: Tab = 'proposals'
+
+/**
  * One DAO, in depth.
  *
  * Three jobs that have nothing to do with each other — who sits on the council,
@@ -74,6 +89,35 @@ export default function DaoDetails() {
   const navigate = useNavigate()
   const { daos, loading } = useDaos()
   const dao = daoById(daos, id)
+
+  /*
+   * The tab is a route, not component state, so each one is linkable, survives
+   * a reload, and can appear in the sidebar as a page of its own. A syndicate
+   * has no worker tab, so asking for one falls back rather than opening a tab
+   * with nothing behind it.
+   */
+  const tabs: { key: Tab; label: string }[] = dao
+    ? [
+        { key: 'proposals', label: 'Proposals' },
+        ...(hasWorkerProposals(dao) ? [{ key: 'worker' as Tab, label: 'Worker proposals' }] : []),
+        { key: 'council', label: 'Council & candidates' },
+      ]
+    : []
+
+  /* What the URL asked for, if this DAO has it. */
+  const asked = tabs.find((t) => t.key === tab)?.key
+  /* Falling back to the last one chosen, where this DAO has that too. */
+  const shown = asked ?? (tabs.some((t) => t.key === lastTab) ? lastTab : 'proposals')
+
+  useEffect(() => {
+    if (asked) lastTab = asked
+  }, [asked])
+
+  /* Named in the URL even when it was inherited, so the page stays linkable
+     and a reload lands back on it. */
+  useEffect(() => {
+    if (dao && !asked && shown !== 'proposals') navigate(`/daos/${id}/${shown}`, { replace: true })
+  }, [dao, asked, shown, id, navigate])
 
   if (!dao) {
     return (
@@ -87,19 +131,6 @@ export default function DaoDetails() {
       </div>
     )
   }
-
-  /*
-   * The tab is a route, not component state, so each one is linkable, survives
-   * a reload, and can appear in the sidebar as a page of its own. A syndicate
-   * has no worker tab, so asking for one falls back rather than opening a tab
-   * with nothing behind it.
-   */
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'proposals', label: 'Proposals' },
-    ...(hasWorkerProposals(dao) ? [{ key: 'worker' as Tab, label: 'Worker proposals' }] : []),
-    { key: 'council', label: 'Council & candidates' },
-  ]
-  const shown = (tabs.find((t) => t.key === tab)?.key ?? 'proposals') as Tab
 
   return (
     <div className="page">
