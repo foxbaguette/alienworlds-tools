@@ -638,6 +638,14 @@
 .ale-field__was { font-size: var(--fs-xs); color: var(--text-3); }
 .ale-field__was code { color: var(--text-2); }
 
+/* A proposal on the feed: raised, signed, run.
+
+   The row already carries its tone down the left edge — is-work, is-go,
+   is-done — so the verb only has to be legible, not a second colour scheme
+   invented beside the first. */
+.xch-prop { font-weight: 600; }
+.xch-proptitle { font-weight: 600; }
+
 /* ── Who voted for a candidate ───────────────────────────────────────────── */
 
 /* The voter count, which opens the list behind it. A number that can be

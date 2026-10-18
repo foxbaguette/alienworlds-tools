@@ -28,6 +28,9 @@ import type { Dao } from './daos'
  */
 export const TOKEN_CONTRACT = 'token.worlds'
 export const DAO_CONTRACT = 'dao.worlds'
+/* Where a council's proposals live — the same contract the proposals page
+   reads, so the feed and that page are talking about the same rows. */
+export const MSIG_CONTRACT = 'msig.worlds'
 export const STAKEVOTE_CONTRACT = 'stkvt.worlds'
 
 /** Where the reward drip comes from. */
@@ -47,6 +50,9 @@ export type ActivityKind =
   | 'election'
   | 'periodlen'
   | 'pending'
+  | 'proposed'
+  | 'approved'
+  | 'executed'
 
 export const KIND_LABEL: Record<ActivityKind, string> = {
   bought: 'bought with TLM',
@@ -59,6 +65,9 @@ export const KIND_LABEL: Record<ActivityKind, string> = {
   election: 'held an election',
   periodlen: 'changed the election period',
   pending: 'is due an election',
+  proposed: 'raised a proposal',
+  approved: 'signed a proposal',
+  executed: 'ran a proposal',
 }
 
 export const KIND_TONE: Record<ActivityKind, string> = {
@@ -76,6 +85,10 @@ export const KIND_TONE: Record<ActivityKind, string> = {
      having arrived. */
   periodlen: 'gold',
   pending: 'wait',
+  /* A proposal's three ages: asked, agreed, done. */
+  proposed: 'work',
+  approved: 'go',
+  executed: 'done',
 }
 
 /** The three groups the filter offers, and which kinds are in each. */
@@ -85,6 +98,7 @@ export const GROUPS = {
   delays: ['staketime'] as ActivityKind[],
   elections: ['election', 'periodlen', 'pending'] as ActivityKind[],
   payouts: ['payout'] as ActivityKind[],
+  proposals: ['proposed', 'approved', 'executed'] as ActivityKind[],
 }
 
 export interface Activity {
@@ -114,6 +128,10 @@ export interface Activity {
   wasDelay?: number
   /** How long an election has been due but unheld, for a pending row. */
   overdue?: number
+  /** A council proposal's own name, for the rows about one. */
+  proposal?: string
+  /** What that proposal was called, where the title is known. */
+  title?: string
   /** The transaction, kept so an election can be looked up. */
   trx?: string
   /** Who was voted for. */
@@ -191,7 +209,7 @@ async function transferPages(after: string, limit: number, pages: number): Promi
  */
 export async function fetchActivity(since: number, limit = 400, pages = 1): Promise<Activity[]> {
   const after = iso(since)
-  const [transfers, votes, delays, elections, periods] = await Promise.all([
+  const [transfers, votes, delays, elections, periods, msigs] = await Promise.all([
     transferPages(after, limit, pages).then((actions) => ({ actions })),
     historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
       'act.account': DAO_CONTRACT,
@@ -223,6 +241,15 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
       'act.name': 'setperiodlen',
       after,
       limit: 200,
+      sort: 'desc',
+    }).catch(() => ({ actions: [] })),
+    /* The whole contract in one read rather than three. A council's proposals
+       run to a few hundred a week across every DAC, so asking for propose,
+       approve and exec separately would be three reads for the same rows. */
+    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+      'act.account': MSIG_CONTRACT,
+      after,
+      limit: 400,
       sort: 'desc',
     }).catch(() => ({ actions: [] })),
   ])
@@ -277,6 +304,55 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
       actor: String(d.account),
       symbol: codeOfSymbol(d.token_symbol),
       delay: Number(d.unstake_time) || 0,
+    })
+  }
+
+  /*
+    A proposal raised, signed or run.
+
+    Only `propose` carries the title, so the titles found in this sweep are
+    lent to the approvals and executions naming the same proposal. Where the
+    proposal was raised before the window, the row falls back to its on-chain
+    name — twelve characters of nothing much, but honest.
+  */
+  const titles = new Map<string, string>()
+  for (const a of msigs.actions ?? []) {
+    if (a.act.name !== 'propose') continue
+    const d = a.act.data as { proposal_name?: string; metadata?: { key?: string; value?: string }[] }
+    const title = (d.metadata ?? []).find((m) => m.key === 'title')?.value
+    if (d.proposal_name && title) titles.set(String(d.proposal_name), String(title))
+  }
+
+  const MSIG_KIND: Record<string, ActivityKind> = {
+    propose: 'proposed',
+    approve: 'approved',
+    exec: 'executed',
+  }
+  for (const a of msigs.actions ?? []) {
+    const kind = MSIG_KIND[a.act.name]
+    if (!kind) continue
+    const d = a.act.data as {
+      dac_id?: string
+      proposal_name?: string
+      proposer?: string
+      executer?: string
+      level?: { actor?: string }
+    }
+    const at = Date.parse(`${a.timestamp}Z`)
+    if (!Number.isFinite(at) || !d.dac_id || !d.proposal_name) continue
+    /* Whose act it is differs by action: the proposer, the signer, the runner. */
+    const actor = String(d.proposer ?? d.level?.actor ?? d.executer ?? '')
+    if (!actor) continue
+    out.push({
+      key: `${a.trx_id}:${a.action_ordinal}:${a.act.name}`,
+      at,
+      kind,
+      actor,
+      symbol: '',
+      dacId: String(d.dac_id),
+      proposal: String(d.proposal_name),
+      title: titles.get(String(d.proposal_name)),
+      trx: a.trx_id,
     })
   }
 

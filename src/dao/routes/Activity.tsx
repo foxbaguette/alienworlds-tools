@@ -78,6 +78,7 @@ const GROUP_LABEL: Record<Group, string> = {
   elections: 'Elections',
   delays: 'Unstake delays',
   payouts: 'Reward payouts',
+  proposals: 'Council proposals',
 }
 
 export default function Activity() {
@@ -91,7 +92,7 @@ export default function Activity() {
      look at one council is not a thing anybody wants to do. */
   const [symbol, setSymbol] = useState('')
   /* Payouts off by default: they are most of the volume and none of the point. */
-  const [groups, setGroups] = useState<Set<Group>>(new Set(['exchanges', 'votes', 'elections', 'delays']))
+  const [groups, setGroups] = useState<Set<Group>>(new Set(['exchanges', 'votes', 'elections', 'delays', 'proposals']))
   const [bigOnly, setBigOnly] = useState(false)
   const [, redraw] = useState(0)
 
@@ -537,6 +538,18 @@ export default function Activity() {
                         <Account name={n} />
                       </span>
                     ))}{' '}
+                    <span className="dao-dim">in {dao?.title ?? r.dacId}</span>
+                  </>
+                ) : r.kind === 'proposed' || r.kind === 'approved' || r.kind === 'executed' ? (
+                  <>
+                    <b className="xch-prop">
+                      {r.kind === 'proposed' ? 'Raised' : r.kind === 'approved' ? 'Signed' : 'Executed'}
+                    </b>{' '}
+                    {/* The name is twelve characters of nothing much, so the
+                        title is used wherever this sweep found one. */}
+                    <span className="xch-proptitle" title={`Proposal ${r.proposal}`}>
+                      {r.title || r.proposal}
+                    </span>{' '}
                     <span className="dao-dim">in {dao?.title ?? r.dacId}</span>
                   </>
                 ) : r.kind === 'periodlen' ? (
