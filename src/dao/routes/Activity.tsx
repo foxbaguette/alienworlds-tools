@@ -1,22 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  BIG_AMOUNT,
-  BIG_POWER,
-  GROUPS,
-  KIND_LABEL,
-  KIND_TONE,
-  councilOf,
-  ensureWeights,
-  fetchActivity,
-  resolveElections,
-  fmtDelay,
-  fmtTokens,
-  weightOf,
-  weightsReady,
-  wouldFlip,
-  type Activity as Row,
-  type Flip,
-} from '../chain/activity'
+import { BIG_AMOUNT, BIG_POWER, GROUPS, KIND_LABEL, KIND_TONE, councilOf, ensureWeights, fetchActivity, fmtDelay, fmtTokens, pendingElections, resolveElections, type Activity as Row, type Flip, weightOf, weightsReady, wouldFlip } from '../chain/activity'
 import { fetchStandings, type Standing, type Standings as StandingsData } from '../chain/standings'
 import { Countdown } from '../components/Countdown'
 import { McTag } from '../components/Tags'
@@ -294,7 +277,17 @@ export default function Activity() {
 
   const shownKinds = new Set([...groups].flatMap((g) => GROUPS[g]))
 
-  const enriched = rows
+  /*
+    A council waiting on an election, worked out rather than fetched.
+
+    Recomputed every render rather than memoised, so the "waiting" figure ages
+    with the feed instead of freezing at whatever it said when the directory
+    last changed. It is a handful of councils, not a cost.
+  */
+  const pending = pendingElections(daos, Date.now() - WINDOW_MS)
+
+  const enriched = [...rows, ...pending]
+    .sort((a, b) => b.at - a.at)
     .filter((r) => shownKinds.has(r.kind))
     .map((r) => {
       const dao = daoOf(r)
@@ -309,8 +302,10 @@ export default function Activity() {
       const big =
         (r.amount != null && r.amount >= BIG_AMOUNT) || (r.kind === 'vote' && (power ?? 0) >= BIG_POWER)
       /* An election is always worth seeing, whatever the filters say about
-         size — it is the thing every other row was leading up to. */
-      return { r, dao, power, flip, council, big: big || !!flip || r.kind === 'election' }
+         size — it is the thing every other row was leading up to. The period
+         changing and the period running out are the same subject. */
+      const aboutTheElection = r.kind === 'election' || r.kind === 'periodlen' || r.kind === 'pending'
+      return { r, dao, power, flip, council, big: big || !!flip || aboutTheElection }
     })
     .filter((e) => (e.dao?.symbol ?? e.r.symbol) === symbol && (!bigOnly || e.big))
 
@@ -332,6 +327,23 @@ export default function Activity() {
     announced, and a new council of five wearing five stars reads as though
     the stars were the point.
   */
+  /*
+    A period as somebody would say it. These are set in seconds — 864,000 for
+    ten days — and the number alone is unreadable at a glance.
+  */
+  const fmtPeriod = (secs: number) => {
+    if (secs >= 86_400) {
+      const days = secs / 86_400
+      return `${Number.isInteger(days) ? days : days.toFixed(1)} day${days === 1 ? '' : 's'}`
+    }
+    if (secs >= 3_600) {
+      const hours = secs / 3_600
+      return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hour${hours === 1 ? '' : 's'}`
+    }
+    const mins = Math.max(1, Math.round(secs / 60))
+    return `${mins} minute${mins === 1 ? '' : 's'}`
+  }
+
   const Account = ({ name, vote = true }: { name: string; vote?: boolean }) => (
     <>
       <a href={`${EXPLORER}${encodeURIComponent(name)}`} target="_blank" rel="noopener">
@@ -526,6 +538,26 @@ export default function Activity() {
                       </span>
                     ))}{' '}
                     <span className="dao-dim">in {dao?.title ?? r.dacId}</span>
+                  </>
+                ) : r.kind === 'periodlen' ? (
+                  <>
+                    <b className="xch-election">Election period in {dao?.title ?? r.dacId}</b>{' '}
+                    {r.wasDelay ? (
+                      <>
+                        <span className="dao-dim">{fmtPeriod(r.wasDelay)}</span> →{' '}
+                      </>
+                    ) : (
+                      'set to '
+                    )}
+                    <b className="xch-amount">{fmtPeriod(r.delay ?? 0)}</b>
+                    <span className="dao-dim"> — every election after this one moves with it</span>
+                  </>
+                ) : r.kind === 'pending' ? (
+                  <>
+                    <b className="xch-election">Election due in {dao?.title ?? r.dacId}</b>{' '}
+                    <span className="dao-dim">
+                      waiting {fmtPeriod(Math.round((r.overdue ?? 0) / 1000))} for the scheduler to hold it
+                    </span>
                   </>
                 ) : r.kind === 'staketime' ? (
                   <>

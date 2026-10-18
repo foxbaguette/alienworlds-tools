@@ -45,6 +45,8 @@ export type ActivityKind =
   | 'vote'
   | 'staketime'
   | 'election'
+  | 'periodlen'
+  | 'pending'
 
 export const KIND_LABEL: Record<ActivityKind, string> = {
   bought: 'bought with TLM',
@@ -55,6 +57,8 @@ export const KIND_LABEL: Record<ActivityKind, string> = {
   vote: 'voted',
   staketime: 'changed their unstake delay',
   election: 'held an election',
+  periodlen: 'changed the election period',
+  pending: 'is due an election',
 }
 
 export const KIND_TONE: Record<ActivityKind, string> = {
@@ -68,6 +72,10 @@ export const KIND_TONE: Record<ActivityKind, string> = {
   /* Its own colour. Everything else on this feed is somebody moving towards a
      council; this is the council actually changing. */
   election: 'gold',
+  /* Both belong to the election: one moves the date, the other is the date
+     having arrived. */
+  periodlen: 'gold',
+  pending: 'wait',
 }
 
 /** The three groups the filter offers, and which kinds are in each. */
@@ -75,7 +83,7 @@ export const GROUPS = {
   exchanges: ['bought', 'sold', 'swapped', 'sent'] as ActivityKind[],
   votes: ['vote'] as ActivityKind[],
   delays: ['staketime'] as ActivityKind[],
-  elections: ['election'] as ActivityKind[],
+  elections: ['election', 'periodlen', 'pending'] as ActivityKind[],
   payouts: ['payout'] as ActivityKind[],
 }
 
@@ -100,8 +108,12 @@ export interface Activity {
   dacId?: string
   /** Tokens moved, for a transfer. */
   amount?: number
-  /** Seconds, for a staketime change. */
+  /** Seconds, for a staketime change, or the new length of an election period. */
   delay?: number
+  /** The length an election period was before it was changed, where it is known. */
+  wasDelay?: number
+  /** How long an election has been due but unheld, for a pending row. */
+  overdue?: number
   /** The transaction, kept so an election can be looked up. */
   trx?: string
   /** Who was voted for. */
@@ -122,7 +134,12 @@ interface RawAction {
   trx_id: string
   action_ordinal: number
   timestamp: string
-  act: { account: string; name: string; data: Record<string, unknown> }
+  act: {
+    account: string
+    name: string
+    data: Record<string, unknown>
+    authorization?: { actor?: string; permission?: string }[]
+  }
 }
 
 function classifyTransfer(from: string, to: string, memo: string): ActivityKind {
@@ -174,7 +191,7 @@ async function transferPages(after: string, limit: number, pages: number): Promi
  */
 export async function fetchActivity(since: number, limit = 400, pages = 1): Promise<Activity[]> {
   const after = iso(since)
-  const [transfers, votes, delays, elections] = await Promise.all([
+  const [transfers, votes, delays, elections, periods] = await Promise.all([
     transferPages(after, limit, pages).then((actions) => ({ actions })),
     historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
       'act.account': DAO_CONTRACT,
@@ -195,6 +212,15 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
     historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
       'act.account': DAO_CONTRACT,
       'act.name': 'newperiod',
+      after,
+      limit: 200,
+      sort: 'desc',
+    }).catch(() => ({ actions: [] })),
+    /* Changing the period moves every election after it, which is why it
+       belongs beside them rather than filed under settings. */
+    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+      'act.account': DAO_CONTRACT,
+      'act.name': 'setperiodlen',
       after,
       limit: 200,
       sort: 'desc',
@@ -254,6 +280,35 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
     })
   }
 
+  /*
+    Period changes, oldest first so each can be told what it replaced.
+
+    The previous length is only known where the change before it is also in
+    the window; further back the row says the new length alone rather than
+    inventing the old one.
+  */
+  const lastLength = new Map<string, number>()
+  for (const a of [...(periods.actions ?? [])].reverse()) {
+    const d = a.act.data as { dac_id?: string; periodlength?: number | string }
+    const at = Date.parse(`${a.timestamp}Z`)
+    const length = Number(d.periodlength) || 0
+    if (!Number.isFinite(at) || !d.dac_id || !length) continue
+    const dac = String(d.dac_id)
+    out.push({
+      key: `${a.trx_id}:periodlen:${dac}`,
+      at,
+      kind: 'periodlen',
+      /* Signed by the council's own multisig, which is who to name. */
+      actor: String(a.act.authorization?.[0]?.actor ?? DAO_CONTRACT),
+      symbol: '',
+      dacId: dac,
+      delay: length,
+      wasDelay: lastLength.get(dac),
+      trx: a.trx_id,
+    })
+    lastLength.set(dac, length)
+  }
+
   for (const a of elections.actions ?? []) {
     const d = a.act.data as { dac_id?: string; message?: string }
     const at = Date.parse(`${a.timestamp}Z`)
@@ -273,6 +328,46 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
   }
 
   return out.sort((x, y) => y.at - x.at)
+}
+
+/**
+ * An election that has fallen due and not yet been held.
+ *
+ * Nothing on chain marks this moment — it is simply `lastperiodtime` plus the
+ * period, arriving. So it is worked out from the directory rather than read,
+ * and only for a council waiting right now: once the election runs, the time
+ * it was due is no longer derivable from anything the chain still holds.
+ *
+ * The row sits at the moment it fell due, which is where a reader looking for
+ * "when did this start" would go for it.
+ */
+export function pendingElections(
+  daos: { id: string; nextElection: number | null }[],
+  since: number,
+  now = Date.now(),
+): Activity[] {
+  const out: Activity[] = []
+  for (const dao of daos) {
+    const due = dao.nextElection
+    if (!due || due > now) continue
+    out.push({
+      key: `pending:${dao.id}:${due}`,
+      /*
+        Pinned to the edge of the window when it fell due before it.
+
+        A council a month overdue is the one most worth knowing about, and
+        dropping it for being older than the feed's week would have hidden
+        exactly that. The row still says how long it has really been waiting.
+      */
+      at: Math.max(due, since),
+      kind: 'pending',
+      actor: 'newperiodctl',
+      symbol: '',
+      dacId: dao.id,
+      overdue: now - due,
+    })
+  }
+  return out
 }
 
 /* ---------- who an election seated ---------- */
