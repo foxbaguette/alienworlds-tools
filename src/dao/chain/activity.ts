@@ -219,56 +219,94 @@ async function transferPages(after: string, limit: number, pages: number): Promi
 }
 
 /**
- * One sweep of all four sources.
+ * The things this feed reads, and how often each is worth reading.
  *
- * Fired together rather than in turn: they are independent, and the indexers
- * are the slow part.
+ * Transfers and votes are the live part — hundreds a day, and the reason
+ * anyone watches. The rest move at a different pace entirely: two unstake
+ * delays in a good week, an election every few days, a period change rarer
+ * still. Asking all six every eight seconds was six requests to answer two
+ * questions.
  */
-export async function fetchActivity(since: number, limit = 400, pages = 1): Promise<Activity[]> {
+export type Source = 'transfers' | 'votes' | 'delays' | 'elections' | 'periods' | 'proposals'
+
+/** Read every sweep. */
+export const BUSY_SOURCES: Source[] = ['transfers', 'votes']
+/** Read on the opening sweep, then now and again, over the whole window. */
+export const RARE_SOURCES: Source[] = ['delays', 'elections', 'periods', 'proposals']
+export const ALL_SOURCES: Source[] = [...BUSY_SOURCES, ...RARE_SOURCES]
+
+const NOTHING = { actions: [] as RawAction[] }
+
+/**
+ * One sweep.
+ *
+ * The chosen sources are fired together rather than in turn — they are
+ * independent and the indexers are the slow part — but the pool's own queue
+ * decides how many are actually in the air at once. See useHistoryConcurrency.
+ */
+export async function fetchActivity(
+  since: number,
+  limit = 400,
+  pages = 1,
+  sources: Source[] = ALL_SOURCES,
+): Promise<Activity[]> {
   const after = iso(since)
+  const want = new Set(sources)
+  const only = <T>(source: Source, read: () => Promise<T>) =>
+    want.has(source) ? read() : Promise.resolve(NOTHING as T)
   const [transfers, votes, delays, elections, periods, msigs] = await Promise.all([
-    transferPages(after, limit, pages).then((actions) => ({ actions })),
-    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
-      'act.account': DAO_CONTRACT,
-      'act.name': 'votecust',
-      after,
-      limit: 200,
-      sort: 'desc',
-    }).catch(() => ({ actions: [] })),
-    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
-      'act.account': TOKEN_CONTRACT,
-      'act.name': 'staketime',
-      after,
-      limit: 200,
-      sort: 'desc',
-    }).catch(() => ({ actions: [] })),
+    only('transfers', () => transferPages(after, limit, pages).then((actions) => ({ actions }))),
+    only('votes', () =>
+      historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+        'act.account': DAO_CONTRACT,
+        'act.name': 'votecust',
+        after,
+        limit: 200,
+        sort: 'desc',
+      }).catch(() => ({ actions: [] })),
+    ),
+    only('delays', () =>
+      historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+        'act.account': TOKEN_CONTRACT,
+        'act.name': 'staketime',
+        after,
+        limit: 200,
+        sort: 'desc',
+      }).catch(() => ({ actions: [] })),
+    ),
     /* An election is rare and it is the point of everything else on the feed,
        so it gets its own read rather than being hunted for in the noise. */
-    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
-      'act.account': DAO_CONTRACT,
-      'act.name': 'newperiod',
-      after,
-      limit: 200,
-      sort: 'desc',
-    }).catch(() => ({ actions: [] })),
+    only('elections', () =>
+      historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+        'act.account': DAO_CONTRACT,
+        'act.name': 'newperiod',
+        after,
+        limit: 200,
+        sort: 'desc',
+      }).catch(() => ({ actions: [] })),
+    ),
     /* Changing the period moves every election after it, which is why it
        belongs beside them rather than filed under settings. */
-    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
-      'act.account': DAO_CONTRACT,
-      'act.name': 'setperiodlen',
-      after,
-      limit: 200,
-      sort: 'desc',
-    }).catch(() => ({ actions: [] })),
+    only('periods', () =>
+      historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+        'act.account': DAO_CONTRACT,
+        'act.name': 'setperiodlen',
+        after,
+        limit: 200,
+        sort: 'desc',
+      }).catch(() => ({ actions: [] })),
+    ),
     /* The whole contract in one read rather than three. A council's proposals
        run to a few hundred a week across every DAC, so asking for propose,
        approve and exec separately would be three reads for the same rows. */
-    historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
-      'act.account': MSIG_CONTRACT,
-      after,
-      limit: 400,
-      sort: 'desc',
-    }).catch(() => ({ actions: [] })),
+    only('proposals', () =>
+      historyGet<{ actions?: RawAction[] }>('/v2/history/get_actions', {
+        'act.account': MSIG_CONTRACT,
+        after,
+        limit: 400,
+        sort: 'desc',
+      }).catch(() => ({ actions: [] })),
+    ),
   ])
 
   const out: Activity[] = []

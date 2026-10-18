@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BIG_AMOUNT, BIG_POWER, GROUPS, KIND_LABEL, KIND_TONE, councilOf, delayWas, ensureWeights, fetchActivity, fmtDelay, fmtTokens, pendingElections, resolveDelays, resolveElections, type Activity as Row, type Flip, weightOf, weightsReady, wouldFlip } from '../chain/activity'
+import { ALL_SOURCES, BIG_AMOUNT, BIG_POWER, BUSY_SOURCES, GROUPS, KIND_LABEL, KIND_TONE, RARE_SOURCES, councilOf, delayWas, ensureWeights, fetchActivity, fmtDelay, fmtTokens, pendingElections, resolveDelays, resolveElections, type Activity as Row, type Flip, weightOf, weightsReady, wouldFlip } from '../chain/activity'
 import { fetchStandings, type Standing, type Standings as StandingsData } from '../chain/standings'
 import { Countdown } from '../components/Countdown'
 import { McTag } from '../components/Tags'
@@ -66,6 +66,25 @@ const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 /** Pages of the transfer stream on the opening sweep — about 500 a day. */
 const FIRST_PAGES = 5
 const POLL_MS = 8_000
+/**
+ * How often the rare sources are read, in sweeps.
+ *
+ * Transfers and votes are why anyone watches this page; unstake delays,
+ * elections, period changes and proposals move at a wholly different pace —
+ * two delay changes in a good week. Reading all six every eight seconds was
+ * six requests to answer two questions.
+ */
+const RARE_EVERY = 5
+
+/**
+ * Rows asked for per rare source, over the whole week.
+ *
+ * Proposals are the busiest of them at some 265 a week, and a page that
+ * filled would drop the OLDEST — the newest are returned first — so a week
+ * would quietly lose its far end. A thousand is the most these indexers
+ * serve, and nearly four times the headroom.
+ */
+const RARE_LIMIT = 1000
 const OVERLAP_MS = 60_000
 const MIN_GAP_MS = 130
 const MAX_GAP_MS = 700
@@ -88,6 +107,8 @@ export default function Activity() {
      ref for the current one rather than the value it captured. */
   const daosRef = useRef(daos)
   daosRef.current = daos
+  /* Which sweep this is, for the sources not worth reading on every one. */
+  const sweeps = useRef(0)
   const [rows, setRows] = useState<Row[]>([])
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(true)
@@ -131,8 +152,33 @@ export default function Activity() {
 
     const tick = async () => {
       try {
-        const since = newest.current ? newest.current - OVERLAP_MS : Date.now() - WINDOW_MS
-        const got = await fetchActivity(since, newest.current ? 100 : 1000, newest.current ? 1 : FIRST_PAGES)
+        const first = !newest.current
+        const windowStart = Date.now() - WINDOW_MS
+        const since = first ? windowStart : newest.current - OVERLAP_MS
+        const sweep = sweeps.current++
+
+        /* The busy pair every sweep, from where the last one left off. */
+        const got = await fetchActivity(
+          since,
+          first ? 1000 : 100,
+          first ? FIRST_PAGES : 1,
+          first ? ALL_SOURCES : BUSY_SOURCES,
+        )
+
+        /*
+          The rare ones now and again — and over the WHOLE window rather than
+          since the last sweep.
+
+          Reading them incrementally would be fewer rows but it can lose one:
+          `since` follows the busy rows, so if a sweep ran long enough for the
+          gap to outrun the overlap, a proposal raised in between would never
+          be asked for again. A week of them is a single page each, and asking
+          for all of it every fortieth second cannot miss anything. Rows are
+          held by key, so what is already on the page is not disturbed.
+        */
+        if (!first && sweep % RARE_EVERY === 0) {
+          got.push(...(await fetchActivity(windowStart, RARE_LIMIT, 1, RARE_SOURCES)))
+        }
         /* An election says which DAC, not who won; that takes a second read.
            Done before the rows are published so a gold row never appears with
            its council missing and then fills in underneath the reader. */
@@ -155,7 +201,6 @@ export default function Activity() {
         setError(null)
         setLastAt(Date.now())
 
-        const first = !newest.current
         const waiting = new Set(queue.current.map((e) => e.key))
         for (const e of got) {
           newest.current = Math.max(newest.current, e.at)
