@@ -646,6 +646,15 @@
 .xch-prop { font-weight: 600; }
 .xch-proptitle { font-weight: 600; }
 
+/* What a proposal would run, for the ones whose title does not say. Quiet:
+   it is there to be looked at, not read on the way past. */
+.xch-does {
+  display: block;
+  font-style: normal;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
 /* ── Who voted for a candidate ───────────────────────────────────────────── */
 
 /* The voter count, which opens the list behind it. A number that can be

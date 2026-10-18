@@ -305,7 +305,8 @@ export default function Activity() {
       /* An election is always worth seeing, whatever the filters say about
          size — it is the thing every other row was leading up to. The period
          changing and the period running out are the same subject. */
-      const aboutTheElection = r.kind === 'election' || r.kind === 'periodlen' || r.kind === 'pending'
+      const aboutTheElection =
+        r.kind === 'election' || r.kind === 'periodlen' || r.kind === 'pending' || !!r.setsPeriod
       return { r, dao, power, flip, council, big: big || !!flip || aboutTheElection }
     })
     .filter((e) => (e.dao?.symbol ?? e.r.symbol) === symbol && (!bigOnly || e.big))
@@ -545,12 +546,31 @@ export default function Activity() {
                     <b className="xch-prop">
                       {r.kind === 'proposed' ? 'Raised' : r.kind === 'approved' ? 'Signed' : 'Executed'}
                     </b>{' '}
-                    {/* The name is twelve characters of nothing much, so the
-                        title is used wherever this sweep found one. */}
-                    <span className="xch-proptitle" title={`Proposal ${r.proposal}`}>
-                      {r.title || r.proposal}
-                    </span>{' '}
+                    {/* A council names its own proposals, and "new 10" means
+                        nothing until you know it sets the period to ten days.
+                        Where the proposal says what it does, that leads. */}
+                    {r.setsPeriod ? (
+                      <>
+                        <b className="xch-election">election period → {fmtPeriod(r.setsPeriod)}</b>{' '}
+                        <span className="xch-proptitle" title={`Proposal ${r.proposal}`}>
+                          “{r.title || r.proposal}”
+                        </span>{' '}
+                      </>
+                    ) : (
+                      <>
+                        {/* The name is twelve characters of nothing much, so
+                            the title is used wherever this sweep found one. */}
+                        <span className="xch-proptitle" title={`Proposal ${r.proposal}`}>
+                          {r.title || r.proposal}
+                        </span>{' '}
+                      </>
+                    )}
                     <span className="dao-dim">in {dao?.title ?? r.dacId}</span>
+                    {r.does?.length && !r.setsPeriod ? (
+                      <i className="xch-does" title="What this proposal would run">
+                        {r.does.join(', ')}
+                      </i>
+                    ) : null}
                   </>
                 ) : r.kind === 'periodlen' ? (
                   <>

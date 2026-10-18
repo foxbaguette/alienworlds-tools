@@ -132,6 +132,15 @@ export interface Activity {
   proposal?: string
   /** What that proposal was called, where the title is known. */
   title?: string
+  /** The contract actions a proposal would run, as `account::name`. */
+  does?: string[]
+  /**
+   * The election period a proposal would set, in seconds.
+   *
+   * Only for a proposal carrying `dao.worlds::setperiodlen`. A title like
+   * "new 10" says nothing on its own — this is what it would actually do.
+   */
+  setsPeriod?: number
   /** The transaction, kept so an election can be looked up. */
   trx?: string
   /** Who was voted for. */
@@ -316,11 +325,17 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
     name — twelve characters of nothing much, but honest.
   */
   const titles = new Map<string, string>()
+  /* What each proposal would do, lent to the rows that only name it. */
+  const periodOf = new Map<string, number>()
   for (const a of msigs.actions ?? []) {
     if (a.act.name !== 'propose') continue
     const d = a.act.data as { proposal_name?: string; metadata?: { key?: string; value?: string }[] }
+    const name = d.proposal_name ? String(d.proposal_name) : ''
+    if (!name) continue
     const title = (d.metadata ?? []).find((m) => m.key === 'title')?.value
-    if (d.proposal_name && title) titles.set(String(d.proposal_name), String(title))
+    if (title) titles.set(name, String(title))
+    const period = innerActions(a.act.data).period
+    if (period) periodOf.set(name, period)
   }
 
   const MSIG_KIND: Record<string, ActivityKind> = {
@@ -343,6 +358,13 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
     /* Whose act it is differs by action: the proposer, the signer, the runner. */
     const actor = String(d.proposer ?? d.level?.actor ?? d.executer ?? '')
     if (!actor) continue
+    /*
+      Signing and running a proposal say only its name, so what it does is
+      taken from the `propose` found in the same sweep — the same lending
+      that turns a name into a title. "Signed new 10" is a sentence about
+      nothing; "Signed election period → 10 days" is the thing that happened.
+    */
+    const inner = kind === 'proposed' ? innerActions(a.act.data) : undefined
     out.push({
       key: `${a.trx_id}:${a.action_ordinal}:${a.act.name}`,
       at,
@@ -352,6 +374,8 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
       dacId: String(d.dac_id),
       proposal: String(d.proposal_name),
       title: titles.get(String(d.proposal_name)),
+      does: inner?.names,
+      setsPeriod: inner?.period ?? periodOf.get(String(d.proposal_name)),
       trx: a.trx_id,
     })
   }
@@ -404,6 +428,48 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
   }
 
   return out.sort((x, y) => y.at - x.at)
+}
+
+interface ProposedAction {
+  account?: string
+  name?: string
+  data?: string | Record<string, unknown>
+}
+
+/**
+ * What a proposal would actually run.
+ *
+ * The proposed transaction rides inside the `propose` action, and its actions
+ * name their contract and method in the clear — only the arguments are packed.
+ * So what a proposal DOES costs no decoding at all, and the one argument worth
+ * reading is the period length, which is the first four bytes of a
+ * `setperiodlen`: a uint32, little-endian.
+ *
+ * This matters because a council names its own proposals. "new 10" is a real
+ * title, and it means nothing until you know it sets the election period to
+ * ten days.
+ */
+function innerActions(data: unknown): { names: string[]; period?: number } {
+  const acts = ((data as { trx?: { actions?: ProposedAction[] } })?.trx?.actions ?? []) as ProposedAction[]
+  const names = [...new Set(acts.map((x) => `${x.account ?? '?'}::${x.name ?? '?'}`))]
+
+  const setter = acts.find((x) => x.account === DAO_CONTRACT && x.name === 'setperiodlen')
+  let period: number | undefined
+  if (setter) {
+    if (typeof setter.data === 'string') {
+      /* periodlength:uint32 first, so the first four bytes reversed. */
+      const hex = setter.data.slice(0, 8).match(/../g)
+      if (hex?.length === 4) {
+        const secs = parseInt(hex.reverse().join(''), 16)
+        if (Number.isFinite(secs) && secs > 0) period = secs
+      }
+    } else if (setter.data && typeof setter.data === 'object') {
+      /* Some indexers hand it back already unpacked. */
+      const secs = Number((setter.data as { periodlength?: number | string }).periodlength)
+      if (Number.isFinite(secs) && secs > 0) period = secs
+    }
+  }
+  return { names, period }
 }
 
 /**
