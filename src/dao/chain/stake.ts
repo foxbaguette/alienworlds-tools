@@ -267,6 +267,35 @@ export const buyActions = (level: Level, target: string, quantity: string): Chai
   },
 ]
 
+/**
+ * The whole errand: Trilium in, staked, the delay set, a slate cast.
+ *
+ * Four steps that only make sense together, so they ride in one transaction —
+ * either all of it happens or none does. Half of it would be Trilium turned
+ * into a token sitting unstaked with no vote behind it.
+ *
+ * The order is the chain's, not a preference: nothing can be staked before it
+ * exists, and a vote weighs what is staked at the moment it is counted.
+ *
+ * Built here rather than in the form so the sequence can be read, and tested,
+ * without a wallet.
+ */
+export const stakeAndVoteActions = (
+  level: Level,
+  dao: Dao,
+  of: { planet: string; tlm: string; token: string; seconds: number; slate: string[] },
+): ChainAction[] => [
+  ...buyActions(level, of.planet, of.tlm),
+  stakeAction(level, dao, of.token),
+  stakeTimeAction(level, dao, of.seconds),
+  {
+    account: dao.custodianContract!,
+    name: 'votecust',
+    authorization: [level],
+    data: { voter: level.actor, newvotes: of.slate, dac_id: dao.id },
+  },
+]
+
 /** Token out. stake.worlds burns what it receives and refunds TLM 1:1. */
 export const sellAction = (level: Level, dao: Dao, quantity: string): ChainAction => ({
   account: dao.tokenContract!,

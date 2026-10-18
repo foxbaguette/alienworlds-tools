@@ -105,6 +105,13 @@ export interface Dao {
   lastPeriod: number | null
   /** setperiodlen refuses a period shorter than this, seconds. Absent on every DAO today. */
   pendingPeriodDelay: number
+  /**
+   * Candidates one account may vote for at once — `maxvotes`, two everywhere
+   * today. Read rather than assumed: votecust refuses a longer slate, and a
+   * form that offered three places would be building a transaction the chain
+   * will not take.
+   */
+  maxVotes: number
   /** When the budget was last drawn, ms — syndicates only. */
   lastClaimBudget: number | null
   /** The budget setting, as a percentage — syndicates only; unions carry none. */
@@ -158,6 +165,7 @@ async function loadOne(row: DirectoryRow): Promise<Dao> {
     periodLength: null,
     lastPeriod: null,
     pendingPeriodDelay: 0,
+    maxVotes: 0,
     lastClaimBudget: null,
     budgetPercent: null,
     approvalThreshold: 3,
@@ -224,6 +232,7 @@ async function loadOne(row: DirectoryRow): Promise<Dao> {
     dao.periodLength = Number.isFinite(length) ? length : null
     dao.lastPeriod = Number.isFinite(last) ? last : null
     dao.pendingPeriodDelay = Number(g.pending_period_delay) || 0
+    dao.maxVotes = Number(g.maxvotes) || 0
     const claimed = Date.parse(`${g.lastclaimbudgettime}Z`)
     dao.lastClaimBudget = Number.isFinite(claimed) ? claimed : null
     /* Stored in hundredths: 400 is 4%. */

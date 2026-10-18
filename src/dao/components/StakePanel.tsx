@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import {
+  assetUnits,
   buyActions,
   cancelAction,
   claimAction,
   sellAction,
   stakeAction,
+  stakeAndVoteActions,
   stakeTimeAction,
   toAsset,
   unstakeAction,
@@ -13,13 +15,14 @@ import {
   type StakeConfig,
 } from '../chain/stake'
 import { isCancel, readableError, type ChainAction } from '../chain/act'
+import { voteBlocker } from '../chain/votes'
 import { fmtAmount, fmtDays, isoMinute } from '../format'
 import { ensureStakeConfig } from '../usePosition'
 import { Overlay } from '../../components/Overlay'
 import { useSession } from '../../wallet/session'
 import type { Dao } from '../chain/daos'
 
-type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay'
+type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay' | 'stakevote'
 
 const OPS: { key: Op; label: string; blurb: string }[] = [
   { key: 'stake', label: 'Stake', blurb: 'Locks tokens you hold. Staked tokens are what your vote weighs.' },
@@ -27,6 +30,12 @@ const OPS: { key: Op; label: string; blurb: string }[] = [
   { key: 'buy', label: 'TLM → token', blurb: 'Converts Trilium into this DAO’s token, one for one.' },
   { key: 'sell', label: 'Token → TLM', blurb: 'Burns the token and refunds Trilium, one for one.' },
   { key: 'delay', label: 'Unstake delay', blurb: 'How long a future unstake waits. A longer delay weighs more.' },
+  {
+    key: 'stakevote',
+    label: 'Stake and vote',
+    blurb:
+      'Trilium in, staked, the delay set and a slate cast — in one transaction, so it all happens or none of it does.',
+  },
 ]
 
 /**
@@ -62,6 +71,8 @@ export function StakePanel({
   const [amount, setAmount] = useState('')
   const [days, setDays] = useState('')
   const [config, setConfig] = useState<StakeConfig | null>(null)
+  /* One box per seat the contract allows, so the slate cannot be too long. */
+  const [slate, setSlate] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
 
@@ -101,9 +112,26 @@ export function StakePanel({
     }
   }
 
+  /*
+    The delay this account may not go below.
+
+    Lowering it would cut the weight behind a vote being cast in the same
+    breath, so the floor here is whatever is already set rather than the
+    contract's own minimum — which is only the floor for somebody who has
+    never chosen one.
+  */
+  const delayFloor = Math.max(position?.delay ?? 0, config?.min ?? 0)
+  /* What the contract will take, not what looks right: maxvotes is two on
+     every council today, and votecust refuses a longer slate. */
+  const seats = dao.maxVotes || 2
+
+  const standing = dao.candidates.filter((c) => c.is_active).sort((a, b) => Number(b.rank) - Number(a.rank))
+
   const go = () => {
     if (!session) return
     const l = level()
+
+    if (op === 'stakevote') return void stakeAndVote(l)
 
     if (op === 'delay') {
       const n = Number(String(days).trim())
@@ -130,11 +158,69 @@ export function StakePanel({
     }
   }
 
+  /**
+   * The whole errand in one transaction.
+   *
+   * Four steps that only make sense together: Trilium bought, the token
+   * staked, the delay set, the slate cast. In one transaction either every
+   * step happens or none does — half of this would be Trilium converted into
+   * a token sitting unstaked, with a vote never cast.
+   *
+   * The order is the order the chain needs: nothing can be staked before it
+   * exists, and a vote weighs what is staked at the moment it is counted.
+   */
+  const stakeAndVote = async (l: ReturnType<typeof level>) => {
+    if (!swapTarget) return setNote({ text: 'This DAO is not listed for TLM swaps.', bad: true })
+
+    const tlmQty = toAsset(amount, 4, TLM_SYMBOL)
+    const tokenQty = toAsset(amount, dao.precision, dao.symbol)
+    if (!tlmQty || !tokenQty) return setNote({ text: 'Enter an amount above zero.', bad: true })
+    if (assetUnits(tlmQty) > assetUnits(tlm)) {
+      return setNote({ text: `You hold ${fmtAmount(tlm ?? '0')}.`, bad: true })
+    }
+
+    const n = Number(String(days).trim())
+    if (!Number.isFinite(n) || n <= 0) return setNote({ text: 'Enter a number of days.', bad: true })
+    const seconds = Math.round(n * 86_400)
+    if (seconds < delayFloor) {
+      return setNote({ text: `The delay cannot go below ${fmtDays(delayFloor)}.`, bad: true })
+    }
+    if (config && seconds > config.max) {
+      return setNote({ text: `The longest the contract allows is ${fmtDays(config.max)}.`, bad: true })
+    }
+
+    const picked = slate.filter(Boolean)
+    if (new Set(picked).size !== picked.length) {
+      return setNote({ text: 'Two different candidates.', bad: true })
+    }
+    if (picked.length !== seats) {
+      return setNote({ text: `Choose ${seats} candidate${seats === 1 ? '' : 's'}.`, bad: true })
+    }
+    /* The contract refuses a slate naming somebody who has withdrawn, and it
+       refuses the WHOLE transaction — the stake and the delay with it. */
+    for (const name of picked) {
+      const why = voteBlocker(dao, name)
+      if (why) return setNote({ text: `${name} ${why}.`, bad: true })
+    }
+
+    await sign(
+      stakeAndVoteActions(l, dao, {
+        planet: swapTarget,
+        tlm: tlmQty,
+        token: tokenQty,
+        seconds,
+        slate: picked,
+      }),
+      `Stake ${tokenQty} and vote for ${picked.join(' and ')}`,
+    )
+    setSlate([])
+  }
+
   const fill = () => {
     if (op === 'stake') return setAmount(String(position?.notStaked ?? '').split(' ')[0])
     if (op === 'unstake') return setAmount(String(position?.staked ?? '').split(' ')[0])
     if (op === 'sell') return setAmount(String(position?.notStaked ?? '').split(' ')[0])
-    if (op === 'buy') return setAmount(String(tlm ?? '').split(' ')[0])
+    if (op === 'buy' || op === 'stakevote') return setAmount(String(tlm ?? '').split(' ')[0])
   }
 
   const chosen = OPS.find((o) => o.key === op) ?? null
@@ -215,7 +301,15 @@ export function StakePanel({
               setOp(op === o.key ? null : o.key)
               setNote(null)
               setAmount('')
-              setDays(position?.delay != null ? String(Math.round((position.delay / 86_400) * 10) / 10) : '')
+              /* The floor, so the box opens at a value the contract will take. */
+              setDays(
+                position?.delay != null
+                  ? String(Math.round((position.delay / 86_400) * 10) / 10)
+                  : o.key === 'stakevote' && config
+                    ? String(Math.round((config.min / 86_400) * 10) / 10)
+                    : '',
+              )
+              setSlate([])
             }}
           >
             {o.label}
@@ -227,7 +321,89 @@ export function StakePanel({
         <div className="tap-form">
           <p className="dao-dim">{chosen.blurb}</p>
 
-          {op === 'delay' ? (
+          {op === 'stakevote' ? (
+            <>
+              <div className="ale-form">
+                <label className="ale-field">
+                  <span className="ale-field__name">
+                    Trilium<i>you hold {tlm ? fmtAmount(tlm) : '0'}</i>
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amount}
+                    placeholder="0"
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                </label>
+                <label className="ale-field">
+                  <span className="ale-field__name">
+                    Unstake delay, days
+                    <i>
+                      {config
+                        ? `${fmtDays(delayFloor)} to ${fmtDays(config.max)}`
+                        : 'reading the contract’s range…'}
+                    </i>
+                  </span>
+                  <input
+                    type="number"
+                    min={Math.round((delayFloor / 86_400) * 10) / 10}
+                    step={0.1}
+                    value={days}
+                    onChange={(e) => setDays(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="ale-form">
+                {Array.from({ length: seats }, (_, i) => (
+                  <label key={i} className="ale-field">
+                    <span className="ale-field__name">
+                      Candidate {i + 1}
+                      <i>{standing.length} standing</i>
+                    </span>
+                    <select
+                      value={slate[i] ?? ''}
+                      onChange={(e) =>
+                        setSlate((was) => {
+                          const next = [...was]
+                          next[i] = e.target.value
+                          return next
+                        })
+                      }
+                    >
+                      <option value="">Choose a candidate…</option>
+                      {standing.map((c) => (
+                        <option
+                          key={c.candidate_name}
+                          value={c.candidate_name}
+                          /* The same name twice is a slate the chain refuses. */
+                          disabled={slate.some((n, j) => j !== i && n === c.candidate_name)}
+                        >
+                          {c.candidate_name}
+                          {dao.custodians.includes(c.candidate_name) ? ' · seated' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+
+              {/* Voting replaces a slate rather than adding to it, which is
+                  not obvious and is not undoable by looking away. */}
+              <p className="dao-note">
+                This casts a new slate of {seats}. Whatever this account votes for in {dao.title} now is
+                replaced — and the delay can only go up from {fmtDays(delayFloor)}, since lowering it would
+                cut the weight behind the vote being cast with it.
+              </p>
+
+              {!swapTarget ? (
+                <p className="dao-note dao-note--bad">
+                  <code>stake.worlds</code> does not list {dao.symbol}, so Trilium cannot be converted here.
+                </p>
+              ) : null}
+            </>
+          ) : op === 'delay' ? (
             <div className="ale-form">
               <label className="ale-field">
                 <span className="ale-field__name">

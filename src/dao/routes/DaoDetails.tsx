@@ -27,6 +27,8 @@ import {
 } from '../chain/worker'
 import { EXPLORER, fmtAge, fmtAmount, fmtDays, fmtPower as fmtNumber, isoDay, rawPower } from '../format'
 import { daoById, useDaos } from '../useDaos'
+import { usePositions } from '../usePosition'
+import { StakePanel } from '../components/StakePanel'
 import { RefreshButton } from '../components/RefreshButton'
 import { ensureProposals, ensureWorker, proposalsOf, useProposalCaches, workerOf } from '../useProposals'
 import { fetchRedirect, type Redirect } from '../chain/inflation'
@@ -89,6 +91,12 @@ export default function DaoDetails() {
   const navigate = useNavigate()
   const { daos, loading } = useDaos()
   const dao = daoById(daos, id)
+  const { actor } = useSession()
+  /* Whether the actions panel is open over this council. */
+  const [acting, setActing] = useState(false)
+  /* Just this one: the grid asks for every council it shows, a page about one
+     council has one to ask about. */
+  const holdings = usePositions(dao ? [dao] : [], actor)
 
   /*
    * The tab is a route, not component state, so each one is linkable, survives
@@ -151,9 +159,32 @@ export default function DaoDetails() {
         </div>
         <div className="page__actions">
           <Countdown due={dao.nextElection} periodLength={dao.periodLength} />
+          {/* The same panel the council grid opens, from the council's own
+              page — where somebody reading the candidates is best placed to
+              decide what to do about them. */}
+          <button
+            className="btn"
+            type="button"
+            disabled={!actor}
+            title={actor ? `Stake, convert or vote in ${dao.title}` : 'Connect a wallet to act here'}
+            onClick={() => setActing(true)}
+          >
+            Stake and vote
+          </button>
           <RefreshButton />
         </div>
       </header>
+
+      {acting ? (
+        <StakePanel
+          dao={dao}
+          position={holdings.positions.get(dao.id) ?? null}
+          tlm={holdings.tlm}
+          swapTarget={holdings.swaps.get(dao.symbol)}
+          onDone={holdings.refresh}
+          onClose={() => setActing(false)}
+        />
+      ) : null}
 
       <DaoTabs
         dao={dao}
