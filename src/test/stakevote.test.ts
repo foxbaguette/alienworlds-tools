@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { stakeAndVoteActions, STAKE_CONTRACT, TLM_CONTRACT } from '@/dao/chain/stake'
+import { mustAgree, stakeAndVoteActions, STAKE_CONTRACT, TLM_CONTRACT } from '@/dao/chain/stake'
 import type { Dao } from '@/dao/chain/daos'
 
 /*
@@ -72,5 +72,60 @@ describe('stake and vote', () => {
 
   it('signs every action as the one account', () => {
     for (const a of built) expect(a.authorization).toEqual([level])
+  })
+})
+
+/*
+ * Membership, which the vote at the end depends on.
+ *
+ * dao.worlds refuses a voter three ways — never registered, agreed to
+ * nothing, agreed to terms since superseded — and each takes the WHOLE
+ * transaction down, the Trilium with it. The third is the one that catches
+ * people who believe they are already members: Kavian is on version 6 while
+ * most of its members are still on 5.
+ */
+describe('agreeing to the member terms', () => {
+  const terms = (agreed: number | null) => ({ version: 6, hash: 'NA', terms: 'Qm...', agreed })
+
+  it('is needed when the account has never registered', () => {
+    expect(mustAgree(terms(null))).toBe(true)
+  })
+
+  it('is needed when the agreed terms have been superseded', () => {
+    expect(mustAgree(terms(5))).toBe(true)
+  })
+
+  it('is not needed when they are already on the latest', () => {
+    expect(mustAgree(terms(6))).toBe(false)
+  })
+
+  it('is not claimed when the terms could not be read', () => {
+    expect(mustAgree(null)).toBe(false)
+  })
+
+  it('rides first in the transaction, before the Trilium moves', () => {
+    const withTerms = stakeAndVoteActions(level, dao, {
+      planet: 'kavian',
+      tlm: '25.0000 TLM',
+      token: '25.0000 KAV',
+      seconds: 864_000,
+      slate: ['first.wam', 'second.wam'],
+      agree: 'NA',
+    })
+    expect(withTerms.map((a) => `${a.account}::${a.name}`)).toEqual([
+      'token.worlds::memberreg',
+      `${TLM_CONTRACT}::transfer`,
+      `${STAKE_CONTRACT}::stake`,
+      'token.worlds::stake',
+      'token.worlds::staketime',
+      'dao.worlds::votecust',
+    ])
+    /* The hash is what the contract compares, not the document it points at. */
+    expect(withTerms[0].data).toEqual({ sender: 'voter.wam', agreedterms: 'NA', dac_id: 'kavian' })
+  })
+
+  it('is left out entirely for a member already on the latest', () => {
+    expect(built.map((a) => a.name)).not.toContain('memberreg')
+    expect(built).toHaveLength(5)
   })
 })

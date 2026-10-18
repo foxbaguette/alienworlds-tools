@@ -6,11 +6,14 @@ import {
   claimAction,
   sellAction,
   stakeAction,
+  fetchMemberTerms,
+  mustAgree,
   stakeAndVoteActions,
   stakeTimeAction,
   toAsset,
   unstakeAction,
   TLM_SYMBOL,
+  type MemberTerms,
   type Position,
   type StakeConfig,
 } from '../chain/stake'
@@ -73,12 +76,24 @@ export function StakePanel({
   const [config, setConfig] = useState<StakeConfig | null>(null)
   /* One box per seat the contract allows, so the slate cannot be too long. */
   const [slate, setSlate] = useState<string[]>([])
+  /* The DAO's member terms, and whether this account has agreed to them. */
+  const [terms, setTerms] = useState<MemberTerms | null>(null)
+  const [agreed, setAgreed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
 
   useEffect(() => {
     void ensureStakeConfig(dao).then(setConfig)
   }, [dao.id])
+
+  useEffect(() => {
+    setTerms(null)
+    setAgreed(false)
+    if (!session) return
+    void fetchMemberTerms(dao, String(session.actor)).then(setTerms).catch((err: unknown) => {
+      console.error('member terms:', err)
+    })
+  }, [dao.id, session])
 
   const now = Date.now()
   const released = (position?.unstakes ?? []).filter((u) => u.release <= now)
@@ -189,6 +204,18 @@ export function StakePanel({
       return setNote({ text: `The longest the contract allows is ${fmtDays(config.max)}.`, bad: true })
     }
 
+    /*
+      Membership first, or the vote at the end is refused — and refused for
+      the whole transaction, the Trilium with it. Three ways to fail it:
+      never registered, agreed to nothing, or agreed to terms since
+      superseded, which is the one that catches people who believe they are
+      already members.
+    */
+    const needsTerms = mustAgree(terms)
+    if (needsTerms && !agreed) {
+      return setNote({ text: 'Agree to the member terms to vote here.', bad: true })
+    }
+
     const picked = slate.filter(Boolean)
     if (new Set(picked).size !== picked.length) {
       return setNote({ text: 'Two different candidates.', bad: true })
@@ -210,6 +237,7 @@ export function StakePanel({
         token: tokenQty,
         seconds,
         slate: picked,
+        agree: needsTerms ? terms!.hash : null,
       }),
       `Stake ${tokenQty} and vote for ${picked.join(' and ')}`,
     )
@@ -388,6 +416,22 @@ export function StakePanel({
                   </label>
                 ))}
               </div>
+
+              {mustAgree(terms) ? (
+                <label className="stake-terms">
+                  <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+                  <span>
+                    {terms!.agreed == null
+                      ? `This account is not a member of ${dao.title}.`
+                      : `This account agreed to version ${terms!.agreed}, and ${dao.title} is now on ${terms!.version}.`}{' '}
+                    Voting needs the current terms, so signing this agrees to{' '}
+                    <a href={`https://ipfs.io/ipfs/${terms!.terms}`} target="_blank" rel="noopener">
+                      version {terms!.version} of the member terms
+                    </a>{' '}
+                    as well.
+                  </span>
+                </label>
+              ) : null}
 
               {/* Voting replaces a slate rather than adding to it, which is
                   not obvious and is not undoable by looking away. */}

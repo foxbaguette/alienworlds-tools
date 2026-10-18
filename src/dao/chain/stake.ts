@@ -207,6 +207,67 @@ export async function readSwapTargets(): Promise<Map<string, string>> {
   return out
 }
 
+/* ---------- membership ---------- */
+
+/**
+ * A DAO's member terms, and whether this account has agreed to them.
+ *
+ * Voting is not open to anyone holding the token: `dao.worlds` refuses a
+ * voter who is not in `members`, who has agreed to nothing, and — the one
+ * that catches people who think they are already in — who agreed to terms
+ * that have since been superseded. Three separate asserts, all of them
+ * taking the whole transaction down.
+ *
+ * Both tables live on the DAO's own token contract, scoped by dac_id.
+ */
+export interface MemberTerms {
+  /** The latest version on offer. */
+  version: number
+  /** What `memberreg` must be given: the terms row's hash, not its document. */
+  hash: string
+  /** Where the terms are — an IPFS id on every DAO today. */
+  terms: string
+  /** The version this account has agreed to, or null if it never has. */
+  agreed: number | null
+}
+
+export async function fetchMemberTerms(dao: Dao, actor: string | null): Promise<MemberTerms | null> {
+  if (!dao.tokenContract) return null
+
+  const [terms, mine] = await Promise.all([
+    /* Newest first: the contract takes the latest and nothing else. */
+    getRows<{ terms: string; hash: string; version: number }>({
+      code: dao.tokenContract,
+      scope: dao.id,
+      table: 'memberterms',
+      limit: 1,
+      reverse: true,
+    }),
+    actor
+      ? getRows<{ sender: string; agreedtermsversion: number }>({
+          code: dao.tokenContract,
+          scope: dao.id,
+          table: 'members',
+          lower_bound: actor,
+          upper_bound: actor,
+          limit: 1,
+        })
+      : Promise.resolve([]),
+  ])
+
+  const latest = terms[0]
+  if (!latest) return null
+  return {
+    version: Number(latest.version) || 0,
+    hash: String(latest.hash ?? ''),
+    terms: String(latest.terms ?? ''),
+    agreed: mine[0] ? Number(mine[0].agreedtermsversion) || 0 : null,
+  }
+}
+
+/** Whether this account must agree before it can vote here. */
+export const mustAgree = (t: MemberTerms | null): boolean => !!t && t.agreed !== t.version
+
 /* ---------- the actions ---------- */
 
 type Level = ChainAction['authorization'][number]
@@ -268,6 +329,20 @@ export const buyActions = (level: Level, target: string, quantity: string): Chai
 ]
 
 /**
+ * Agreeing to a DAO's member terms.
+ *
+ * `agreedterms` is the terms row's HASH — "NA" on every DAO today, which is
+ * what the live registrations send — and not the document it points at. The
+ * contract refuses anything but the latest.
+ */
+export const memberRegAction = (level: Level, dao: Dao, hash: string): ChainAction => ({
+  account: dao.tokenContract!,
+  name: 'memberreg',
+  authorization: [level],
+  data: { sender: level.actor, agreedterms: hash, dac_id: dao.id },
+})
+
+/**
  * The whole errand: Trilium in, staked, the delay set, a slate cast.
  *
  * Four steps that only make sense together, so they ride in one transaction —
@@ -283,8 +358,19 @@ export const buyActions = (level: Level, target: string, quantity: string): Chai
 export const stakeAndVoteActions = (
   level: Level,
   dao: Dao,
-  of: { planet: string; tlm: string; token: string; seconds: number; slate: string[] },
+  of: {
+    planet: string
+    tlm: string
+    token: string
+    seconds: number
+    slate: string[]
+    /* The terms hash to agree to first, where this account has not. */
+    agree?: string | null
+  },
 ): ChainAction[] => [
+  /* First of all, because the vote at the end is refused without it — and
+     refused for the whole transaction, the Trilium with it. */
+  ...(of.agree ? [memberRegAction(level, dao, of.agree)] : []),
   ...buyActions(level, of.planet, of.tlm),
   stakeAction(level, dao, of.token),
   stakeTimeAction(level, dao, of.seconds),

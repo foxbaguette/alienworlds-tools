@@ -646,6 +646,23 @@
 .xch-prop { font-weight: 600; }
 .xch-proptitle { font-weight: 600; }
 
+/* Agreeing to a DAO's member terms, which is a thing somebody does rather
+   than a box that happens to be there — so it reads as a sentence with the
+   document in it, not as a checkbox with a label. */
+.stake-terms {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: start;
+  padding: var(--sp-3);
+  margin-top: var(--sp-3);
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.stake-terms input { margin-top: 3px; accent-color: var(--accent); }
+
 /* Which way an unstake delay moved. Up is somebody committing harder, down is
    somebody stepping back, and the two must not look alike. */
 .xch-move--up { color: var(--good); }
