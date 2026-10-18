@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BIG_AMOUNT, BIG_POWER, GROUPS, KIND_LABEL, KIND_TONE, councilOf, ensureWeights, fetchActivity, fmtDelay, fmtTokens, pendingElections, resolveElections, type Activity as Row, type Flip, weightOf, weightsReady, wouldFlip } from '../chain/activity'
+import { BIG_AMOUNT, BIG_POWER, GROUPS, KIND_LABEL, KIND_TONE, councilOf, delayWas, ensureWeights, fetchActivity, fmtDelay, fmtTokens, pendingElections, resolveDelays, resolveElections, type Activity as Row, type Flip, weightOf, weightsReady, wouldFlip } from '../chain/activity'
 import { fetchStandings, type Standing, type Standings as StandingsData } from '../chain/standings'
 import { Countdown } from '../components/Countdown'
 import { McTag } from '../components/Tags'
@@ -83,6 +83,11 @@ const GROUP_LABEL: Record<Group, string> = {
 
 export default function Activity() {
   const { daos } = useDaos()
+  /* The poll closes over the directory as it was when it started, and a
+     council can be added or re-read while it runs, so the delay lookup asks a
+     ref for the current one rather than the value it captured. */
+  const daosRef = useRef(daos)
+  daosRef.current = daos
   const [rows, setRows] = useState<Row[]>([])
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(true)
@@ -132,6 +137,9 @@ export default function Activity() {
            Done before the rows are published so a gold row never appears with
            its council missing and then fills in underneath the reader. */
         await resolveElections(got)
+        /* Which way each unstake delay moved. The action says only where it
+           landed, and the DAC it belongs to is known here by symbol. */
+        await resolveDelays(got, (sym) => daosRef.current.find((d) => d.symbol === sym))
 
         /* An election makes the directory stale in the two ways this page
            shows: the countdown it carries has just run out, and the seated
@@ -575,9 +583,9 @@ export default function Activity() {
                 ) : r.kind === 'periodlen' ? (
                   <>
                     <b className="xch-election">Election period in {dao?.title ?? r.dacId}</b>{' '}
-                    {r.wasDelay ? (
+                    {r.wasPeriod ? (
                       <>
-                        <span className="dao-dim">{fmtPeriod(r.wasDelay)}</span> →{' '}
+                        <span className="dao-dim">{fmtPeriod(r.wasPeriod)}</span> →{' '}
                       </>
                     ) : (
                       'set to '
@@ -594,6 +602,21 @@ export default function Activity() {
                   </>
                 ) : r.kind === 'staketime' ? (
                   <>
+                    {/* Where it landed says nothing on its own: raising a
+                        delay and lowering one read the same, and they are
+                        opposite moves. Vote power is stake times a delay
+                        multiplier, so longer is committing and shorter is
+                        stepping back. */}
+                    {(() => {
+                      const was = delayWas(r.key)
+                      if (was == null || was === r.delay) return null
+                      const up = (r.delay ?? 0) > was
+                      return (
+                        <b className={`xch-move xch-move--${up ? 'up' : 'down'}`} title={`Was ${fmtDelay(was)}`}>
+                          {up ? '↑ raised' : '↓ lowered'}
+                        </b>
+                      )
+                    })()}{' '}
                     <b className="xch-amount">{fmtDelay(r.delay ?? 0)}</b> unstake delay on{' '}
                     <span className="dao-dim">{dao?.title ?? r.symbol}</span>
                     {power != null && power > 0 ? (

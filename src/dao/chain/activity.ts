@@ -1,4 +1,5 @@
 import { historyGet, iso } from '../../chain/history'
+import { nameToUint64 } from '../../chain/rpc'
 import { getRows } from './nodes'
 import { decayedPower, rawPower } from '../format'
 import { STAKE_CONTRACT } from './stake'
@@ -124,8 +125,15 @@ export interface Activity {
   amount?: number
   /** Seconds, for a staketime change, or the new length of an election period. */
   delay?: number
+  /**
+   * What the unstake delay was before this change, once it has been read.
+   *
+   * Null where there was none to find — a first choice, or a row the history
+   * servers would not give up. See `resolveDelays`.
+   */
+  wasDelay?: number | null
   /** The length an election period was before it was changed, where it is known. */
-  wasDelay?: number
+  wasPeriod?: number
   /** How long an election has been due but unheld, for a pending row. */
   overdue?: number
   /** A council proposal's own name, for the rows about one. */
@@ -403,7 +411,7 @@ export async function fetchActivity(since: number, limit = 400, pages = 1): Prom
       symbol: '',
       dacId: dac,
       delay: length,
-      wasDelay: lastLength.get(dac),
+      wasPeriod: lastLength.get(dac),
       trx: a.trx_id,
     })
     lastLength.set(dac, length)
@@ -511,6 +519,77 @@ export function pendingElections(
   }
   return out
 }
+
+/* ---------- which way an unstake delay moved ---------- */
+
+/**
+ * What an account's unstake delay was before it changed it.
+ *
+ * The action says what the delay became and nothing about what it was, so
+ * raising a delay and lowering one read identically — and they mean opposite
+ * things. Vote power is stake times a delay multiplier, so a longer delay is
+ * somebody committing harder and a shorter one is somebody stepping back.
+ *
+ * Read from the row's own history: `stake.worlds/staketime` as it stood the
+ * instant before. One read per change, and there are two in a good week.
+ *
+ * Cached by row key like the councils are, so the feed's eight-second poll
+ * asks once rather than every time.
+ */
+const delayBefore = new Map<string, number | null>()
+
+interface DelayDelta {
+  deltas?: { present?: number; data?: { delay?: number | string } }[]
+}
+
+export async function resolveDelays(
+  rows: Activity[],
+  /* The council a symbol belongs to, and the token contract holding its
+     stakes — which is the DAO's own, not a constant. */
+  dacOf: (symbol: string) => { id: string; tokenContract?: string | null } | undefined,
+): Promise<boolean> {
+  const wanted = rows.filter((r) => r.kind === 'staketime' && !delayBefore.has(r.key))
+  if (!wanted.length) return false
+
+  await Promise.all(
+    wanted.map(async (r) => {
+      /*
+        The table is token.worlds/staketime, scope the dac_id — the same rows
+        a DAO's own position is read from, not stake.worlds, which has no
+        such table at all.
+      */
+      const dac = dacOf(r.symbol)
+      const code = dac?.tokenContract ?? TOKEN_CONTRACT
+      if (!dac?.id) {
+        delayBefore.set(r.key, null)
+        return
+      }
+      try {
+        const page = await historyGet<DelayDelta>('/v2/history/get_deltas', {
+          code,
+          scope: dac.id,
+          table: 'staketime',
+          primary_key: nameToUint64(r.actor).toString(),
+          /* The instant before, or the change itself answers its own question. */
+          before: iso(r.at - 1),
+          limit: 1,
+          sort: 'desc',
+        })
+        const row = page.deltas?.[0]
+        /* No row, or one that had been deleted, means no delay was set before
+           this — a first choice rather than a change. */
+        delayBefore.set(r.key, !row || row.present === 0 ? null : Number(row.data?.delay) || 0)
+      } catch (err) {
+        console.error(`delay before ${r.key}:`, err)
+        delayBefore.set(r.key, null)
+      }
+    }),
+  )
+  return true
+}
+
+/** The delay before a change, for rows read before it was looked up. */
+export const delayWas = (key: string): number | null | undefined => delayBefore.get(key)
 
 /* ---------- who an election seated ---------- */
 

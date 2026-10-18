@@ -646,6 +646,11 @@
 .xch-prop { font-weight: 600; }
 .xch-proptitle { font-weight: 600; }
 
+/* Which way an unstake delay moved. Up is somebody committing harder, down is
+   somebody stepping back, and the two must not look alike. */
+.xch-move--up { color: var(--good); }
+.xch-move--down { color: var(--critical); }
+
 /* What a proposal would run, for the ones whose title does not say. Quiet:
    it is there to be looked at, not read on the way past. */
 .xch-does {
