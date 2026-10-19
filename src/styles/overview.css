@@ -343,6 +343,26 @@
   min-width: 220px;
 }
 /* The table is wider than a phone; it scrolls rather than squeezing. */
+/* The amount floor on the DEF transfer log: a label, the slider, its range. */
+.deft__floor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0 12px;
+  font-size: var(--fs-sm);
+}
+.deft__floor input[type='range'] { flex: 1 1 220px; max-width: 420px; accent-color: var(--series-1); }
+.deft__exact { width: 7rem; }
+/* Memos run to a swap's whole route, which would set the table's width. */
+.deft__memo {
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
 .pdp__scroll { overflow-x: auto; }
 .pdp { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .pdp th {

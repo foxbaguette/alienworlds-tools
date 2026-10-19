@@ -90,8 +90,15 @@ export const SECTIONS: Section[] = [
               ? {
                   children: [
                     { to: `/${p.key}/ghubs`, label: 'gHubs report' },
-                    /* Planetary Defense alone has a per-player payout report. */
-                    ...(p.key === 'pd' ? [{ to: '/pd/payouts', label: 'Payout report' }] : []),
+                    /* Planetary Defense alone has a per-player payout report,
+                       and a live DEF transfer log that is read rather than
+                       collected — see routes/PdTransfers. */
+                    ...(p.key === 'pd'
+                      ? [
+                          { to: '/pd/payouts', label: 'Payout report' },
+                          { to: '/pd/def', label: 'DEF transfers' },
+                        ]
+                      : []),
                   ],
                 }
               : {}),

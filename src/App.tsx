@@ -6,6 +6,7 @@ import McReport from './routes/McReport'
 import ProjectReport from './routes/ProjectReport'
 import AwReport from './routes/AwReport'
 import PdPayouts from './routes/PdPayouts'
+import PdTransfers from './routes/PdTransfers'
 import PoolStats from './routes/PoolStats'
 import ProjectOverview from './routes/ProjectOverview'
 import Stats from './routes/Stats'
@@ -187,6 +188,7 @@ function Shell() {
           <Route path="/arkhive/ghubs" element={<ProjectReport key="arkhive" projectKey="arkhive" />} />
           <Route path="/th/ghubs" element={<ProjectReport key="th" projectKey="th" />} />
           <Route path="/pd/payouts" element={<PdPayouts />} />
+          <Route path="/pd/def" element={<PdTransfers />} />
           <Route path="/aw" element={<Navigate to="/aw/ghubs" replace />} />
           <Route path="/aw/ghubs" element={<AwReport />} />
           <Route path="/daos/syndicates" element={<Councils group="syndicate" />} />
