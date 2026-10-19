@@ -65,6 +65,80 @@ export async function collectionsOf(ids: Iterable<string | number>): Promise<Map
   return out
 }
 
+export interface AwTransfer {
+  at: number
+  from: string
+  to: string
+  memo: string
+  assetIds: string[]
+}
+
+/**
+ * Every Alien Worlds NFT transfer in or out of one account, oldest first.
+ *
+ * The same API, asked the other way round. Above, a list of ids goes out and
+ * their collections come back; here the collection is the question and the
+ * answer is only the transfers that match it — which history cannot do, since
+ * an atomicassets transfer names ids and nothing else.
+ *
+ * It is the difference between a tractable figure and an intractable one. The
+ * Alien Worlds NFTs in Planetary Defense's custody have moved twelve times in
+ * their whole history, and this returns those twelve in one request. Finding
+ * them in history means every transfer the holding account has ever made —
+ * eleven thousand of them — and then asking this API which collection each of
+ * nearly nine thousand distinct assets belongs to, to throw away nine in ten
+ * of the answers.
+ *
+ * A page that fails is a throw, not an empty page. A transfer silently missed
+ * here is an asset missing from every later day of a chart.
+ */
+export async function awTransfersFor(account: string): Promise<AwTransfer[]> {
+  const out: AwTransfer[] = []
+  for (let page = 1; page <= 100; page++) {
+    if (page > 1) await sleep(GAP_MS)
+    const rows = await transferPage(account, page)
+    out.push(...rows)
+    if (rows.length < BATCH) break
+  }
+  return out
+}
+
+interface TransferRow {
+  created_at_time: string | number
+  sender_name?: string
+  recipient_name?: string
+  memo?: string
+  assets?: { asset_id: string }[]
+}
+
+async function transferPage(account: string, page: number): Promise<AwTransfer[]> {
+  let lastError: unknown
+  for (let round = 0; round < ROUNDS; round++) {
+    if (round) await sleep(2_000 * round)
+    for (const api of APIS) {
+      try {
+        const url =
+          `${api}/atomicassets/v1/transfers?account=${account}&collection_name=${AW_COLLECTION}` +
+          `&page=${page}&limit=${BATCH}&order=asc&sort=created`
+        const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+        if (!res.ok) throw new Error(`${api}: HTTP ${res.status}`)
+        const body = (await res.json()) as { success?: boolean; data?: TransferRow[] }
+        if (!body.success || !body.data) throw new Error(`${api}: no data`)
+        return body.data.map((t) => ({
+          at: Number(t.created_at_time),
+          from: String(t.sender_name ?? ''),
+          to: String(t.recipient_name ?? ''),
+          memo: String(t.memo ?? ''),
+          assetIds: (t.assets ?? []).map((a) => String(a.asset_id)),
+        }))
+      } catch (err) {
+        lastError = err
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
 /** How many of these ids are Alien Worlds NFTs. */
 export async function countAw(ids: Iterable<string | number>): Promise<number> {
   const list = [...ids].map(String)

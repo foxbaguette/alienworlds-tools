@@ -28,6 +28,13 @@ export interface ProjectDay {
   /** NFTs sent to players. */
   nfts: number
   /**
+   * Alien Worlds NFTs the project held at the end of the day, and how many of
+   * those were in a division rather than merely staked — see ProjectDef.custody
+   * and projects/custody.ts. Absent where the project holds none, and on days
+   * collected before it was measured.
+   */
+  custody?: { staked: number; divisions: number }
+  /**
    * What players paid in, as `kind|symbol` → payments and amount — see
    * ProjectDef.incoming. Absent on days collected before it was measured.
    */

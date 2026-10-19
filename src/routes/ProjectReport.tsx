@@ -20,6 +20,15 @@ interface Subject {
   how: string
   /** Drawn as one line each, and split out in the figures' small print. */
   parts?: { label: string; pick: (d: ProjectDay) => number }[]
+  /**
+   * A level rather than a flow: what was held at the end of a day, not what
+   * moved during it.
+   *
+   * Summed it would count the same NFT once for every day it sat there — 58
+   * assets reading as thousands — so the figures show where it stood at the
+   * end of the span instead, and there is no running total to draw.
+   */
+  level?: boolean
 }
 
 interface ReportDef {
@@ -45,6 +54,8 @@ const inOf = (sym: string, keys?: string[]) => (d: ProjectDay) =>
     0,
   )
 const kind = (key: string, sym: string) => (d: ProjectDay) => d.categories[`${key}|${sym}`]?.count ?? 0
+/* Days before the contract existed carry no figure, and nothing was held. */
+const custody = (which: 'staked' | 'divisions') => (d: ProjectDay) => d.custody?.[which] ?? 0
 
 const REPORTS: Record<string, ReportDef> = {
   pd: {
@@ -89,6 +100,25 @@ const REPORTS: Record<string, ReportDef> = {
         parts: [
           { label: 'Defense', pick: (d) => metricOf(d, ['magordefense::adddefense']) },
           { label: 'Attack', pick: (d) => metricOf(d, ['magordefense::addattack']) },
+        ],
+      },
+      {
+        title: 'Alien Worlds NFTs used',
+        group: 'nfts',
+        /* What a gHubs reader wants to know is how many are in play, and for
+           Alien Worlds NFTs that is a tenth of what is staked — 6 of 58 — so
+           the headline is the smaller, truer number and the other is the line
+           beside it. Last, because it is the only block outside the game's
+           own groups and splitting those would put a heading mid-sequence. */
+        pick: custody('divisions'),
+        level: true,
+        how:
+          'Alien Worlds NFTs (collection alien.worlds) staked into core.pdef, from the AtomicAssets record of ' +
+          'transfers in and out of it, and how many of those the contract’s stakes table had in a division at ' +
+          'the end of the day. Planetary Defense’s own planetdefnft assets are not counted.',
+        parts: [
+          { label: 'Staked into the game', pick: custody('staked') },
+          { label: 'In a division', pick: custody('divisions') },
         ],
       },
     ],
@@ -152,16 +182,27 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
   const SINCE = report.allTime ? 'All time' : held.label
   const sinceTitle = report.allTime ? 'since launch' : held.short
   const sumOf = (list: ProjectDay[], pick: (d: ProjectDay) => number) => list.reduce((n, d) => n + pick(d), 0)
+  /* Where a level stood at the end of a span, which is what it means to total it. */
+  const endOf = (list: ProjectDay[], pick: (d: ProjectDay) => number) =>
+    list.length ? pick(list[list.length - 1]) : 0
+  const totalOf = (s: Subject, list: ProjectDay[]) => (s.level ? endOf(list, s.pick) : sumOf(list, s.pick))
 
   /* Wallets seen for the first time each day, and so every wallet seen by then. */
   /* An NFT section with nothing in it is left out: only Alien Worlds NFTs are
      counted, and a project sending other collections' NFTs has none. */
-  const subjects = report.subjects.filter((s) => s.group !== 'nfts' || sumOf(days ?? [], s.pick) > 0)
+  const subjects = report.subjects.filter(
+    (s) => s.group !== 'nfts' || sumOf(days ?? [], s.pick) > 0 || endOf(days ?? [], s.pick) > 0,
+  )
 
   /* A split subject's small print names its parts; a plain one its unit. */
   const small = (s: Subject, list: ProjectDay[]) =>
     s.parts
-      ? [s.unit, s.parts.map((p) => `${whole(sumOf(list, p.pick))} ${p.label.toLowerCase()}`).join(' · ')]
+      ? [
+          s.unit,
+          s.parts
+            .map((p) => `${whole(s.level ? endOf(list, p.pick) : sumOf(list, p.pick))} ${p.label.toLowerCase()}`)
+            .join(' · '),
+        ]
           .filter(Boolean)
           .join(': ')
       : s.unit
@@ -201,20 +242,36 @@ export default function ProjectReport({ projectKey }: { projectKey: string }) {
           group={s.group}
           title={s.title}
           figures={[
-            { label: SINCE, value: whole(sumOf(upTo, s.pick)), sub: small(s, upTo) },
-            { label: within, value: whole(sumOf(inMonth, s.pick)), sub: small(s, inMonth) },
+            {
+              /* A flow is "since the records began"; a level is simply where
+                 it stands on the last day there is. */
+              label: s.level ? `As at ${upTo[upTo.length - 1]?.date ?? '—'}` : SINCE,
+              value: whole(totalOf(s, upTo)),
+              sub: small(s, upTo),
+            },
+            {
+              label: s.level ? `End of ${name}` : within,
+              value: whole(totalOf(s, inMonth)),
+              sub: small(s, inMonth),
+            },
           ]}
           charts={
             s.parts
               ? [
-                  { title: `Per day, ${sinceTitle}`, dates, lines: partLines(s, upTo) },
-                  { title: `Per day, ${name}`, dates: monthDates, lines: partLines(s, inMonth) },
-                  { title: `Running total, ${sinceTitle}`, dates, lines: partLines(s, upTo, running) },
+                  { title: `${s.level ? 'Held' : 'Per day'}, ${sinceTitle}`, dates, lines: partLines(s, upTo) },
+                  { title: `${s.level ? 'Held' : 'Per day'}, ${name}`, dates: monthDates, lines: partLines(s, inMonth) },
+                  /* A level is already cumulative; adding it up again would be
+                     nonsense, so that chart is simply not drawn. */
+                  ...(s.level
+                    ? []
+                    : [{ title: `Running total, ${sinceTitle}`, dates, lines: partLines(s, upTo, running) }]),
                 ]
               : [
-                  { title: `Per day, ${sinceTitle}`, dates, values: upTo.map(s.pick) },
-                  { title: `Per day, ${name}`, dates: monthDates, values: inMonth.map(s.pick) },
-                  { title: `Running total, ${sinceTitle}`, dates, values: running(upTo.map(s.pick)) },
+                  { title: `${s.level ? 'Held' : 'Per day'}, ${sinceTitle}`, dates, values: upTo.map(s.pick) },
+                  { title: `${s.level ? 'Held' : 'Per day'}, ${name}`, dates: monthDates, values: inMonth.map(s.pick) },
+                  ...(s.level
+                    ? []
+                    : [{ title: `Running total, ${sinceTitle}`, dates, values: running(upTo.map(s.pick)) }]),
                 ]
           }
           how={s.how}

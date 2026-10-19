@@ -41,7 +41,7 @@ import { fetchShardPools, fetchTlmPools } from '../src/pools/tables'
 import { fetchFarmPools, fetchFarmStakedAt, type FarmDailyFile } from '../src/farm/queries'
 import { fetchGemsHeldAt, fetchPlayerWallets, type GemsDailyFile } from '../src/gems/queries'
 import { fetchNftsUsed, type NftsDailyFile } from '../src/nfts/queries'
-import { PROJECTS, HISTORY_FLOOR } from '../src/projects/defs'
+import { PROJECTS, HISTORY_FLOOR, type ProjectDef } from '../src/projects/defs'
 import {
   historyProgress,
   resetHistoryProgress,
@@ -62,6 +62,7 @@ import {
   type McReportFile,
   type McStakeKey,
 } from '../src/projects/mcReport'
+import { fetchCustody } from '../src/projects/custody'
 import { fetchProjectDay, fetchProjectIncoming } from '../src/projects/queries'
 import { fetchShopDay, type ShopDailyFile } from '../src/shop/queries'
 import type { ProjectFile } from '../src/projects/rules'
@@ -360,24 +361,66 @@ async function projects(): Promise<void> {
       }
     }
 
-    if (!dates.length) {
-      console.log(`${def.name}: up to date`)
-      continue
-    }
-    console.log(`${def.name}: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
-    for (const date of dates) {
-      const t0 = Date.now()
-      nowReading(`${def.name} ${date}`)
-      const day = await fetchProjectDay(def, date)
-      const by = new Map(file.days.map((d) => [d.date, d]))
-      by.set(date, day)
-      file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
-      file.generatedAt = new Date().toISOString()
-      save(FILE, file)
-      const paid = Object.entries(day.paid).map(([k, v]) => `${Math.round(v).toLocaleString('en-US')} ${k}`).join(', ')
-      console.log(`  ${date}  ${String(day.active).padStart(5)} active  ${paid || 'nothing paid'}  ${((Date.now() - t0) / 1000).toFixed(1)}s`)
-    }
+    if (!dates.length) console.log(`${def.name}: up to date`)
+    else await readDays(def, FILE, file, dates)
+
+    await readCustody(def, FILE, file)
   }
+}
+
+/** One project's days, each read once and then kept. */
+async function readDays(def: ProjectDef, FILE: string, file: ProjectFile, dates: string[]): Promise<void> {
+  console.log(`${def.name}: ${dates.length} day(s), ${dates[0]} … ${dates[dates.length - 1]}`)
+  for (const date of dates) {
+    const t0 = Date.now()
+    nowReading(`${def.name} ${date}`)
+    const day = await fetchProjectDay(def, date)
+    const by = new Map(file.days.map((d) => [d.date, d]))
+    by.set(date, day)
+    file.days = [...by.values()].sort((a, b) => a.date.localeCompare(b.date))
+    file.generatedAt = new Date().toISOString()
+    save(FILE, file)
+    const paid = Object.entries(day.paid).map(([k, v]) => `${Math.round(v).toLocaleString('en-US')} ${k}`).join(', ')
+    console.log(`  ${date}  ${String(day.active).padStart(5)} active  ${paid || 'nothing paid'}  ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+  }
+}
+
+/**
+ * Alien Worlds NFTs staked into a project, written onto every day at once.
+ *
+ * Not a day at a time like everything else here, because it is not read a day
+ * at a time: it is rebuilt from a handful of complete asset timelines, which
+ * gives every day in one go and costs about as much as one day of the gems
+ * step. Rebuilding it each run also keeps it honest — fetchCustody refuses to
+ * return a series whose end does not match the contract's own table — where
+ * accumulating it would let one bad night stand for good.
+ *
+ * It throws rather than guessing, and the step above lets the throw through:
+ * a level that is quietly too low reads as a fact nobody could check.
+ */
+async function readCustody(def: ProjectDef, FILE: string, file: ProjectFile): Promise<void> {
+  if (!def.custody || part || !file.days.length) return
+  const t0 = Date.now()
+  nowReading(`${def.name} custody`)
+  /* From the project's own start, not the file's. Planetary Defense's records
+     reach back to January because magordefense does; core.pdef was created on
+     26 June, so asking history for the months before it is a crawl over
+     nothing. Days earlier than this keep no figure, which is the truth: there
+     was no contract for an NFT to be staked into. */
+  const last = file.days[file.days.length - 1].date
+  const { days, assets } = await fetchCustody(def.custody, def.since, last)
+  const by = new Map(days.map((d) => [d.date, d]))
+  for (const day of file.days) {
+    const got = by.get(day.date)
+    if (got) day.custody = { staked: got.staked, divisions: got.divisions }
+  }
+  file.generatedAt = new Date().toISOString()
+  save(FILE, file)
+  const end = days[days.length - 1]
+  console.log(
+    `  custody  ${end.staked} Alien Worlds NFT(s) staked, ${end.divisions} in a division` +
+      `  (${assets} ever)  ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+  )
 }
 
 /** What players spent in the Alien Legends shop, day by day since launch. */

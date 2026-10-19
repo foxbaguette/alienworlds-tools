@@ -21,6 +21,20 @@ export interface RewardCategory {
   memo: RegExp
 }
 
+/**
+ * Where a project takes custody of NFTs players lend it.
+ *
+ * Players move an asset to the holding account, and the contract keeps a row
+ * saying what that asset is doing. Both are needed: the transfers say what is
+ * there, and only the row says whether it is in use. See projects/custody.ts.
+ */
+export interface CustodyDef {
+  /** The account players transfer assets to, and that holds them. */
+  account: string
+  /** Its record of each staked asset — scope is the staker, key the asset id. */
+  table: string
+}
+
 export interface ProjectDef {
   key: string
   name: string
@@ -63,6 +77,12 @@ export interface ProjectDef {
   incoming?: { account: string; key: string; label: string; memo: RegExp }[]
   /** Whether NFTs it sends are rewards (not loans or returns). */
   nftRewards?: boolean
+  /**
+   * Where it holds NFTs players have staked into it, if it does. What is
+   * counted there is Alien Worlds NFTs only — a figure about the Alien Worlds
+   * economy rather than about the project's own collection.
+   */
+  custody?: CustodyDef
   /** Actions signed on a player's behalf: `contract::action` → the data field naming the player. */
   actorFields?: Record<string, string>
   /** Under the Economy heading: what counts as paid out. */
@@ -135,6 +155,14 @@ export const PROJECTS: ProjectDef[] = [
     lead: 'Planetary Defense on Magor (magordefense, and its missions at miss.pdef) — planetarydefense.io.',
     contracts: ['magordefense', 'miss.pdef'],
     payers: ['magordefense', 'miss.pdef'],
+    /*
+       Players stake NFTs into core.pdef — memo "stake", and "unstake" to take
+       them back — and build divisions out of what is staked. It is deliberately
+       not in `contracts` above: adding it would change who counts as active
+       on a day, and only for the days collected after the change, which would
+       put a step in a series that is supposed to be comparable.
+    */
+    custody: { account: 'core.pdef', table: 'stakes' },
     paidNote:
       "Paid out is what players gained: defense, land, mission and PVP rewards and Shards, less the entry fees they paid to join missions.",
     activeFrom: 'signers',
