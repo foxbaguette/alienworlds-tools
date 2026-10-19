@@ -22,7 +22,7 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     # Long enough for the step below to finish and still leave room to commit.
-    timeout-minutes: 120
+    timeout-minutes: 340
     outputs:
       changed: ${{ steps.commit.outputs.changed }}
     steps:
@@ -46,9 +46,21 @@ jobs:
       # cleared grew instead: seven days to read where there should be one,
       # which is what made the next night run long as well. Cut the collector
       # off here and the days it did finish are still committed.
+      # A hundred minutes was enough for one day of everything and is no
+      # longer enough for a backlog. Mission Control alone costs about half an
+      # hour a day to read — thirty-two minutes a day on 17 October, twelve for
+      # its separate report — so four days behind is already over the old
+      # budget before anything else is read, and the steps after it never ran:
+      # Planetary Defense and the other project reports went eight days
+      # without an update while the run "succeeded" at reading Mission
+      # Control. Worse, a run cut off leaves a longer backlog than it started
+      # with, so the shortfall compounds night after night.
+      #
+      # Five hours is room to catch up from a week behind in one night. A run
+      # with nothing to catch up on still takes about forty minutes.
       - id: collect
         continue-on-error: true
-        timeout-minutes: 100
+        timeout-minutes: 320
         run: npm run collect -- --redo 1
 
       - id: commit

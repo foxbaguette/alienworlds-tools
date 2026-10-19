@@ -178,6 +178,29 @@ const ROUNDS = 5
 const benchedUntil = new Map<string, number>()
 
 /**
+ * The largest page a server will serve, where that is smaller than we ask for.
+ *
+ * Measured rather than configured. detroitledger answers 500 to any
+ * get_actions page over about a hundred rows — whatever the account, whatever
+ * the filter, every time — while HISTORY_PAGE is a thousand. So it failed
+ * every single crawl page this collector has ever sent it, and because the
+ * round-robin reports the LAST error, its 500 is what surfaced whenever a step
+ * died: four nightly steps in a row stopped with "detroitledger answered 500",
+ * which read as a server having a bad night rather than as a server that
+ * cannot answer that question at all.
+ *
+ * It is passed over for the big pages rather than dropped from the pool. Its
+ * deltas are fine at any size, it is one of only two servers that still hold
+ * the summer, and a backfill can have it with `--page 100`.
+ */
+const PAGE_CEILING: { base: string; path: string; rows: number }[] = [
+  { base: 'https://hyperion.wax.detroitledger.tech', path: '/v2/history/get_actions', rows: 100 },
+]
+
+const ceilingFor = (base: string, path: string): number =>
+  PAGE_CEILING.find((c) => c.base === base && c.path === path)?.rows ?? Infinity
+
+/**
  * One GET, tried across the servers until one answers.
  *
  * A server that times out, errors or rate-limits is benched for a minute so
@@ -204,6 +227,7 @@ export async function historyGet<T>(
 
 async function ask<T>(path: string, query: string, pinned?: string): Promise<T> {
   let lastError: unknown
+  const rowsWanted = Number(new URLSearchParams(query).get('limit')) || 0
   for (let round = 0; round < ROUNDS; round++) {
     for (let attempt = 0; attempt < HISTORY_ENDPOINTS.length; attempt++) {
       const base = pinned ?? HISTORY_ENDPOINTS[next % HISTORY_ENDPOINTS.length]
@@ -215,6 +239,8 @@ async function ask<T>(path: string, query: string, pinned?: string): Promise<T> 
         for a minute after a single 503 threw away the whole day's work.
       */
       const alone = HISTORY_ENDPOINTS.length === 1
+      /* Not even on the last round: this failure is arithmetic, not weather. */
+      if (!pinned && !alone && rowsWanted > ceilingFor(base, path)) continue
       if (!pinned && !alone && (benchedUntil.get(base) ?? 0) > Date.now() && round < ROUNDS - 1) continue
       try {
         const res = await fetch(`${base}${path}?${query}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
