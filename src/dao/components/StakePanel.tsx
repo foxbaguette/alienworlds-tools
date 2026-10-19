@@ -18,6 +18,7 @@ import {
   type StakeConfig,
 } from '../chain/stake'
 import { isCancel, readableError, type ChainAction } from '../chain/act'
+import { candidacyOf, withdrawBlocker, withdrawCandidacyAction } from '../chain/candidacy'
 import { voteBlocker } from '../chain/votes'
 import { fmtAmount, fmtDays, isoMinute } from '../format'
 import { ensureStakeConfig } from '../usePosition'
@@ -25,7 +26,7 @@ import { Overlay } from '../../components/Overlay'
 import { useSession } from '../../wallet/session'
 import type { Dao } from '../chain/daos'
 
-type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay' | 'stakevote'
+type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay' | 'stakevote' | 'withdraw'
 
 const OPS: { key: Op; label: string; blurb: string }[] = [
   { key: 'stake', label: 'Stake', blurb: 'Locks tokens you hold. Staked tokens are what your vote weighs.' },
@@ -39,14 +40,26 @@ const OPS: { key: Op; label: string; blurb: string }[] = [
     blurb:
       'Trilium in, staked, the delay set and a slate cast — in one transaction, so it all happens or none of it does.',
   },
+  {
+    key: 'withdraw',
+    label: 'Unregister as candidate',
+    blurb: 'Stops standing for this council. The stake stays where it is, and can then be unstaked.',
+  },
 ]
 
 /**
- * Everything one account can do with a DAO's token.
+ * Everything one account can do in a DAO.
  *
- * Five actions over one balance, which is why they are one panel rather than
- * five buttons on a card: they all read the same position, and after any of
- * them that position has to be re-read. It opens over the page rather than
+ * Mostly its token: staking, unstaking, converting either way, and the delay
+ * a future unstake waits. They are one panel rather than a button each because
+ * they all read the same position, and after any of them that position has to
+ * be re-read.
+ *
+ * Standing for the council is the exception — it is about candidacy rather
+ * than a balance — but it belongs here all the same, because the chain ties
+ * the two together: `stakeobsv` will not let a registered candidate unstake
+ * anything at all, so withdrawing is the step that unblocks the button beside
+ * it. It opens over the page rather than
  * below the grid — it is about one council, and the grid it was opened from is
  * not what you are reading any more.
  *
@@ -142,11 +155,20 @@ export function StakePanel({
 
   const standing = dao.candidates.filter((c) => c.is_active).sort((a, b) => Number(b.rank) - Number(a.rank))
 
+  /* How this account itself stands here — null while the list is unread. */
+  const mine = candidacyOf(dao, session ? String(session.actor) : null)
+  const cannotWithdraw = withdrawBlocker(mine)
+
   const go = () => {
     if (!session) return
     const l = level()
 
     if (op === 'stakevote') return void stakeAndVote(l)
+
+    if (op === 'withdraw') {
+      if (cannotWithdraw) return setNote({ text: cannotWithdraw, bad: true })
+      return void sign([withdrawCandidacyAction(l, dao)], `Unregister as a candidate in ${dao.title}`)
+    }
 
     if (op === 'delay') {
       const n = Number(String(days).trim())
@@ -447,6 +469,45 @@ export function StakePanel({
                 </p>
               ) : null}
             </>
+          ) : op === 'withdraw' ? (
+            <>
+              {mine == null ? (
+                <p className="dao-note dao-note--bad">
+                  {dao.title}'s candidate list could not be read, so whether this account is standing
+                  there cannot be told. Refresh before signing.
+                </p>
+              ) : !mine.registered ? (
+                <p className="dao-note">
+                  This account has never stood for {dao.title}, so there is nothing to unregister.
+                </p>
+              ) : !mine.standing ? (
+                <p className="dao-note">
+                  This account has already withdrawn from {dao.title}. The row stays on the table for
+                  good — every council keeps its withdrawn candidates — but it is not standing.
+                </p>
+              ) : (
+                <>
+                  <p className="dao-note">
+                    This stops {session ? String(session.actor) : 'this account'} standing for{' '}
+                    {dao.title}. Votes cast for it stay on the candidate row, and standing again means{' '}
+                    <code>nominatecane</code> with a requested pay — not something this panel does.
+                  </p>
+                  {mine.seated ? (
+                    <p className="dao-note">
+                      It does not give up the seat this account holds now. A withdrawn candidate is
+                      simply one <code>newperiod</code> will not seat again, so the seat is held until
+                      the next election.
+                    </p>
+                  ) : null}
+                  {position?.staked && assetUnits(position.staked) > 0 ? (
+                    <p className="dao-note">
+                      {fmtAmount(position.staked)} stays staked. Unstaking is what candidacy blocks, so
+                      it is this that has to come first.
+                    </p>
+                  ) : null}
+                </>
+              )}
+            </>
           ) : op === 'delay' ? (
             <div className="ale-form">
               <label className="ale-field">
@@ -481,6 +542,12 @@ export function StakePanel({
             </div>
           )}
 
+          {op === 'unstake' && mine?.standing ? (
+            <p className="dao-note dao-note--bad">
+              This account is a registered candidate in {dao.title}, and <code>stakeobsv</code> refuses
+              an unstake from one. Unregister first — the action beside this one.
+            </p>
+          ) : null}
           {op === 'delay' && waiting.length ? (
             <p className="dao-note">
               This governs the NEXT unstake. The {waiting.length} already in flight keep the delay they were
@@ -494,7 +561,12 @@ export function StakePanel({
           ) : null}
 
           <div className="page__actions">
-            <button className="btn btn--go" type="button" disabled={busy} onClick={go}>
+            <button
+              className="btn btn--go"
+              type="button"
+              disabled={busy || (op === 'withdraw' && (!mine || !!cannotWithdraw))}
+              onClick={go}
+            >
               {busy ? 'Signing…' : chosen.label}
             </button>
             <button className="btn" type="button" disabled={busy} onClick={() => setOp(null)}>
