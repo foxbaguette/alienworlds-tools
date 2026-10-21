@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchHoldings, type Holdings } from '../chain/holdings'
 import { WATCHED, type Dao } from '../chain/daos'
-import { EXPLORER, decayedPower, fmtPower, rawPower } from '../format'
+import { EXPLORER, decayedPower, fmtPower, powerTitle, rawPower } from '../format'
 import { McTag } from '../components/Tags'
 import { useDaos } from '../useDaos'
 import { RefreshButton } from '../components/RefreshButton'
@@ -10,10 +10,12 @@ import { RefreshButton } from '../components/RefreshButton'
 /**
  * Everyone standing for a council, and what they hold.
  *
- * A candidate's vote power is what OTHER people have put behind them. This page
- * asks the other question — what they hold themselves — because the two come
- * apart: a candidate with a large slate and no stake of their own is a
- * different proposition from one with both.
+ * A candidate's vote power is what OTHER people have put behind them, as the
+ * chain counts it today rather than as it was ever cast — votes halve every
+ * thirty days of age, and the two figures run hundreds of times apart. This
+ * page asks the other question as well — what they hold themselves — because
+ * those come apart too: a candidate with a large slate and no stake of their
+ * own is a different proposition from one with both.
  *
  * Holdings are the total held, staked included. `accounts` is scoped by the
  * holder, so one read per account brings back every planetary token at once;
@@ -94,7 +96,9 @@ export default function Candidates() {
 
   const valueOf = (e: (typeof entries)[number], key: SortKey): number | string => {
     if (key === 'name') return e.name
-    if (key === 'power') return e.own
+    /* Sorted by the counted figure, because that is the one on show and a
+       column that sorts by a number it is not displaying is a trap. */
+    if (key === 'power') return e.power
     if (key === 'tlm') return holdings.get(e.name)?.tlm ?? -1
     return holdings.get(e.name)?.tokens.get(key) ?? -1
   }
@@ -209,9 +213,9 @@ export default function Candidates() {
                     </td>
                     <td
                       className="num"
-                      title={`${fmtPower(e.own)} voted onto them. The chain counts ${fmtPower(e.power)} of it today — votes halve every 30 days of age.`}
+                      title={powerTitle(e.power, e.own)}
                     >
-                      {fmtPower(e.own)}
+                      {fmtPower(e.power)}
                     </td>
                     <td className="num">{h ? fmtPower(h.tlm) : '…'}</td>
                     {columns.map((c) => {

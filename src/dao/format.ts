@@ -94,15 +94,36 @@ export function decayedPower(rank: string | number, precision: number, now = Dat
 
 /** Short enough to sit in a card's list without pushing the name around. */
 /**
- * The vote power a candidate actually holds: the sum of the balances behind
- * every account that voted for them, in the DAO's own token.
+ * Everything ever voted onto a candidate, in the DAO's own token.
  *
- * This is the number people mean by "vote power". decayedPower above is a
- * different thing — it is what the CHAIN seats people on, and it can be an
- * order of magnitude smaller, because it discounts votes by their age.
+ * Not what the column labelled "Vote power" shows, and it took seeing the two
+ * side by side to be sure of that. `total_vote_power` is a running sum that
+ * never ages, so it says how much support a candidate has ever attracted; the
+ * chain seats people on `decayedPower` above, which is what still counts
+ * today. On Veles Union a candidate with 2.73M of this has 12.9K of that — two
+ * hundred times apart, and it is the smaller figure that decides the council.
+ *
+ * So this is shown beside the counted figure as context, never in place of it.
  */
 export const rawPower = (total: string | number, precision: number): number =>
   Number(total) / 10 ** precision
+
+/**
+ * Why the two figures differ, in the words every table that shows them uses.
+ *
+ * One sentence rather than four slightly different ones: these numbers are
+ * confusing enough without each page explaining them its own way.
+ */
+export function powerTitle(counted: number, raw: number, symbol?: string, voters?: number): string {
+  const from = voters == null ? '' : `, from ${voters} account${voters === 1 ? '' : 's'}`
+  /* The all-candidates page totals across DAOs, so there is no one token to
+     name there; everywhere else there is, and naming it helps. */
+  const unit = symbol ? ` ${symbol}` : ''
+  return (
+    `${fmtPower(counted)}${unit} is what the chain counts today, and it is what seats a council. ` +
+    `${fmtPower(raw)} was voted onto them in all${from} — votes halve every 30 days of age.`
+  )
+}
 
 export function fmtPower(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—'

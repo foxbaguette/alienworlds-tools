@@ -27,7 +27,17 @@ import {
   type WorkerData,
   type WorkerProposal,
 } from '../chain/worker'
-import { EXPLORER, fmtAge, fmtAmount, fmtDays, fmtPower as fmtNumber, isoDay, rawPower } from '../format'
+import {
+  EXPLORER,
+  decayedPower,
+  fmtAge,
+  fmtAmount,
+  fmtDays,
+  fmtPower as fmtNumber,
+  isoDay,
+  powerTitle,
+  rawPower,
+} from '../format'
 import { daoById, useDaos } from '../useDaos'
 import { usePositions } from '../usePosition'
 import { StakePanel } from '../components/StakePanel'
@@ -859,7 +869,7 @@ function CouncilTab({ dao }: { dao: Dao }) {
                           </span>
                         ) : null}
                       </td>
-                      <td className="num">{fmtPower(c.total_vote_power, dao)}</td>
+                      <Power row={c} dao={dao} />
                       {voterCell('council', c.cust_name, c.number_voters)}
                       <td className="num">{Number.isFinite(age) ? fmtAge(Date.now() - age) : '—'}</td>
                     </tr>
@@ -929,7 +939,7 @@ function CouncilTab({ dao }: { dao: Dao }) {
                           </span>
                         ) : null}
                       </td>
-                      <td className="num">{fmtPower(c.total_vote_power, dao)}</td>
+                      <Power row={c} dao={dao} />
                       {voterCell('standing', c.candidate_name, c.number_voters)}
                       <td className="num">{Number.isFinite(age) ? fmtAge(Date.now() - age) : '—'}</td>
                       <td className="num">{seat >= 0 ? seat + 1 : ''}</td>
@@ -1717,4 +1727,23 @@ function Account({ name, plain }: { name: string; plain?: boolean }) {
 }
 
 /** Vote power is a running sum of balances, in this DAO's own token. */
-const fmtPower = (raw: string, dao: Dao): string => fmtNumber(rawPower(raw, dao.precision))
+/**
+ * A vote power cell: what the chain counts, over what was voted in all.
+ *
+ * The counted figure leads because it is the one that decides anything — the
+ * council is seated on it, and the page was showing the other one. The total
+ * stays underneath rather than disappearing: a candidate with a large old
+ * following and a small counted figure is a different proposition from one
+ * with neither, and only the two together say which.
+ */
+function Power({ row, dao }: { row: { rank: string; total_vote_power: string; number_voters?: number }; dao: Dao }) {
+  const counted = decayedPower(row.rank, dao.precision)
+  const raw = rawPower(row.total_vote_power, dao.precision)
+  if (!(raw > 0)) return <td className="num">—</td>
+  return (
+    <td className="num" title={powerTitle(counted, raw, dao.symbol, row.number_voters)}>
+      {fmtNumber(counted)}
+      <span className="dao-dim">of {fmtNumber(raw)}</span>
+    </td>
+  )
+}
