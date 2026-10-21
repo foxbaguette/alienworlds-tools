@@ -161,3 +161,52 @@ export function nominateBlocker(
   }
   return null
 }
+
+/* ---------- the profile voters see ---------- */
+
+/**
+ * A candidate's profile.
+ *
+ * `stprofile` takes a string, and every front end that reads one expects that
+ * string to be JSON of this shape — image, given name, description, in that
+ * order. There is no table behind it: the profile lives in the action history
+ * and nowhere else, which is why it is written carefully and never guessed at.
+ *
+ * It is also worth saying what the chain does NOT check. `stprofile` carries
+ * no asserts at all: not that the account is a candidate, not a length, not
+ * that the string is JSON. Whatever is sent is what voters are shown, for
+ * good. Of the six profiles ever set on dao.worlds, three say the literal
+ * `[object Object]` — somebody's interface concatenated the object instead of
+ * encoding it, and the chain took it without a murmur.
+ */
+export interface Profile {
+  /** The name to show instead of the wallet. */
+  givenName: string
+  /** What the candidate wants voters to read. */
+  description: string
+  /** A picture, by URL — an ipfs.alienworlds.io link on the live ones. */
+  image: string
+}
+
+/**
+ * A profile as the string to send, or null where there is nothing to say.
+ *
+ * Encoded rather than built by hand, so this cannot become the fourth
+ * `[object Object]` on the chain. Null for an empty profile, because setting
+ * one to three empty strings is worse than not setting one: it overwrites.
+ */
+export function profileJson(of: Profile): string | null {
+  const image = of.image.trim()
+  const givenName = of.givenName.trim()
+  const description = of.description.trim()
+  if (!image && !givenName && !description) return null
+  /* The key order the live profiles use, so they read alike in an explorer. */
+  return JSON.stringify({ image, givenName, description })
+}
+
+export const profileAction = (level: Level, dao: Dao, profile: string): ChainAction => ({
+  account: dao.custodianContract!,
+  name: 'stprofile',
+  authorization: [level],
+  data: { cand: level.actor, profile, dac_id: dao.id },
+})

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { candidacyOf, nominateAction, nominateBlocker, noPay } from '@/dao/chain/candidacy'
+import {
+  candidacyOf,
+  nominateAction,
+  nominateBlocker,
+  noPay,
+  profileAction,
+  profileJson,
+} from '@/dao/chain/candidacy'
 import type { Dao } from '@/dao/chain/daos'
 
 /*
@@ -88,5 +95,68 @@ describe('standing as a candidate', () => {
   it('asks for no stake where the DAO sets none', () => {
     const dao = { ...syndicate, minStake: null } as Dao
     expect(nominateBlocker(dao, mine(dao), true, 0, 172_800)).toBeNull()
+  })
+})
+
+/*
+ * The profile that goes up with the nomination.
+ *
+ * `stprofile` asserts nothing — not that the account is a candidate, not a
+ * length, not that the string is even readable — so everything that can be
+ * got wrong here reaches the chain and stays there. Three of the six profiles
+ * ever set on dao.worlds read `[object Object]`, which is what an interface
+ * sends when it concatenates the object instead of encoding it.
+ */
+describe('a candidate profile', () => {
+  const full = { givenName: 'fury', description: 'Vote for PD', image: 'https://ipfs.example/Qm' }
+
+  it('encodes as JSON, in the order the live profiles use', () => {
+    expect(profileJson(full)).toBe(
+      '{"image":"https://ipfs.example/Qm","givenName":"fury","description":"Vote for PD"}',
+    )
+  })
+
+  /* The mistake already on the chain three times. */
+  it('is never the string an object concatenates to', () => {
+    for (const of of [full, { ...full, image: '' }, { givenName: 'x', description: '', image: '' }]) {
+      const said = profileJson(of)
+      expect(said).not.toContain('[object Object]')
+      expect(() => JSON.parse(said!)).not.toThrow()
+    }
+  })
+
+  it('survives quotes, newlines and emoji intact', () => {
+    const said = profileJson({ ...full, description: 'He said "no".\nI said 🐝' })!
+    expect(JSON.parse(said).description).toBe('He said "no".\nI said 🐝')
+  })
+
+  it('trims what was typed', () => {
+    expect(JSON.parse(profileJson({ givenName: '  fury ', description: ' hi  ', image: '' })!)).toEqual({
+      image: '',
+      givenName: 'fury',
+      description: 'hi',
+    })
+  })
+
+  /* Nothing to say is not the same as saying nothing: an empty profile would
+     overwrite whatever is there with three empty strings. */
+  it('sends no profile when every field is blank', () => {
+    expect(profileJson({ givenName: '', description: '', image: '' })).toBeNull()
+    expect(profileJson({ givenName: ' ', description: '\n', image: '  ' })).toBeNull()
+  })
+
+  it('still sends one when only the text is filled in', () => {
+    expect(profileJson({ givenName: '', description: 'just this', image: '' })).toBe(
+      '{"image":"","givenName":"","description":"just this"}',
+    )
+  })
+
+  it('builds stprofile on the custodian contract', () => {
+    expect(profileAction(level, syndicate, '{"a":1}')).toEqual({
+      account: 'dao.worlds',
+      name: 'stprofile',
+      authorization: [level],
+      data: { cand: 'hopeful.wam', profile: '{"a":1}', dac_id: 'kavian' },
+    })
   })
 })

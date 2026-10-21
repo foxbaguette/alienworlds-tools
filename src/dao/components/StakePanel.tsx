@@ -26,6 +26,8 @@ import {
   nominateAction,
   nominateBlocker,
   noPay,
+  profileAction,
+  profileJson,
   withdrawBlocker,
   withdrawCandidacyAction,
 } from '../chain/candidacy'
@@ -68,7 +70,8 @@ const OPS: { key: Op; label: string; blurb: string }[] = [
   {
     key: 'register',
     label: 'Stand as candidate',
-    blurb: 'Puts this account forward for the council. Agreeing to the member terms rides along where it is needed.',
+    blurb:
+      'Puts this account forward for the council, with the profile voters will see. Agreeing to the member terms rides along where it is needed.',
   },
   {
     key: 'withdraw',
@@ -129,6 +132,8 @@ export function StakePanel({
     unread, which is not the same as a no.
   */
   const [listed, setListed] = useState<boolean | null>(null)
+  /* What voters are shown. Sent with the nomination, in the same transaction. */
+  const [profile, setProfile] = useState({ givenName: '', description: '', image: '' })
   const [agreed, setAgreed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
@@ -148,6 +153,7 @@ export function StakePanel({
 
   useEffect(() => {
     setListed(null)
+    setProfile({ givenName: '', description: '', image: '' })
     if (!session) return
     void fetchWhitelisted(dao, String(session.actor)).then(setListed)
   }, [dao.id, session])
@@ -216,10 +222,14 @@ export function StakePanel({
       if (needsTerms && !agreed) {
         return setNote({ text: 'Agree to the member terms to stand here.', bad: true })
       }
+      /* Last, and only where there is something to say: an empty profile does
+         not clear one, it writes three empty strings over it. */
+      const said = profileJson(profile)
       return void sign(
         [
           ...(needsTerms ? [memberRegAction(l, dao, terms!.hash)] : []),
           nominateAction(l, dao, noPay(dao)),
+          ...(said ? [profileAction(l, dao, said)] : []),
         ],
         `Stand as a candidate in ${dao.title}`,
       )
@@ -574,11 +584,54 @@ export function StakePanel({
                 </li>
               </ul>
 
+              <div className="ale-form">
+                <label className="ale-field">
+                  <span className="ale-field__name">
+                    Name shown<i>instead of the wallet</i>
+                  </span>
+                  <input
+                    type="text"
+                    value={profile.givenName}
+                    placeholder={session ? String(session.actor) : ''}
+                    onChange={(e) => setProfile((was) => ({ ...was, givenName: e.target.value }))}
+                  />
+                </label>
+                <label className="ale-field">
+                  <span className="ale-field__name">
+                    Picture<i>a URL, if there is one</i>
+                  </span>
+                  <input
+                    type="url"
+                    value={profile.image}
+                    placeholder="https://…"
+                    onChange={(e) => setProfile((was) => ({ ...was, image: e.target.value }))}
+                  />
+                </label>
+              </div>
+
+              <label className="ale-field stake-bio">
+                <span className="ale-field__name">
+                  Profile<i>what voters read before they vote</i>
+                </span>
+                <textarea
+                  rows={4}
+                  value={profile.description}
+                  placeholder="Why this account should hold a seat."
+                  onChange={(e) => setProfile((was) => ({ ...was, description: e.target.value }))}
+                />
+              </label>
+
               {termsTick('Standing')}
 
               <p className="dao-note">
                 Standing locks the stake where it is: a registered candidate cannot unstake anything until they
                 unregister. Votes are what seat a candidate, and those are cast by other people.
+              </p>
+
+              <p className="dao-note">
+                The profile goes up in the same transaction as the nomination, and the chain checks nothing
+                about it — not the length, not even that it is readable. It is also the only record: there is no
+                table behind a profile, so what is sent here is what voters see until it is sent again.
               </p>
             </>
           ) : op === 'withdraw' ? (

@@ -1769,3 +1769,8 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
 /* A ticked row is the answer to "who do I vote for", so it reads at a glance
    rather than needing the checkbox column to be found again. */
 .dao-table tr.dao-row--picked td { background: color-mix(in srgb, var(--series-1) 10%, transparent); }
+
+/* A candidate's profile is prose, not an ABI field: the form's monospace is
+   there to make a uint64 unambiguous, and it makes a paragraph hard to read. */
+.stake-bio { display: grid; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.stake-bio textarea { font-family: inherit; line-height: 1.5; }
