@@ -1,3 +1,4 @@
+import { getRows } from './nodes'
 import type { ChainAction } from './act'
 import type { Dao } from './daos'
 
@@ -75,3 +76,88 @@ export const withdrawCandidacyAction = (level: Level, dao: Dao): ChainAction => 
   authorization: [level],
   data: { cand: level.actor, dac_id: dao.id },
 })
+
+/* ---------- standing in the first place ---------- */
+
+/**
+ * Whether an account may stand here at all.
+ *
+ * Every union sets `requires_whitelist` and keeps a list of about forty-seven
+ * accounts; no syndicate does. So on a syndicate anyone who meets the stake can
+ * put themselves forward, and on a union it is by invitation — which is why
+ * `nominatecane` carries ERR::NOT_IN_WHITELIST, and why that is the first thing
+ * worth telling somebody rather than the last.
+ *
+ * Null where it could not be read, for the same reason `candacyOf` returns
+ * null: a node under load answers with an empty page, and an empty page is
+ * indistinguishable from an account that is not on the list.
+ */
+export async function fetchWhitelisted(dao: Dao, actor: string | null): Promise<boolean | null> {
+  if (!dao.needsWhitelist) return true
+  if (!actor || !dao.custodianContract) return null
+  try {
+    const rows = await getRows<{ cand: string }>({
+      code: dao.custodianContract,
+      scope: dao.id,
+      table: 'whitelist',
+      lower_bound: actor,
+      upper_bound: actor,
+      limit: 1,
+    })
+    return rows.length > 0
+  } catch (err) {
+    console.error(`whitelist in ${dao.id}:`, err)
+    return null
+  }
+}
+
+/**
+ * Putting an account forward as a candidate.
+ *
+ * `requestedpay` is what the candidate asks the DAO to pay them, and the
+ * contract refuses anything over `requested_pay_max` — which is 0.0000 TLM on
+ * every DAO today. So it is sent as zero of whatever the ceiling is denominated
+ * in rather than offered as a field: a box that may only contain nought is not
+ * a question worth asking.
+ */
+export const nominateAction = (level: Level, dao: Dao, pay: string): ChainAction => ({
+  account: dao.custodianContract!,
+  name: 'nominatecane',
+  authorization: [level],
+  data: { cand: level.actor, requestedpay: pay, dac_id: dao.id },
+})
+
+/** Zero, in whatever asset this DAO caps requested pay in. */
+export function noPay(dao: Dao): string {
+  const code = String(dao.maxPay ?? '').split(' ')[1]
+  return code ? `0.0000 ${code}` : '0.0000 TLM'
+}
+
+/**
+ * Why standing here would be refused, as the contract would refuse it.
+ *
+ * Checked in the order somebody would want to hear them: whether they may
+ * stand at all, then whether they already do, then what they would have to
+ * move to qualify. Each maps to an assert that would otherwise fire after
+ * signing, costing the signer their CPU and telling them very little.
+ */
+export function nominateBlocker(
+  dao: Dao,
+  of: Candidacy | null,
+  listed: boolean | null,
+  staked: number,
+  delay: number | null,
+): string | null {
+  if (listed === false) {
+    return `${dao.title} only takes candidates from its whitelist, and this account is not on it.`
+  }
+  if (of?.standing) return 'This account is already standing here.'
+  const need = Number(String(dao.minStake ?? '0').split(' ')[0]) || 0
+  if (need && staked < need) {
+    return `Standing takes ${dao.minStake} staked, and this account has ${staked.toLocaleString('en-GB')}.`
+  }
+  if (dao.minStakeDelay && delay != null && delay < dao.minStakeDelay) {
+    return `The unstake delay must be at least ${dao.minStakeDelay} seconds to stand here.`
+  }
+  return null
+}

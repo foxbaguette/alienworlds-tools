@@ -112,6 +112,27 @@ export interface Dao {
    * will not take.
    */
   maxVotes: number
+  /**
+   * What standing for this council takes — `nominatecane` checks all four.
+   *
+   * `minStake` is the lockup the contract insists a candidate holds staked,
+   * 5,000 of the DAO's token everywhere today and visibly so: a good many
+   * candidates sit at exactly that. `minStakeDelay` is the unstake delay it
+   * insists on alongside, a second on the syndicates and a day on the unions,
+   * which the stake config's own two-day floor already clears.
+   *
+   * `maxPay` is the ceiling on what a candidate may ask to be paid, and it is
+   * 0.0000 TLM on all fourteen — so a nomination asks for nothing, and there is
+   * no figure for anyone to enter.
+   *
+   * `needsWhitelist` is the one that differs by kind rather than by degree:
+   * every union has it set and keeps a list of about forty-seven accounts,
+   * and no syndicate has it at all. Standing in a union is by invitation.
+   */
+  minStake: string | null
+  minStakeDelay: number
+  maxPay: string | null
+  needsWhitelist: boolean
   /** When the budget was last drawn, ms — syndicates only. */
   lastClaimBudget: number | null
   /** The budget setting, as a percentage — syndicates only; unions carry none. */
@@ -166,6 +187,10 @@ async function loadOne(row: DirectoryRow): Promise<Dao> {
     lastPeriod: null,
     pendingPeriodDelay: 0,
     maxVotes: 0,
+    minStake: null,
+    minStakeDelay: 0,
+    maxPay: null,
+    needsWhitelist: false,
     lastClaimBudget: null,
     budgetPercent: null,
     approvalThreshold: 3,
@@ -233,6 +258,14 @@ async function loadOne(row: DirectoryRow): Promise<Dao> {
     dao.lastPeriod = Number.isFinite(last) ? last : null
     dao.pendingPeriodDelay = Number(g.pending_period_delay) || 0
     dao.maxVotes = Number(g.maxvotes) || 0
+    const asset = (v: unknown) => {
+      const q = (v as { quantity?: string } | undefined)?.quantity
+      return typeof q === 'string' ? q : null
+    }
+    dao.minStake = asset(g.lockupasset)
+    dao.minStakeDelay = Number(g.lockup_release_time_delay) || 0
+    dao.maxPay = asset(g.requested_pay_max)
+    dao.needsWhitelist = !!Number(g.requires_whitelist)
     const claimed = Date.parse(`${g.lastclaimbudgettime}Z`)
     dao.lastClaimBudget = Number.isFinite(claimed) ? claimed : null
     /* Stored in hundredths: 400 is 4%. */

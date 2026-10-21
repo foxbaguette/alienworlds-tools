@@ -1746,3 +1746,26 @@ td.wp-acts { margin: 0; justify-content: flex-end; }
   background: var(--accent-soft);
   border-left: 3px solid var(--accent);
 }
+
+/* The vote slate: ticks in the candidate table, and the bar that casts them. */
+.dao-slate {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+}
+.dao-slate .page__actions { margin-top: var(--sp-3); }
+
+.dao-table th.dao-tick,
+.dao-table td.dao-tick {
+  width: 1%;
+  padding-right: 0;
+  white-space: nowrap;
+}
+.dao-table td.dao-tick input { accent-color: var(--series-1); cursor: pointer; }
+.dao-table td.dao-tick input:disabled { cursor: default; opacity: 0.4; }
+
+/* A ticked row is the answer to "who do I vote for", so it reads at a glance
+   rather than needing the checkbox column to be found again. */
+.dao-table tr.dao-row--picked td { background: color-mix(in srgb, var(--series-1) 10%, transparent); }

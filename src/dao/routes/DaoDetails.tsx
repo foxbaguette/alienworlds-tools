@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useState } from 'react'
-import { fetchDaoVotes, votersByCandidate, type VoteRow } from '../chain/votes'
+import { fetchDaoVotes, voteAction, voteBlocker, votersByCandidate, type VoteRow } from '../chain/votes'
+import { fetchMemberTerms, memberRegAction, mustAgree, type MemberTerms } from '../chain/stake'
+import { useVotes } from '../useVotes'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Countdown } from '../components/Countdown'
 import { WATCHED, heldByWatched, isMcControlled, type Dao } from '../chain/daos'
@@ -796,6 +798,7 @@ function CouncilTab({ dao }: { dao: Dao }) {
     .sort((a, b) => Number(b.rank) - Number(a.rank))
 
   const voters = useVoters(dao)
+  const slate = useSlate(dao, standing)
   /*
     Which row is open, by table and name — not by name alone. A seated
     custodian is in both tables, so one key opened the list twice, once under
@@ -881,10 +884,14 @@ function CouncilTab({ dao }: { dao: Dao }) {
         <h2 className="dao-h2">
           Candidates <span className="dao-dim">{standing.length} standing</span>
         </h2>
+
+        <SlateBar slate={slate} dao={dao} />
+
         <div className="dao-tablewrap">
           <table className="dao-table">
             <thead>
               <tr>
+                {slate.can ? <th className="dao-tick" title="Who this account votes for">Vote</th> : null}
                 <th>Candidate</th>
                 <th className="num">Vote power</th>
                 <th className="num">Voters</th>
@@ -896,9 +903,24 @@ function CouncilTab({ dao }: { dao: Dao }) {
               {standing.map((c) => {
                 const seat = dao.custodians.indexOf(c.candidate_name)
                 const age = Date.parse(`${c.avg_vote_time_stamp}Z`)
+                const ticked = slate.picked.includes(c.candidate_name)
                 return (
                   <Fragment key={c.candidate_name}>
-                    <tr>
+                    <tr className={ticked ? 'dao-row--picked' : undefined}>
+                      {slate.can ? (
+                        <td className="dao-tick">
+                          <input
+                            type="checkbox"
+                            checked={ticked}
+                            /* At the cap the rest go flat rather than silently
+                               dropping somebody already chosen: which of the
+                               two to give up is not ours to decide. */
+                            disabled={slate.busy || (!ticked && slate.picked.length >= slate.seats)}
+                            aria-label={`Vote for ${c.candidate_name}`}
+                            onChange={() => slate.toggle(c.candidate_name)}
+                          />
+                        </td>
+                      ) : null}
                       <td>
                         <Account name={c.candidate_name} />
                         {dao.wouldSeat.includes(c.candidate_name) && seat < 0 ? (
@@ -915,7 +937,7 @@ function CouncilTab({ dao }: { dao: Dao }) {
                     {open === `standing:${c.candidate_name}` ? (
                       <VoterList
                         name={c.candidate_name}
-                        span={5}
+                        span={slate.can ? 6 : 5}
                         votes={voters.by?.get(c.candidate_name)}
                         busy={voters.busy}
                         error={voters.error}
@@ -929,6 +951,208 @@ function CouncilTab({ dao }: { dao: Dao }) {
         </div>
       </section>
     </>
+  )
+}
+
+/**
+ * The slate this account votes with, as something to edit rather than read.
+ *
+ * The ticks start on whoever it votes for now, so the table opens showing the
+ * truth and a change is a change from it. `dirty` is what makes the button
+ * worth pressing — but it is not what makes it *possible*, because recasting
+ * the same two names is a real act: a vote carries the time it was cast, and a
+ * candidate's rank decays from it, so re-signing an unchanged slate is how you
+ * refresh the weight behind them.
+ */
+function useSlate(dao: Dao, standing: Dao['candidates']) {
+  const { session } = useSession()
+  const { votes, refresh } = useVotes([dao])
+  const cast = votes.get(dao.id)?.candidates ?? []
+
+  const [picked, setPicked] = useState<string[] | null>(null)
+  const [terms, setTerms] = useState<MemberTerms | null>(null)
+  const [agreed, setAgreed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+
+  /* Forgotten between DAOs, and between accounts: this tab is not remounted on
+     the way from one council to the next, so a slate left in state would be
+     offered as somebody's vote in a DAO they have never voted in. */
+  useEffect(() => {
+    setPicked(null)
+    setTerms(null)
+    setAgreed(false)
+    setNote(null)
+    if (!session) return
+    void fetchMemberTerms(dao, String(session.actor)).then(setTerms).catch((err: unknown) => {
+      console.error('member terms:', err)
+    })
+  }, [dao.id, session])
+
+  /* Until something is ticked, the ticks ARE the vote on the chain. */
+  const chosen = picked ?? cast
+  const seats = dao.maxVotes || 2
+
+  const toggle = (name: string) => {
+    setNote(null)
+    setPicked((was) => {
+      const from = was ?? cast
+      if (from.includes(name)) return from.filter((n) => n !== name)
+      if (from.length >= seats) return from
+      return [...from, name]
+    })
+  }
+
+  const same =
+    chosen.length === cast.length && chosen.every((n) => cast.includes(n))
+
+  /* Names on the current vote that are no longer standing. votecust refuses a
+     slate carrying one, so they cannot simply be left ticked and ignored. */
+  const gone = cast.filter((n) => !standing.some((c) => c.candidate_name === n))
+
+  const send = async () => {
+    if (!session || busy) return
+    if (!chosen.length) {
+      return setNote({ text: 'Tick at least one candidate — an empty slate deletes your vote.', bad: true })
+    }
+    for (const name of chosen) {
+      const why = voteBlocker(dao, name)
+      if (why) return setNote({ text: `${name} ${why}.`, bad: true })
+    }
+    const needsTerms = mustAgree(terms)
+    if (needsTerms && !agreed) {
+      return setNote({ text: 'Agree to the member terms to vote here.', bad: true })
+    }
+
+    setBusy(true)
+    setNote({ text: 'Casting your vote — check your wallet…' })
+    try {
+      const level = {
+        actor: String(session.actor),
+        permission: session.permissionLevel.permission
+          ? String(session.permissionLevel.permission)
+          : 'active',
+      }
+      await session.transact(
+        {
+          actions: [
+            /* dao.worlds refuses a voter who is not a member on the latest
+               terms, and refuses the whole transaction with it. */
+            ...(needsTerms ? [memberRegAction(level, dao, terms!.hash)] : []),
+            voteAction(session, dao, chosen),
+          ],
+        },
+        { broadcast: true },
+      )
+      await new Promise((r) => setTimeout(r, 2_500))
+      await refresh()
+      setPicked(null)
+      setNote({ text: `Voting for ${chosen.join(' and ')}.` })
+    } catch (err) {
+      if (isCancel(err)) setNote({ text: 'Cancelled.' })
+      else {
+        console.error('vote:', err)
+        setNote({ text: readableError(err), bad: true })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return {
+    can: !!session,
+    picked: chosen,
+    cast,
+    gone,
+    seats,
+    same,
+    busy,
+    note,
+    terms,
+    agreed,
+    setAgreed,
+    toggle,
+    reset: () => {
+      setPicked(null)
+      setNote(null)
+    },
+    send,
+  }
+}
+
+/** The slate, and the one button that casts it. */
+function SlateBar({ slate, dao }: { slate: ReturnType<typeof useSlate>; dao: Dao }) {
+  if (!slate.can) {
+    return <p className="dao-dim">Connect a wallet to see and change who you vote for here.</p>
+  }
+
+  return (
+    <div className="dao-slate">
+      <p className="dao-dim">
+        {slate.cast.length
+          ? `You vote for ${slate.cast.join(' and ')}.`
+          : `You have not voted in ${dao.title}.`}{' '}
+        Tick up to {slate.seats}, then cast.
+      </p>
+
+      {slate.gone.length ? (
+        <p className="dao-note dao-note--bad">
+          Your vote still names {slate.gone.join(' and ')}, who {slate.gone.length === 1 ? 'is' : 'are'} no
+          longer standing. The chain refuses a slate carrying {slate.gone.length === 1 ? 'them' : 'any of them'},
+          so this vote cannot be recast until {slate.gone.length === 1 ? 'that name is' : 'those names are'}{' '}
+          replaced.
+        </p>
+      ) : null}
+
+      {mustAgree(slate.terms) ? (
+        <label className="stake-terms">
+          <input
+            type="checkbox"
+            checked={slate.agreed}
+            onChange={(e) => slate.setAgreed(e.target.checked)}
+          />
+          <span>
+            {slate.terms!.agreed == null
+              ? `This account is not a member of ${dao.title}.`
+              : `This account agreed to version ${slate.terms!.agreed}, and ${dao.title} is now on ${slate.terms!.version}.`}{' '}
+            Voting needs the current terms, so signing this agrees to{' '}
+            <a href={`https://ipfs.io/ipfs/${slate.terms!.terms}`} target="_blank" rel="noopener">
+              version {slate.terms!.version} of the member terms
+            </a>{' '}
+            as well.
+          </span>
+        </label>
+      ) : null}
+
+      {slate.note ? (
+        <p className={`dao-note${slate.note.bad ? ' dao-note--bad' : ''}`}>{slate.note.text}</p>
+      ) : null}
+
+      <div className="page__actions">
+        <button
+          className="btn btn--go"
+          type="button"
+          disabled={slate.busy || !slate.picked.length}
+          title={
+            slate.same
+              ? 'Casting the same two again refreshes the time on your vote, which is what their rank decays from'
+              : undefined
+          }
+          onClick={() => void slate.send()}
+        >
+          {slate.busy
+            ? 'Signing…'
+            : slate.same
+              ? `Recast ${slate.picked.length === 1 ? 'this vote' : 'these votes'}`
+              : `Vote for ${slate.picked.length} of ${slate.seats}`}
+        </button>
+        {!slate.same ? (
+          <button className="btn" type="button" disabled={slate.busy} onClick={slate.reset}>
+            Back to my vote
+          </button>
+        ) : null}
+      </div>
+    </div>
   )
 }
 

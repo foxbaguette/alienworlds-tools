@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  assetAmount,
   assetUnits,
   buyActions,
   cancelAction,
@@ -7,6 +8,7 @@ import {
   sellAction,
   stakeAction,
   fetchMemberTerms,
+  memberRegAction,
   mustAgree,
   stakeAndVoteActions,
   stakeTimeAction,
@@ -18,7 +20,15 @@ import {
   type StakeConfig,
 } from '../chain/stake'
 import { isCancel, readableError, type ChainAction } from '../chain/act'
-import { candidacyOf, withdrawBlocker, withdrawCandidacyAction } from '../chain/candidacy'
+import {
+  candidacyOf,
+  fetchWhitelisted,
+  nominateAction,
+  nominateBlocker,
+  noPay,
+  withdrawBlocker,
+  withdrawCandidacyAction,
+} from '../chain/candidacy'
 import { voteBlocker } from '../chain/votes'
 import { fmtAmount, fmtDays, isoMinute } from '../format'
 import { ensureStakeConfig } from '../usePosition'
@@ -41,7 +51,7 @@ const blockOf = (result: unknown): number | undefined => {
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
-type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay' | 'stakevote' | 'withdraw'
+type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay' | 'stakevote' | 'register' | 'withdraw'
 
 const OPS: { key: Op; label: string; blurb: string }[] = [
   { key: 'stake', label: 'Stake', blurb: 'Locks tokens you hold. Staked tokens are what your vote weighs.' },
@@ -54,6 +64,11 @@ const OPS: { key: Op; label: string; blurb: string }[] = [
     label: 'Stake and vote',
     blurb:
       'Trilium in, staked, the delay set and a slate cast — in one transaction, so it all happens or none of it does.',
+  },
+  {
+    key: 'register',
+    label: 'Stand as candidate',
+    blurb: 'Puts this account forward for the council. Agreeing to the member terms rides along where it is needed.',
   },
   {
     key: 'withdraw',
@@ -108,6 +123,12 @@ export function StakePanel({
   const [slate, setSlate] = useState<string[]>([])
   /* The DAO's member terms, and whether this account has agreed to them. */
   const [terms, setTerms] = useState<MemberTerms | null>(null)
+  /*
+    Whether this account may stand here at all: true on every syndicate, and on
+    a union only for the forty-odd accounts on its whitelist. Null while it is
+    unread, which is not the same as a no.
+  */
+  const [listed, setListed] = useState<boolean | null>(null)
   const [agreed, setAgreed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
@@ -123,6 +144,12 @@ export function StakePanel({
     void fetchMemberTerms(dao, String(session.actor)).then(setTerms).catch((err: unknown) => {
       console.error('member terms:', err)
     })
+  }, [dao.id, session])
+
+  useEffect(() => {
+    setListed(null)
+    if (!session) return
+    void fetchWhitelisted(dao, String(session.actor)).then(setListed)
   }, [dao.id, session])
 
   const now = Date.now()
@@ -179,6 +206,24 @@ export function StakePanel({
     const l = level()
 
     if (op === 'stakevote') return void stakeAndVote(l)
+
+    if (op === 'register') {
+      const why = nominateBlocker(dao, mine, listed, assetAmount(position?.staked), position?.delay ?? null)
+      if (why) return setNote({ text: why, bad: true })
+      /* The same three asserts that refuse a vote refuse a nomination, so the
+         registration rides in front of it rather than being discovered after. */
+      const needsTerms = mustAgree(terms)
+      if (needsTerms && !agreed) {
+        return setNote({ text: 'Agree to the member terms to stand here.', bad: true })
+      }
+      return void sign(
+        [
+          ...(needsTerms ? [memberRegAction(l, dao, terms!.hash)] : []),
+          nominateAction(l, dao, noPay(dao)),
+        ],
+        `Stand as a candidate in ${dao.title}`,
+      )
+    }
 
     if (op === 'withdraw') {
       if (cannotWithdraw) return setNote({ text: cannotWithdraw, bad: true })
@@ -287,6 +332,31 @@ export function StakePanel({
     if (op === 'sell') return setAmount(String(position?.notStaked ?? '').split(' ')[0])
     if (op === 'buy' || op === 'stakevote') return setAmount(String(tlm ?? '').split(' ')[0])
   }
+
+  /**
+   * The member-terms tick, for the two actions the chain refuses without one.
+   *
+   * A tick rather than a step folded quietly into the transaction, because
+   * agreeing to terms is something a person does. The panel says which
+   * version, why it is needed and links the document, and will not sign until
+   * it is ticked.
+   */
+  const termsTick = (what: 'Voting' | 'Standing') =>
+    mustAgree(terms) ? (
+      <label className="stake-terms">
+        <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+        <span>
+          {terms!.agreed == null
+            ? `This account is not a member of ${dao.title}.`
+            : `This account agreed to version ${terms!.agreed}, and ${dao.title} is now on ${terms!.version}.`}{' '}
+          {what} needs the current terms, so signing this agrees to{' '}
+          <a href={`https://ipfs.io/ipfs/${terms!.terms}`} target="_blank" rel="noopener">
+            version {terms!.version} of the member terms
+          </a>{' '}
+          as well.
+        </span>
+      </label>
+    ) : null
 
   const chosen = OPS.find((o) => o.key === op) ?? null
 
@@ -454,21 +524,7 @@ export function StakePanel({
                 ))}
               </div>
 
-              {mustAgree(terms) ? (
-                <label className="stake-terms">
-                  <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
-                  <span>
-                    {terms!.agreed == null
-                      ? `This account is not a member of ${dao.title}.`
-                      : `This account agreed to version ${terms!.agreed}, and ${dao.title} is now on ${terms!.version}.`}{' '}
-                    Voting needs the current terms, so signing this agrees to{' '}
-                    <a href={`https://ipfs.io/ipfs/${terms!.terms}`} target="_blank" rel="noopener">
-                      version {terms!.version} of the member terms
-                    </a>{' '}
-                    as well.
-                  </span>
-                </label>
-              ) : null}
+              {termsTick('Voting')}
 
               {/* Voting replaces a slate rather than adding to it, which is
                   not obvious and is not undoable by looking away. */}
@@ -483,6 +539,47 @@ export function StakePanel({
                   <code>stake.worlds</code> does not list {dao.symbol}, so Trilium cannot be converted here.
                 </p>
               ) : null}
+            </>
+          ) : op === 'register' ? (
+            <>
+              {(() => {
+                const why = nominateBlocker(dao, mine, listed, assetAmount(position?.staked), position?.delay ?? null)
+                return why ? <p className="dao-note dao-note--bad">{why}</p> : null
+              })()}
+
+              {dao.needsWhitelist ? (
+                <p className="dao-note">
+                  {listed == null
+                    ? `${dao.title} keeps a whitelist of who may stand, and whether this account is on it could not be read.`
+                    : listed
+                      ? `This account is on the candidate whitelist for ${dao.title}.`
+                      : `${dao.title} takes candidates from a whitelist only, and an account is added to it by a council proposal.`}
+                </p>
+              ) : null}
+
+              <ul className="stake-figures">
+                <li>
+                  <span>Stake needed</span>
+                  <b>{dao.minStake ? fmtAmount(dao.minStake) : '—'}</b>
+                </li>
+                <li>
+                  <span>You have staked</span>
+                  <b>{position?.staked ? fmtAmount(position.staked) : '0'}</b>
+                </li>
+                <li>
+                  <span>Asking to be paid</span>
+                  <b title="requested_pay_max is zero on every DAO, so a candidate asks for nothing">
+                    {fmtAmount(noPay(dao))}
+                  </b>
+                </li>
+              </ul>
+
+              {termsTick('Standing')}
+
+              <p className="dao-note">
+                Standing locks the stake where it is: a registered candidate cannot unstake anything until they
+                unregister. Votes are what seat a candidate, and those are cast by other people.
+              </p>
             </>
           ) : op === 'withdraw' ? (
             <>
@@ -579,7 +676,12 @@ export function StakePanel({
             <button
               className="btn btn--go"
               type="button"
-              disabled={busy || (op === 'withdraw' && (!mine || !!cannotWithdraw))}
+              disabled={
+                busy ||
+                (op === 'withdraw' && (!mine || !!cannotWithdraw)) ||
+                (op === 'register' &&
+                  !!nominateBlocker(dao, mine, listed, assetAmount(position?.staked), position?.delay ?? null))
+              }
               onClick={go}
             >
               {busy ? 'Signing…' : chosen.label}
