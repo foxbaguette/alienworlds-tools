@@ -26,6 +26,21 @@ import { Overlay } from '../../components/Overlay'
 import { useSession } from '../../wallet/session'
 import type { Dao } from '../chain/daos'
 
+/**
+ * Which block a signed transaction landed in.
+ *
+ * Read defensively: what a wallet hands back differs between them, and the
+ * figure is an optimisation — knowing it means the panel can wait for the
+ * chain instead of guessing at a pause. Not knowing it should not break
+ * signing, so a wallet that says nothing simply reads back straight away.
+ */
+const blockOf = (result: unknown): number | undefined => {
+  const processed = (result as { response?: { processed?: { block_num?: number | string } } })?.response
+    ?.processed
+  const n = Number(processed?.block_num)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
 type Op = 'stake' | 'unstake' | 'buy' | 'sell' | 'delay' | 'stakevote' | 'withdraw'
 
 const OPS: { key: Op; label: string; blurb: string }[] = [
@@ -79,7 +94,9 @@ export function StakePanel({
   position: Position | null
   tlm: string | null
   swapTarget: string | undefined
-  onDone: () => Promise<void> | void
+  /* Given the block its transaction landed in, so the figures it reads back
+     are from after it rather than from whichever node answered first. */
+  onDone: (block?: number) => Promise<void> | void
   onClose: () => void
 }) {
   const { session } = useSession()
@@ -122,10 +139,8 @@ export function StakePanel({
     setBusy(true)
     setNote({ text: `${describe} — check your wallet…` })
     try {
-      await session.transact({ actions }, { broadcast: true })
-      /* A block has to land before the tables move. */
-      await new Promise((r) => setTimeout(r, 2500))
-      await onDone()
+      const result = await session.transact({ actions }, { broadcast: true })
+      await onDone(blockOf(result))
       setAmount('')
       setOp(null)
       setNote({ text: `${describe} done.` })

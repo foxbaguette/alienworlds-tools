@@ -98,12 +98,21 @@ export interface StakeConfig {
  * transaction, so reading the two from nodes at different heights can show the
  * same tokens twice — once as staked and once as unstaking.
  */
-export async function readPosition(dao: Dao, actor: string, balance: string | null): Promise<Position | null> {
+export async function readPosition(
+  dao: Dao,
+  actor: string,
+  balance: string | null,
+  /* The node the balance above came from, so the subtraction below is of four
+     numbers from one moment rather than four. See usePosition.loadPositions. */
+  node?: string,
+): Promise<Position | null> {
   if (!dao.tokenContract) return null
   const bounded = { lower_bound: actor, upper_bound: actor, limit: 1 }
 
   const contract = dao.tokenContract
-  const [stakeRows, timeRows, unstakeRows] = await pinned(3, (url) => [
+  const onOne = <T extends readonly Promise<unknown>[]>(n: number, build: (url: string | undefined) => T) =>
+    node ? (Promise.all(build(node)) as Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>) : pinned(n, build)
+  const [stakeRows, timeRows, unstakeRows] = await onOne(3, (url) => [
     getRows<{ stake: string }>({ code: contract, scope: dao.id, table: 'stakes', ...bounded }, url),
     getRows<{ delay: number }>({ code: contract, scope: dao.id, table: 'staketime', ...bounded }, url),
     getRows<{ key: string; stake: string; release_time: string }>(
@@ -154,8 +163,15 @@ export async function readPosition(dao: Dao, actor: string, balance: string | nu
 }
 
 /** Every balance one holder has on a token contract, in one read. */
-export async function readBalances(contract: string, actor: string): Promise<Map<string, string>> {
-  const rows = await getRows<{ balance: string }>({ code: contract, scope: actor, table: 'accounts', limit: 200 })
+export async function readBalances(
+  contract: string,
+  actor: string,
+  node?: string,
+): Promise<Map<string, string>> {
+  const rows = await getRows<{ balance: string }>(
+    { code: contract, scope: actor, table: 'accounts', limit: 200 },
+    node,
+  )
   return new Map(rows.map((r) => [codeOf(r.balance), r.balance]))
 }
 
