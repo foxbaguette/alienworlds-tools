@@ -88,7 +88,7 @@ useHistoryPage(Number(flag('--page') ?? 0))
 useHistoryGap(Number(flag('--gap') ?? 0))
 /* Walk each window backwards — what eosphere needs for anything older than 90 days. */
 useHistoryBackwards(process.argv.includes('--backwards'))
-/* At most this many requests in the air at once — see useHistoryConcurrency. */
+/* Overrides the pool default of six — see useHistoryConcurrency for why it's six. */
 useHistoryConcurrency(Number(flag('--inflight') ?? 0))
 
 /**

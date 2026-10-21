@@ -81,7 +81,27 @@ export const historyBackwards = (): boolean => BACKWARDS
   request passes, so one number decides how hard a run leans on a server —
   a backfill sets it to one, the nightly run leaves it alone.
 */
-let inFlightLimit = Infinity
+/**
+ * History requests allowed in the air at once.
+ *
+ * Unbounded was a fiction about the pool. Measured on 21 October, of the five
+ * servers only waxsweden answered a crawl page at all: cryptolions returned
+ * 403, hivebp 521, eosphere 429, and detroitledger 500 to any page over about
+ * a hundred rows. So "spread across five" was in practice "all of it at one" —
+ * and one project day fires a crawl per paying account, each cut into six
+ * slices, each paging, which is thirty-odd simultaneous requests at a single
+ * server.
+ *
+ * It answers that by refusing, and a refusal from every server is what ends a
+ * step. On that morning aw, pools, activity, projects and mcreport all stopped
+ * early inside thirteen minutes, with four hours of budget left and nothing
+ * wrong with the clock; farm, gems, nfts and shop, which ask for little, went
+ * through the same pool at the same time untroubled.
+ *
+ * Six keeps two servers busy and is few enough to be a guest rather than a
+ * load test. A caller that knows better can still say so with --inflight.
+ */
+let inFlightLimit = 6
 let inFlight = 0
 const queue: (() => void)[] = []
 
