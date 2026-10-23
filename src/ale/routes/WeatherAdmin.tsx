@@ -85,6 +85,21 @@ export function WeatherAdmin() {
   const group: WeatherGroup | null = groups.find((g) => g.char === picked) ?? null
   const batch = group?.rows ?? []
 
+  /**
+   * Why the copy cannot be signed, or null.
+   *
+   * Every button on this page that writes is disabled without a wallet, and
+   * none of them said so — a grey button with no reason is a bug report
+   * waiting to happen, and it got one. The reason now sits on the button and
+   * beside it.
+   */
+  const cannotCopy =
+    !session
+      ? 'Connect a wallet to write weather.'
+      : !batch.length
+        ? 'Choose a group above to copy.'
+        : scopeProblem(scope)
+
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
     const rows = all ?? []
@@ -194,6 +209,12 @@ export function WeatherAdmin() {
         </div>
       </header>
 
+      {!session ? (
+        <p className="dao-note">
+          No wallet is connected, so nothing here can be written — the catalogue still reads. Connect one from
+          the sidebar to save, copy or delete a weather.
+        </p>
+      ) : null}
       {error ? <p className="dao-note dao-note--bad">{error}</p> : null}
       {note ? <p className={`dao-note${note.bad ? ' dao-note--bad' : ''}`}>{note.text}</p> : null}
 
@@ -265,11 +286,19 @@ export function WeatherAdmin() {
           </label>
           <div className="ale-field">
             <span className="ale-field__name">&nbsp;</span>
-            <button className="btn btn--go" type="button" disabled={!session || busy || !batch.length} onClick={copy}>
+            <button
+              className="btn btn--go"
+              type="button"
+              disabled={busy || !!cannotCopy}
+              title={cannotCopy ?? `Write ${batch.length} weathers into ${scope}`}
+              onClick={copy}
+            >
               {busy ? 'Signing…' : `Save ${batch.length} in scope`}
             </button>
           </div>
         </div>
+
+        {cannotCopy && !busy ? <p className="dao-note">{cannotCopy}</p> : null}
 
         {scope && scopes ? (
           <p className="dao-note">
