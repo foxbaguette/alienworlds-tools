@@ -1,4 +1,4 @@
-import { getRows } from '../../dao/chain/nodes'
+import { call, getRows } from '../../dao/chain/nodes'
 import type { ChainAction } from '../../dao/chain/act'
 
 /**
@@ -142,3 +142,95 @@ export const blankWeather = (): Weather => ({
   displayname: '',
   title: '',
 })
+
+/* ---------- copying a catalogue into another scope ---------- */
+
+/**
+ * The catalogue, grouped by the first character of the weather id.
+ *
+ * That character is not decoration: the ids were minted in batches and the
+ * first one says what the weather targets. On magor today, all 264 ids
+ * beginning `c` target a class, all 276 beginning `e` an element, all 322
+ * beginning `r` a race, the 138 beginning `a` nothing at all, and `s` is the
+ * single "No Weather Effect". So grouping by it is grouping by kind.
+ *
+ * It is also the right size to act on. `setweather` costs about 220µs of CPU
+ * writing to six planets and a transaction may use 150,000µs, so the largest
+ * of these groups fits with room to spare where the whole thousand would not.
+ */
+export interface WeatherGroup {
+  /** The first character of every id in it. */
+  char: string
+  rows: Weather[]
+  /** What they target, worked out from the rows rather than from the letter. */
+  targets: string
+}
+
+export function groupByFirst(rows: Weather[]): WeatherGroup[] {
+  const by = new Map<string, Weather[]>()
+  for (const w of rows) {
+    const c = String(w.weather_id)[0] ?? '?'
+    const got = by.get(c)
+    if (got) got.push(w)
+    else by.set(c, [w])
+  }
+  return [...by.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([char, group]) => ({ char, rows: group, targets: targetsOf(group) }))
+}
+
+function targetsOf(rows: Weather[]): string {
+  const has = (pick: (w: Weather) => string[]) => rows.filter((w) => pick(w).length).length
+  const kinds: string[] = []
+  if (has((w) => w.affected_class) === rows.length) kinds.push('class')
+  if (has((w) => w.affected_element) === rows.length) kinds.push('element')
+  if (has((w) => w.affected_race) === rows.length) kinds.push('race')
+  return kinds.length ? `${kinds.join(' and ')} weathers` : 'untargeted'
+}
+
+/**
+ * Whether a name can be a scope at all.
+ *
+ * An eosio name, which is not a string: twelve characters from `.12345a-z`,
+ * and a leading or trailing dot is not one the chain will take. Checked here
+ * because a name the wallet cannot even serialise fails before signing, with
+ * an error about encoding rather than about what was typed.
+ */
+export function scopeProblem(name: string): string | null {
+  const s = name.trim()
+  if (!s) return 'Name the scope to write into.'
+  if (s.length > 12) return 'A scope name is at most 12 characters.'
+  if (!/^[a-z1-5.]+$/.test(s)) return 'Only a–z, 1–5 and dots are allowed in a name.'
+  if (s.startsWith('.') || s.endsWith('.')) return 'A name cannot begin or end with a dot.'
+  return null
+}
+
+/**
+ * What a batch of writes will cost, against what a transaction may spend.
+ *
+ * Measured from the live writes rather than guessed: each `setweather` onto
+ * six planets billed between 114 and 330µs, median about 180, so 220 is a fair
+ * upper hand for one scope — and `max_transaction_cpu_usage` is 150,000.
+ *
+ * It is an estimate and says so. CPU billing varies with what else the node is
+ * doing, and the account's own staked CPU can bite long before the chain's
+ * ceiling does.
+ */
+export const CPU_PER_WRITE_US = 220
+export const CPU_LIMIT_US = 150_000
+
+export const estimateCpu = (writes: number) => writes * CPU_PER_WRITE_US
+
+/**
+ * Every scope `battle.ale` already keeps a weather catalogue in.
+ *
+ * Six today, one per planet, each holding the same 1,001 rows. Worth showing
+ * beside the box: a scope already there is being written over, and a scope
+ * that is not is a new one being made.
+ */
+export async function fetchWeatherScopes(): Promise<Map<string, number>> {
+  const body = (await call({ code: BATTLE, table: 'weather', limit: 100 }, 'get_table_by_scope')) as {
+    rows?: { scope: string; count: number }[]
+  }
+  return new Map((body.rows ?? []).map((r) => [String(r.scope), Number(r.count) || 0]))
+}

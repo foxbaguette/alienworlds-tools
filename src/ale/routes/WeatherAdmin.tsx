@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   CLASSES,
+  CPU_LIMIT_US,
   PLANETS,
   STAT_NAMES,
   blankWeather,
   delWeatherAction,
+  estimateCpu,
   fetchWeather,
+  fetchWeatherScopes,
+  groupByFirst,
   newWeatherId,
+  scopeProblem,
   setWeatherAction,
   summarise,
   type Weather,
+  type WeatherGroup,
 } from '../chain/weather'
 import { isCancel, readableError, type ChainAction } from '../../dao/chain/act'
 import { useSession } from '../../wallet/session'
@@ -39,6 +45,10 @@ export function WeatherAdmin() {
   const [targets, setTargets] = useState<Set<string>>(new Set(PLANETS))
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null)
+  /* The copy: which group of the catalogue, and where it is going. */
+  const [picked, setPicked] = useState<string | null>(null)
+  const [scope, setScope] = useState('')
+  const [scopes, setScopes] = useState<Map<string, number> | null>(null)
 
   const read = () => {
     setAll(null)
@@ -53,6 +63,27 @@ export function WeatherAdmin() {
   }
 
   useEffect(read, [planet])
+
+  useEffect(() => {
+    fetchWeatherScopes()
+      .then(setScopes)
+      .catch((err: unknown) => {
+        console.error('weather scopes:', err)
+        setScopes(null)
+      })
+  }, [])
+
+  /*
+    The catalogue by the first character of its ids.
+
+    Not a presentational grouping: the ids were minted in batches and the first
+    character says what the weather targets — every id beginning c targets a
+    class, every e an element, every r a race. It is also the size that can be
+    acted on, which the whole thousand is not.
+  */
+  const groups = useMemo(() => groupByFirst(all ?? []), [all])
+  const group: WeatherGroup | null = groups.find((g) => g.char === picked) ?? null
+  const batch = group?.rows ?? []
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -103,6 +134,31 @@ export function WeatherAdmin() {
     void sign(
       [setWeatherAction(level(), [...targets], { ...draft, displayname: draft.displayname || draft.title })],
       `Writing ${draft.weather_id} to ${targets.size} planet${targets.size === 1 ? '' : 's'}`,
+    )
+  }
+
+  /**
+   * Every weather of one group written into one scope, in one transaction.
+   *
+   * setweather takes a list of scopes and writes the row into each, so a copy
+   * is one action per weather rather than one per weather per scope. The whole
+   * group goes in a single transaction because half a catalogue is worse than
+   * none: a fight picks a weather at random from what the scope holds, so a
+   * partial copy is a scope that quietly behaves differently.
+   *
+   * The scope does not have to exist first. battle.ale keeps a row per planet
+   * in plnttracking and writes it itself — the six there today were all
+   * created in the same block as the very first setweather, with no separate
+   * registration, and no action exists that could have made them.
+   */
+  const copy = () => {
+    const wrong = scopeProblem(scope)
+    if (wrong) return setNote({ text: wrong, bad: true })
+    if (!batch.length) return setNote({ text: 'Choose a group to copy.', bad: true })
+    const into = scope.trim()
+    void sign(
+      batch.map((w) => setWeatherAction(level(), [into], w)),
+      `Writing ${batch.length} weather${batch.length === 1 ? '' : 's'} into ${into}`,
     )
   }
 
@@ -165,6 +221,101 @@ export function WeatherAdmin() {
             </label>
           ))}
         </div>
+      </section>
+
+      {/* Copying a group of the catalogue into another scope. Reads from the
+          planet above; writes wherever it is told. */}
+      <section className="section">
+        <h2 className="dao-h2">
+          Copy into a scope{' '}
+          <span className="dao-dim">
+            {batch.length ? `${batch.length} of ${all?.length ?? 0} on ${planet}` : `from ${planet}`}
+          </span>
+        </h2>
+
+        <div className="pause-grid">
+          {groups.map((g) => (
+            <button
+              key={g.char}
+              type="button"
+              className={`pause-chip wx-group${picked === g.char ? ' is-target' : ''}`}
+              title={`${g.rows.length} ${g.targets}, ids beginning ${g.char} — e.g. ${g.rows[0]?.title ?? ''}`}
+              onClick={() => setPicked(picked === g.char ? null : g.char)}
+            >
+              <b>{g.char}…</b>
+              <span>
+                {g.rows.length} · {g.targets}
+              </span>
+            </button>
+          ))}
+          {!groups.length ? <span className="dao-dim">reading {planet}…</span> : null}
+        </div>
+
+        <div className="ale-form">
+          <label className="ale-field">
+            <span className="ale-field__name">
+              Scope<i>a name, not a string: a–z, 1–5 and dots, up to 12</i>
+            </span>
+            <input
+              type="text"
+              value={scope}
+              placeholder="eyeke"
+              onChange={(e) => setScope(e.target.value.trim().toLowerCase())}
+            />
+          </label>
+          <div className="ale-field">
+            <span className="ale-field__name">&nbsp;</span>
+            <button className="btn btn--go" type="button" disabled={!session || busy || !batch.length} onClick={copy}>
+              {busy ? 'Signing…' : `Save ${batch.length} in scope`}
+            </button>
+          </div>
+        </div>
+
+        {scope && scopes ? (
+          <p className="dao-note">
+            {scopes.has(scope)
+              ? `${scope} already holds ${scopes.get(scope)} weathers. Any id written again replaces the row that is there.`
+              : `${scope} holds no weathers yet. setweather makes the scope as it writes — the six that exist were all created that way.`}
+          </p>
+        ) : null}
+
+        {batch.length ? (
+          <p className={`dao-note${estimateCpu(batch.length) > CPU_LIMIT_US ? ' dao-note--bad' : ''}`}>
+            {batch.length} action{batch.length === 1 ? '' : 's'} in one transaction, about{' '}
+            {Math.round(estimateCpu(batch.length) / 1000)} ms of the {CPU_LIMIT_US / 1000} ms a transaction may
+            spend — measured from the live writes, where each cost between 114 and 330 µs.
+            {estimateCpu(batch.length) > CPU_LIMIT_US
+              ? ' That is over the limit, so this would be refused. Copy a smaller group.'
+              : ''}
+          </p>
+        ) : null}
+
+        {batch.length ? (
+          <div className="dao-tablewrap wx-list">
+            <table className="dao-table">
+              <thead>
+                <tr>
+                  <th className="num">#</th>
+                  <th>Title</th>
+                  <th>Effects</th>
+                  <th>Id</th>
+                </tr>
+              </thead>
+              <tbody>
+                {batch.map((w, i) => (
+                  <tr key={w.weather_id}>
+                    <td className="num dao-dim">{i + 1}</td>
+                    <td>
+                      <b className="dao-rowtitle">{w.title || w.displayname || '(untitled)'}</b>
+                    </td>
+                    <td className="dao-dim">{summarise(w)}</td>
+                    <td className="dao-rowid">{w.weather_id}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </section>
 
       <section className="section">
