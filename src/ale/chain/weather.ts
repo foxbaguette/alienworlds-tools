@@ -1,4 +1,4 @@
-import { call, getRows } from '../../dao/chain/nodes'
+import { getRows } from '../../dao/chain/nodes'
 import type { ChainAction } from '../../dao/chain/act'
 
 /**
@@ -11,6 +11,17 @@ import type { ChainAction } from '../../dao/chain/act'
  */
 export const BATTLE = 'battle.ale'
 
+/**
+ * The game's own six planets.
+ *
+ * Still worth naming, but no longer the whole list: a scope is whatever
+ * `plnttracking` holds a row for, and `setweather` adds one as it writes. The
+ * first copy made for a tournament put a seventh there. See fetchPlanets.
+ *
+ * These six stay the default for a write, because they are the planets a
+ * fight actually happens on — a weather edited here should not quietly land
+ * in somebody's tournament scope as well.
+ */
 export const PLANETS = ['eyeke', 'kavian', 'magor', 'naron', 'neri', 'veles'] as const
 
 export interface WeatherEffect {
@@ -221,16 +232,56 @@ export const CPU_LIMIT_US = 150_000
 
 export const estimateCpu = (writes: number) => writes * CPU_PER_WRITE_US
 
+export interface PlanetScope {
+  planet: string
+  /** The contract's own count of what that scope holds. */
+  weathers: number
+}
+
 /**
- * Every scope `battle.ale` already keeps a weather catalogue in.
+ * Every scope the contract keeps weather for, from its own registry.
  *
- * Six today, one per planet, each holding the same 1,001 rows. Worth showing
- * beside the box: a scope already there is being written over, and a scope
- * that is not is a new one being made.
+ * `plnttracking` is what `setweather` checks and what it writes — the six
+ * planet rows all appeared in the same block as the very first weather, and a
+ * seventh appeared the moment a group was copied into a new scope. So this is
+ * the list, and the six names above are only the ones the game was shipped
+ * with.
+ *
+ * Read rather than assumed because assuming is what hid the new scope: the
+ * page offered six tabs, the catalogue it had just written was in a seventh,
+ * and there was no way to open it.
  */
-export async function fetchWeatherScopes(): Promise<Map<string, number>> {
-  const body = (await call({ code: BATTLE, table: 'weather', limit: 100 }, 'get_table_by_scope')) as {
-    rows?: { scope: string; count: number }[]
-  }
-  return new Map((body.rows ?? []).map((r) => [String(r.scope), Number(r.count) || 0]))
+export async function fetchPlanets(): Promise<PlanetScope[]> {
+  const rows = await getRows<{ planet: string; weather_count: number | string }>({
+    code: BATTLE,
+    scope: BATTLE,
+    table: 'plnttracking',
+    limit: 200,
+  })
+  return rows
+    .map((r) => ({ planet: String(r.planet), weathers: Number(r.weather_count) || 0 }))
+    .sort((a, b) => a.planet.localeCompare(b.planet))
+}
+
+/**
+ * How many weathers go into one transaction.
+ *
+ * A hundred, which is well inside what a transaction may spend: each
+ * `setweather` billed between 114 and 330µs on the live writes, so a hundred
+ * is about 22ms of the 150ms ceiling even at the worst of those. The limit is
+ * not the reason for the number — 322 would fit too — the reason is that a
+ * transaction either happens or does not, and a round hundred makes "stopped
+ * after two hundred" a sentence somebody can act on.
+ *
+ * Chained rather than fired together: each is signed after the one before it
+ * landed, so a refusal stops the rest instead of leaving an unknown number of
+ * them in flight.
+ */
+export const COPY_PER_TRANSACTION = 100
+
+/** A list in runs of `size`, the last one short. */
+export function inChunks<T>(list: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
+  return out
 }

@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   CLASSES,
+  COPY_PER_TRANSACTION,
   CPU_LIMIT_US,
   PLANETS,
   STAT_NAMES,
   blankWeather,
   delWeatherAction,
   estimateCpu,
+  fetchPlanets,
+  inChunks,
   fetchWeather,
-  fetchWeatherScopes,
   groupByFirst,
   newWeatherId,
   scopeProblem,
   setWeatherAction,
   summarise,
+  type PlanetScope,
   type Weather,
   type WeatherGroup,
 } from '../chain/weather'
@@ -48,7 +51,8 @@ export function WeatherAdmin() {
   /* The copy: which group of the catalogue, and where it is going. */
   const [picked, setPicked] = useState<string | null>(null)
   const [scope, setScope] = useState('')
-  const [scopes, setScopes] = useState<Map<string, number> | null>(null)
+  /* Every scope battle.ale keeps weather for, from its own registry. */
+  const [known, setKnown] = useState<PlanetScope[] | null>(null)
 
   const read = () => {
     setAll(null)
@@ -64,14 +68,27 @@ export function WeatherAdmin() {
 
   useEffect(read, [planet])
 
-  useEffect(() => {
-    fetchWeatherScopes()
-      .then(setScopes)
+  const readPlanets = () => {
+    fetchPlanets()
+      .then(setKnown)
       .catch((err: unknown) => {
-        console.error('weather scopes:', err)
-        setScopes(null)
+        console.error('planet scopes:', err)
+        setKnown(null)
       })
-  }, [])
+  }
+
+  useEffect(readPlanets, [])
+
+  /*
+    The scopes to show, and what each holds.
+
+    PLANETS until the registry answers, so the tabs are not empty on the way
+    in — and the six are in it either way. A copy into a new scope adds a row
+    to plnttracking, which is how a tournament catalogue appears here without
+    anything being changed in the code.
+  */
+  const planets: PlanetScope[] = known ?? PLANETS.map((planet) => ({ planet, weathers: 0 }))
+  const countOf = (name: string) => known?.find((k) => k.planet === name)?.weathers ?? null
 
   /*
     The catalogue by the first character of its ids.
@@ -84,6 +101,7 @@ export function WeatherAdmin() {
   const groups = useMemo(() => groupByFirst(all ?? []), [all])
   const group: WeatherGroup | null = groups.find((g) => g.char === picked) ?? null
   const batch = group?.rows ?? []
+  const runs = inChunks(batch, COPY_PER_TRANSACTION)
 
   /**
    * Why the copy cannot be signed, or null.
@@ -130,6 +148,8 @@ export function WeatherAdmin() {
       await session.transact({ actions }, { broadcast: true })
       await new Promise((r) => setTimeout(r, 2500))
       read()
+      /* A write can have made a scope that was not there before. */
+      readPlanets()
       setNote({ text: `${describe} done.` })
     } catch (err) {
       if (isCancel(err)) setNote({ text: 'Cancelled.' })
@@ -152,29 +172,68 @@ export function WeatherAdmin() {
     )
   }
 
-  /**
-   * Every weather of one group written into one scope, in one transaction.
+/**
+   * A group written into one scope, a hundred weathers at a time.
    *
    * setweather takes a list of scopes and writes the row into each, so a copy
-   * is one action per weather rather than one per weather per scope. The whole
-   * group goes in a single transaction because half a catalogue is worse than
-   * none: a fight picks a weather at random from what the scope holds, so a
-   * partial copy is a scope that quietly behaves differently.
+   * is one action per weather rather than one per weather per scope.
+   *
+   * Chained, not fired together: each run is signed only once the one before
+   * it landed, so a refusal stops what is left rather than leaving an unknown
+   * number of transactions in flight. That does mean a copy can stop halfway,
+   * which is why the note below counts what actually went in — and why it says
+   * that running it again is safe. setweather writes over a row with the same
+   * id, so a repeat of a part that already landed changes nothing.
    *
    * The scope does not have to exist first. battle.ale keeps a row per planet
-   * in plnttracking and writes it itself — the six there today were all
-   * created in the same block as the very first setweather, with no separate
-   * registration, and no action exists that could have made them.
+   * in plnttracking and writes it itself — the six there to begin with were
+   * all created in the same block as the very first setweather, and the
+   * seventh appeared the first time a group was copied.
    */
-  const copy = () => {
+  const copy = async () => {
     const wrong = scopeProblem(scope)
     if (wrong) return setNote({ text: wrong, bad: true })
     if (!batch.length) return setNote({ text: 'Choose a group to copy.', bad: true })
+    if (!session || busy) return
     const into = scope.trim()
-    void sign(
-      batch.map((w) => setWeatherAction(level(), [into], w)),
-      `Writing ${batch.length} weather${batch.length === 1 ? '' : 's'} into ${into}`,
-    )
+
+    setBusy(true)
+    let done = 0
+    try {
+      for (const [i, run] of runs.entries()) {
+        setNote({
+          text:
+            `Writing ${run.length} into ${into} — transaction ${i + 1} of ${runs.length}` +
+            `${done ? `, ${done} in so far` : ''} — check your wallet…`,
+        })
+        await session.transact(
+          { actions: run.map((w) => setWeatherAction(level(), [into], w)) },
+          { broadcast: true },
+        )
+        done += run.length
+      }
+      /* A block has to land before the tables move, and a copy can have made
+         a scope that was not in the registry before. */
+      await new Promise((r) => setTimeout(r, 2500))
+      read()
+      readPlanets()
+      setNote({ text: `${done} weather${done === 1 ? '' : 's'} written into ${into}.` })
+    } catch (err) {
+      const stopped =
+        `Stopped after ${done} of ${batch.length}. The ${done} that went in are in ${into}; the rest are not. ` +
+        'Saving the same group again writes the ids that landed over themselves, so it is safe to run it again.'
+      if (isCancel(err)) setNote({ text: done ? stopped : 'Cancelled.', bad: !!done })
+      else {
+        console.error('weather copy failed:', err)
+        setNote({ text: done ? `${readableError(err)} ${stopped}` : readableError(err), bad: true })
+      }
+      if (done) {
+        read()
+        readPlanets()
+      }
+    } finally {
+      setBusy(false)
+    }
   }
 
   const remove = () => {
@@ -197,9 +256,16 @@ export function WeatherAdmin() {
         </div>
         <div className="page__actions">
           <div className="sections" role="tablist">
-            {PLANETS.map((p) => (
-              <button key={p} type="button" role="tab" aria-selected={p === planet} onClick={() => setPlanet(p)}>
-                {p}
+            {planets.map((p) => (
+              <button
+                key={p.planet}
+                type="button"
+                role="tab"
+                aria-selected={p.planet === planet}
+                title={p.weathers ? `${p.weathers} weathers` : undefined}
+                onClick={() => setPlanet(p.planet)}
+              >
+                {p.planet}
               </button>
             ))}
           </div>
@@ -222,10 +288,13 @@ export function WeatherAdmin() {
           being browsed: you look at one and act on all six. */}
       <section className="section">
         <h2 className="dao-h2">
-          Write to <span className="dao-dim">{targets.size} of {PLANETS.length} planets</span>
+          Write to{' '}
+          <span className="dao-dim">
+            {targets.size} of {planets.length} scope{planets.length === 1 ? '' : 's'}
+          </span>
         </h2>
         <div className="pause-grid">
-          {PLANETS.map((p) => (
+          {planets.map(({ planet: p, weathers }) => (
             <label key={p} className={`pause-chip${targets.has(p) ? ' is-target' : ''}`}>
               <input
                 type="checkbox"
@@ -238,7 +307,10 @@ export function WeatherAdmin() {
                   })
                 }
               />
-              <span>{p}</span>
+              <span>
+                {p}
+                {weathers ? <i className="wx-count">{weathers}</i> : null}
+              </span>
             </label>
           ))}
         </div>
@@ -291,7 +363,7 @@ export function WeatherAdmin() {
               type="button"
               disabled={busy || !!cannotCopy}
               title={cannotCopy ?? `Write ${batch.length} weathers into ${scope}`}
-              onClick={copy}
+              onClick={() => void copy()}
             >
               {busy ? 'Signing…' : `Save ${batch.length} in scope`}
             </button>
@@ -300,22 +372,21 @@ export function WeatherAdmin() {
 
         {cannotCopy && !busy ? <p className="dao-note">{cannotCopy}</p> : null}
 
-        {scope && scopes ? (
+        {scope && known ? (
           <p className="dao-note">
-            {scopes.has(scope)
-              ? `${scope} already holds ${scopes.get(scope)} weathers. Any id written again replaces the row that is there.`
-              : `${scope} holds no weathers yet. setweather makes the scope as it writes — the six that exist were all created that way.`}
+            {countOf(scope) != null
+              ? `${scope} already holds ${countOf(scope)} weathers. Any id written again replaces the row that is there.`
+              : `${scope} is not a scope yet. setweather makes one as it writes — every scope listed above was created that way.`}
           </p>
         ) : null}
 
         {batch.length ? (
-          <p className={`dao-note${estimateCpu(batch.length) > CPU_LIMIT_US ? ' dao-note--bad' : ''}`}>
-            {batch.length} action{batch.length === 1 ? '' : 's'} in one transaction, about{' '}
-            {Math.round(estimateCpu(batch.length) / 1000)} ms of the {CPU_LIMIT_US / 1000} ms a transaction may
-            spend — measured from the live writes, where each cost between 114 and 330 µs.
-            {estimateCpu(batch.length) > CPU_LIMIT_US
-              ? ' That is over the limit, so this would be refused. Copy a smaller group.'
-              : ''}
+          <p className="dao-note">
+            {runs.length} transaction{runs.length === 1 ? '' : 's'} of up to {COPY_PER_TRANSACTION}, signed one
+            after the next — so {runs.length === 1 ? 'one wallet prompt' : `${runs.length} wallet prompts`}. A
+            full run costs about {Math.round(estimateCpu(Math.min(batch.length, COPY_PER_TRANSACTION)) / 1000)} ms
+            of the {CPU_LIMIT_US / 1000} ms a transaction may spend, measured from the live writes where each
+            weather cost between 114 and 330 µs.
           </p>
         ) : null}
 

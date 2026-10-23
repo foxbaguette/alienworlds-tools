@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  COPY_PER_TRANSACTION,
   CPU_LIMIT_US,
   estimateCpu,
+  inChunks,
   groupByFirst,
   scopeProblem,
   setWeatherAction,
@@ -127,5 +129,40 @@ describe('the copy itself', () => {
         title: 'Altan air resistance',
       },
     })
+  })
+})
+
+describe('splitting a copy into transactions', () => {
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => weather(`r${i}`))
+
+  it('runs of a hundred, the last one short', () => {
+    const runs = inChunks(ids(322), COPY_PER_TRANSACTION)
+    expect(runs.map((r) => r.length)).toEqual([100, 100, 100, 22])
+  })
+
+  it('keeps every weather, once, in order', () => {
+    const runs = inChunks(ids(250), COPY_PER_TRANSACTION)
+    const flat = runs.flat().map((w) => w.weather_id)
+    expect(flat).toHaveLength(250)
+    expect(new Set(flat).size).toBe(250)
+    expect(flat[0]).toBe('r0')
+    expect(flat[249]).toBe('r249')
+  })
+
+  it('is one run when a group is smaller than the limit', () => {
+    expect(inChunks(ids(1), COPY_PER_TRANSACTION).map((r) => r.length)).toEqual([1])
+    expect(inChunks(ids(100), COPY_PER_TRANSACTION).map((r) => r.length)).toEqual([100])
+  })
+
+  it('has nothing to sign for an empty group', () => {
+    expect(inChunks([], COPY_PER_TRANSACTION)).toEqual([])
+  })
+
+  /* The whole catalogue is eleven prompts now, where it was a transaction the
+     chain would have refused. */
+  it('makes the full catalogue copyable at all', () => {
+    const runs = inChunks(ids(1_001), COPY_PER_TRANSACTION)
+    expect(runs).toHaveLength(11)
+    expect(estimateCpu(runs[0].length)).toBeLessThan(CPU_LIMIT_US)
   })
 })
